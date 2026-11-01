@@ -467,6 +467,7 @@ async function validateAndSyncSchema(): Promise<void> {
         ai_summary_invalidated_at: "TIMESTAMP",
         ai_summary_model: "TEXT",
         ai_backend_notes: "JSONB NOT NULL DEFAULT '[]'::jsonb",
+        instagram_user_id: "TEXT",
       },
       ai_chats: {
         vector_id: "TEXT",
@@ -819,6 +820,8 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_accounts_scan_due_idx ON social_accounts (scan_due_at) WHERE scan_due_at IS NOT NULL;
       -- Story items find their account by LOWER(username).
       CREATE INDEX IF NOT EXISTS social_accounts_username_lower_idx ON social_accounts (LOWER(username));
+      -- One row per Instagram user: a rename keeps the id, so it is how a rename is recognized.
+      CREATE UNIQUE INDEX IF NOT EXISTS social_accounts_instagram_user_id_idx ON social_accounts (instagram_user_id) WHERE instagram_user_id IS NOT NULL;
     `);
     await applyMeRule();
     await applyBigAccountRule();

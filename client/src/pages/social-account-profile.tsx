@@ -882,6 +882,9 @@ export default function SocialAccountProfile() {
             <MessageSquare className="h-3.5 w-3.5" />
             Chat about account
           </Button>
+          <Button variant="outline" size="sm" className="px-2" onClick={() => setIsInfoDialogOpen(true)} aria-label="Account info" title="Account info" data-testid="button-account-info">
+            <Info className="h-3.5 w-3.5" />
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="gap-1" data-testid="button-actions-menu">
@@ -897,10 +900,6 @@ export default function SocialAccountProfile() {
               <DropdownMenuItem onClick={() => setIsChangeUsernameOpen(true)} data-testid="button-change-username">
                 <AtSign className="h-4 w-4 mr-2" />
                 Change Username
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setIsInfoDialogOpen(true)} data-testid="button-account-info">
-                <Info className="h-4 w-4 mr-2" />
-                Account Info
               </DropdownMenuItem>
               {account.currentProfile?.accountUrl && (
                 <DropdownMenuItem onClick={() => window.open(account.currentProfile?.accountUrl ?? undefined, "_blank")} data-testid="button-goto-profile">
@@ -1069,114 +1068,6 @@ export default function SocialAccountProfile() {
                 )}
               </TabsTrigger>
             </TabsList>
-          </div>
-
-          {/* Sidebar Bottom Details Panel */}
-          <div className="p-4 border-t bg-muted/15 space-y-3 text-xs">
-            {account.ownerUuid ? (
-              <div className="space-y-1.5">
-                <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Linked Owner</span>
-                {owner ? (
-                  <Link href={`/person/${owner.id}`}>
-                    <a className="text-primary hover:underline font-medium block" data-testid="link-owner">
-                      {formatPersonName(owner)}
-                    </a>
-                  </Link>
-                ) : (
-                  <span className="text-muted-foreground" data-testid="text-owner-loading">Loading...</span>
-                )}
-                <div className="flex items-center gap-1.5 pt-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1 text-xs h-7"
-                    onClick={() => setIsLinkPersonOpen(true)}
-                    data-testid="button-link-person-sidebar"
-                  >
-                    Link
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1 text-xs h-7"
-                    onClick={() => setIsCreatePersonOpen(true)}
-                    data-testid="button-create-person-sidebar"
-                  >
-                    Create
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Owner</span>
-                <p className="text-muted-foreground italic text-xs">No person linked</p>
-                <div className="flex items-center gap-1.5 pt-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1 text-xs h-7"
-                    onClick={() => setIsLinkPersonOpen(true)}
-                    data-testid="button-link-person-sidebar"
-                  >
-                    Link
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1 text-xs h-7"
-                    onClick={() => setIsCreatePersonOpen(true)}
-                    data-testid="button-create-person-sidebar"
-                  >
-                    Create
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-1 text-muted-foreground" data-testid="section-listed-counts">
-              <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Listed on Profile</span>
-              <p className="text-[10px] italic">The totals the profile page itself shows.</p>
-              {account.reportedFollowersCount == null && account.reportedFollowingCount == null ? (
-                <p className="italic text-xs">Not scraped yet</p>
-              ) : (
-                <>
-                  <div>Followers: {account.reportedFollowersCount?.toLocaleString() ?? "—"}</div>
-                  <div>Following: {account.reportedFollowingCount?.toLocaleString() ?? "—"}</div>
-                </>
-              )}
-            </div>
-
-            <div className="space-y-1 text-muted-foreground" data-testid="section-actual-counts">
-              <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Captured in PRM</span>
-              <p className="text-[10px] italic">Accounts PRM actually holds in each list.</p>
-              <div>
-                Followers: {account.followersCount.toLocaleString()}
-                {account.reportedFollowersCount != null && account.followersCount < account.reportedFollowersCount && ` of ${account.reportedFollowersCount.toLocaleString()}`}
-              </div>
-              <div>
-                Following: {account.followingCount.toLocaleString()}
-                {account.reportedFollowingCount != null && account.followingCount < account.reportedFollowingCount && ` of ${account.reportedFollowingCount.toLocaleString()}`}
-              </div>
-            </div>
-
-            <div className="space-y-1 text-muted-foreground">
-              <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Import Status</span>
-              {account.internalAccountCreationDate && (
-                <div data-testid="text-account-created-date">
-                  Imported: {formatDateTime(account.internalAccountCreationDate)} ({account.internalAccountCreationType})
-                </div>
-              )}
-              {account.latestImportFollowers && (
-                <div data-testid="text-account-latest-followers">
-                  Followers: {formatDateTime(account.latestImportFollowers)}
-                </div>
-              )}
-              {account.latestImportFollowing && (
-                <div data-testid="text-account-latest-following">
-                  Following: {formatDateTime(account.latestImportFollowing)}
-                </div>
-              )}
-            </div>
           </div>
         </div>
 
@@ -2016,15 +1907,77 @@ export default function SocialAccountProfile() {
 
       {/* Social Account Info Dialog */}
       <Dialog open={isInfoDialogOpen} onOpenChange={setIsInfoDialogOpen}>
-        <DialogContent className="max-w-sm" data-testid="dialog-account-info">
+        <DialogContent className="max-w-sm max-h-[85vh] overflow-y-auto" data-testid="dialog-account-info">
           <DialogHeader>
             <DialogTitle>Social account info</DialogTitle>
             <DialogDescription>
               Account history and timeline details for @{account?.username}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 pt-1">
-            <div className="space-y-3 text-sm">
+          {account && (
+            <div className="space-y-4 pt-1 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">Account PK</span>
+                <span className="text-right font-mono text-xs select-all break-all" data-testid="info-account-pk">
+                  {account.instagramUserId ?? "—"}
+                </span>
+              </div>
+
+              <div className="border-t pt-3 space-y-1.5" data-testid="section-listed-counts">
+                <p className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider">Listed on Profile</p>
+                <p className="text-xs text-muted-foreground italic">The totals the profile page itself shows.</p>
+                {account.reportedFollowersCount == null && account.reportedFollowingCount == null ? (
+                  <p className="text-muted-foreground italic">Not scraped yet</p>
+                ) : (
+                  <>
+                    <div className="flex justify-between gap-4"><span className="text-muted-foreground">Followers</span><span className="font-medium">{account.reportedFollowersCount?.toLocaleString() ?? "—"}</span></div>
+                    <div className="flex justify-between gap-4"><span className="text-muted-foreground">Following</span><span className="font-medium">{account.reportedFollowingCount?.toLocaleString() ?? "—"}</span></div>
+                  </>
+                )}
+              </div>
+
+              <div className="border-t pt-3 space-y-1.5" data-testid="section-actual-counts">
+                <p className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider">Captured in PRM</p>
+                <p className="text-xs text-muted-foreground italic">Accounts PRM actually holds in each list.</p>
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">Followers</span>
+                  <span className="font-medium">
+                    {account.followersCount.toLocaleString()}
+                    {account.reportedFollowersCount != null && account.followersCount < account.reportedFollowersCount && ` of ${account.reportedFollowersCount.toLocaleString()}`}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">Following</span>
+                  <span className="font-medium">
+                    {account.followingCount.toLocaleString()}
+                    {account.reportedFollowingCount != null && account.followingCount < account.reportedFollowingCount && ` of ${account.reportedFollowingCount.toLocaleString()}`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="border-t pt-3 space-y-1.5">
+                <p className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider">Import Status</p>
+                <div className="flex justify-between gap-4" data-testid="text-account-created-date">
+                  <span className="text-muted-foreground shrink-0">Imported</span>
+                  <span className="text-right font-medium">{formatDateTime(account.internalAccountCreationDate)} ({account.internalAccountCreationType})</span>
+                </div>
+                {account.latestImportFollowers && (
+                  <div className="flex justify-between gap-4" data-testid="text-account-latest-followers">
+                    <span className="text-muted-foreground shrink-0">Followers</span>
+                    <span className="text-right font-medium">{formatDateTime(account.latestImportFollowers)}</span>
+                  </div>
+                )}
+                {account.latestImportFollowing && (
+                  <div className="flex justify-between gap-4" data-testid="text-account-latest-following">
+                    <span className="text-muted-foreground shrink-0">Following</span>
+                    <span className="text-right font-medium">{formatDateTime(account.latestImportFollowing)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          <div className="space-y-4 pt-1 border-t">
+            <div className="space-y-3 text-sm pt-3">
               <div className="flex justify-between gap-4">
                 <span className="text-muted-foreground shrink-0">Account created</span>
                 <span className="text-right font-medium" data-testid="info-account-created">

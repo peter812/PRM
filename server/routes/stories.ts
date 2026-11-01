@@ -25,6 +25,7 @@ import { failUnfinishedJobs } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { getImageDimensions } from "../profile-image";
 import { onPostAddedForSummary } from "../summary-queue";
+import { findInstagramAccount, instagramPkOf } from "../instagram-identity";
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 // A story video (≤ 60 s) is usually 3–15 MB; the scraper skips anything over its own cap (50 MB by default).
@@ -119,6 +120,7 @@ const checkStoriesSchema = z.object({
   items: z.array(z.object({
     storyPk: z.string().min(1),
     username: z.string().min(1).optional(),
+    userPk: z.string().optional(),
   })).optional(),
 }).refine(data => Boolean(data.storyPks?.length || data.items?.length || data.usernames?.length), {
   message: "At least one of storyPks, items, or usernames must be provided",
@@ -195,13 +197,7 @@ export async function ingestStoryItem(meta: StoryMeta, image: Upload, video: Upl
   const { storyPk, username, scrapedFrom, takenAt, accessibilityCaption, mentions, width, height, ...rest } = meta;
   const cleanStoryPk = storyPk.trim();
 
-  const [account] = run.account
-    ? [run.account]
-    : await db
-        .select({ id: socialAccounts.id, skipStories: socialAccounts.skipStories })
-        .from(socialAccounts)
-        .where(and(eq(sql`LOWER(${socialAccounts.username})`, username.toLowerCase()), eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)))
-        .limit(1);
+  const account = run.account ?? (await findInstagramAccount(instagramPkOf({ pk: meta.userPk }), username));
   if (!account) return { outcome: "no_account" };
   if (account.skipStories) return { outcome: "skipped" };
 
@@ -360,6 +356,22 @@ export function registerStories(app: Express) {
 
         const foundSet = new Set(existingAccounts.map(a => a.username));
         missingAccountUsernames = usernamesToCheck.filter(u => !foundSet.has(u));
+      }
+
+      // A poster unknown by name may be an account that renamed: its id still finds it, and ingest follows the rename.
+      const pkByName = new Map<string, string>();
+      for (const i of parsed.data.items ?? []) {
+        const pk = instagramPkOf({ pk: i.userPk });
+        if (pk && i.username) pkByName.set(i.username.trim().toLowerCase(), pk);
+      }
+      const pksOfMissing = missingAccountUsernames.map(u => pkByName.get(u)).filter((pk): pk is string => Boolean(pk));
+      if (pksOfMissing.length > 0) {
+        const held = new Set((await db
+          .select({ pk: socialAccounts.instagramUserId })
+          .from(socialAccounts)
+          .where(and(inArray(socialAccounts.instagramUserId, pksOfMissing), eq(socialAccounts.skipStories, false)))
+        ).map(a => a.pk));
+        missingAccountUsernames = missingAccountUsernames.filter(u => !held.has(pkByName.get(u) ?? null));
       }
 
       res.json({

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, lazy, Suspense } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -35,9 +35,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Link, useLocation } from "wouter";
 import type { HighlightWithStints, SocialAccountPost } from "@shared/schema";
-import { PostDetailDialog } from "@/components/post-detail-dialog";
-import { StoryDialog } from "@/components/stories-tab";
 import { withImageSize } from "@shared/image-size";
+
+// Only opened from a clicked photo; they pull in the faces/identity/markdown/form stack.
+const PostDetailDialog = lazy(() => import("@/components/post-detail-dialog").then((m) => ({ default: m.PostDetailDialog })));
+const StoryDialog = lazy(() => import("@/components/stories-tab").then((m) => ({ default: m.StoryDialog })));
 
 const PAGE_SIZE = 24;
 
@@ -401,21 +403,23 @@ function usePhotoOpener(personId: string, onDeleted?: (uuid: string) => void) {
         onDeleted={handleImageDeleted}
       />
 
-      {selectedPost?.postType === "story" && (
-        <StoryDialog key={selectedPost.id} stories={[selectedPost]} highlights={highlights} onClose={() => setSelectedPost(null)} />
-      )}
-      {selectedPost && selectedPost.postType !== "story" && (
-        <PostDetailDialog
-          open
-          onOpenChange={(open) => { if (!open) setSelectedPost(null); }}
-          post={selectedPost}
-          onEdit={() => navigate(`/social-accounts/${selectedPost.socialAccountId}?postId=${selectedPost.id}`)}
-          onDelete={() => {
-            deletePost.mutate(selectedPost.id);
-            setSelectedPost(null);
-          }}
-        />
-      )}
+      <Suspense fallback={null}>
+        {selectedPost?.postType === "story" && (
+          <StoryDialog key={selectedPost.id} stories={[selectedPost]} highlights={highlights} onClose={() => setSelectedPost(null)} />
+        )}
+        {selectedPost && selectedPost.postType !== "story" && (
+          <PostDetailDialog
+            open
+            onOpenChange={(open) => { if (!open) setSelectedPost(null); }}
+            post={selectedPost}
+            onEdit={() => navigate(`/social-accounts/${selectedPost.socialAccountId}?postId=${selectedPost.id}`)}
+            onDelete={() => {
+              deletePost.mutate(selectedPost.id);
+              setSelectedPost(null);
+            }}
+          />
+        )}
+      </Suspense>
     </>
   );
 

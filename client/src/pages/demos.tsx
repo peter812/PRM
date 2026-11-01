@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { Mic, Map as MapIcon, Cloud, SlidersHorizontal, Bell, Globe, BookUser, ScanFace, Link2, Trophy, Compass } from "lucide-react";
+import { Mic, Map as MapIcon, Cloud, SlidersHorizontal, Bell, Globe, BookUser, ScanFace, Link2, Trophy, Compass, MessageSquareText } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function DemosPage() {
@@ -210,6 +210,20 @@ export default function DemosPage() {
               </CardTitle>
               <CardDescription>
                 Place contacts on the political compass, skipping anyone you are unsure of.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/describe-me">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MessageSquareText className="h-5 w-5" />
+                Describe Me
+              </CardTitle>
+              <CardDescription>
+                Describe a random person out loud; the confirmed bullet points are saved as a note on their profile.
               </CardDescription>
             </CardHeader>
           </Card>

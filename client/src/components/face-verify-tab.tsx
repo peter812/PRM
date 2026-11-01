@@ -3,8 +3,9 @@
 // selected: deselect the misses, then Confirm names the rest and marks the misses "not them".
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Loader2, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -20,6 +21,9 @@ export function FaceVerifyTab() {
   const [picked, setPicked] = useState<string | null>(null);
   // Keep the pick while it still has faces to verify; otherwise move to the top of the list.
   const group = identities?.some((i) => i.group === picked) ? picked : identities?.[0]?.group ?? null;
+  const [search, setSearch] = useState("");
+  const needle = search.trim().toLowerCase();
+  const shown = needle ? identities?.filter((i) => i.label.toLowerCase().includes(needle)) ?? [] : identities ?? [];
 
   if (isLoading) return <div className="text-center py-16 text-muted-foreground">Loading…</div>;
   if (isError) return <div className="text-center py-16 text-sm text-destructive">Couldn't load the verify list. Please refresh.</div>;
@@ -28,7 +32,12 @@ export function FaceVerifyTab() {
   return (
     <div className="grid gap-4 md:grid-cols-[240px_1fr]">
       <div className="space-y-1">
-        {identities.map((i) => (
+        <div className="relative mb-2">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input placeholder="Search names…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8 h-9 text-sm" data-testid="input-verify-search" />
+        </div>
+        {shown.length === 0 && <div className="px-2 py-1.5 text-sm text-muted-foreground">No matches.</div>}
+        {shown.map((i) => (
           <button
             key={i.group}
             type="button"

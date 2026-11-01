@@ -16,6 +16,7 @@ import {
   schooling,
   truePersonSearch,
   jobExperienceZodSchema,
+  partialDate,
   collegeExperienceZodSchema,
   type CollegeExperience,
   type ExtensionSession,
@@ -25,7 +26,6 @@ import {
 import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { authenticateExtensionToken } from "../auth";
-import { partialDate } from "@shared/partial-date";
 import { getPrimaryAddress, tpsEntries, upsertTpsAddresses } from "../person-addresses";
 
 /**

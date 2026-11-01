@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { Redirect, Route, useLocation } from "wouter";
 import { useEffect, useState } from "react";
 import { isNonHomePage, setStoredReturnTo, clearStoredReturnTo } from "@/lib/auth-redirect";
+import { RouteSkeleton } from "@/components/route-skeleton";
 
 export function ProtectedRoute({
   path,
@@ -46,9 +47,13 @@ export function ProtectedRoute({
   if (isLoading || (!user && ssoStatusLoading)) {
     return (
       <Route path={path} nest={nest}>
-        <div className="flex items-center justify-center min-h-screen">
-          <Loader2 className="h-8 w-8 animate-spin text-border" />
-        </div>
+        <RouteSkeleton
+          fallback={
+            <div className="flex items-center justify-center min-h-screen">
+              <Loader2 className="h-8 w-8 animate-spin text-border" />
+            </div>
+          }
+        />
       </Route>
     );
   }

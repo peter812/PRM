@@ -22,10 +22,10 @@ export async function raiseIssue(accountId: string, kind: IssueKind, job: { id: 
 }
 
 /** A job on this account got through: close the open issues that proves wrong. */
-export async function resolveIssues(accountId: string, kinds: IssueKind[], resolution: Resolution): Promise<void> {
+export async function resolveIssues(accountId: string, kinds: IssueKind[], resolution: Resolution, previousUsername?: string): Promise<void> {
   await db
     .update(socialAccountIssues)
-    .set({ status: "resolved", resolution, resolvedAt: new Date() })
+    .set({ status: "resolved", resolution, resolvedAt: new Date(), previousUsername })
     .where(and(eq(socialAccountIssues.socialAccountId, accountId), eq(socialAccountIssues.status, "open"), inArray(socialAccountIssues.kind, kinds)));
 }
 

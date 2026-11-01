@@ -49,6 +49,7 @@ import {
 } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { raiseIssue, resolveIssues } from "../account-issues";
+import { claimInstagramUserId, instagramPkOf } from "../instagram-identity";
 import { recordPostsDeletedEvents } from "../events";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -82,6 +83,8 @@ async function upsertComments(postId: string, comments: ScrapedComment[]) {
 }
 
 const infoSchema = z.object({
+  /** Instagram's user id; "" when the profile JSON lacked it. */
+  pk: z.string().optional(),
   nickname: z.string().nullable().optional(),
   bio: z.string().nullable().optional(),
   accountUrl: z.string().nullable().optional(),
@@ -94,7 +97,7 @@ const infoSchema = z.object({
   basedIn: z.string().nullable().optional(),
 });
 
-const followUser = z.object({ username: z.string().min(1), full_name: z.string().nullable().optional() });
+const followUser = z.object({ username: z.string().min(1), full_name: z.string().nullable().optional(), pk: z.string().nullable().optional() });
 const followsSchema = z.object({
   reported: z.object({ followers: z.number().int().nullable(), following: z.number().int().nullable() }),
   followers: z.array(followUser),
@@ -290,6 +293,8 @@ export class IngestError extends Error {
 
 /** Profile info: the journal snapshot, the picture when it beats the one held, and the fields the journal doesn't track. */
 export async function applyInfo(account: SocialAccount, meta: z.infer<typeof infoSchema>, file: Upload | null) {
+  const pk = instagramPkOf(meta);
+  if (pk) await claimInstagramUserId(account, pk);
   let image: ProfileImageOutcome | undefined;
   if (file) {
     const fetched = await profileImageFromBuffer(file.buffer, file.mimetype ?? "image/jpeg", meta.externalImageUrl ?? undefined);

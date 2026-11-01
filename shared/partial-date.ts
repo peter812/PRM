@@ -3,14 +3,9 @@
  * "YYYY-MM" or "YYYY-MM-DD". As strings they sort chronologically, so plain
  * string comparison orders them.
  */
-import { z } from "zod";
 
 /** End date of a past address whose real end is unknown (old TPS records). */
 export const UNKNOWN_END = "0000";
-
-export const partialDate = z
-  .string()
-  .regex(/^(\d{4})(-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?)?$/, "Use YYYY, YYYY-MM or YYYY-MM-DD");
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 

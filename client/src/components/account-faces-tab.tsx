@@ -329,7 +329,7 @@ function FacePhotoDialog({ face, label, removing, onRemove, onClose, actions }: 
           <div className="flex items-start justify-between gap-2">
             {face.postId && face.postAccountId ? (
               <Button variant="outline" size="sm" asChild>
-                <Link href={`/social-accounts/${face.postAccountId}?postId=${face.postId}`}>Open {face.source === "story" ? "story" : "post"}</Link>
+                <Link href={`/social-accounts/${face.postAccountId}?postId=${face.postId}`} onClick={onClose}>Open {face.source === "story" ? "story" : "post"}</Link>
               </Button>
             ) : <span />}
             {actions ?? (

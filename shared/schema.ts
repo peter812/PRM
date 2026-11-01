@@ -3,7 +3,6 @@ import { pgTable, text, varchar, timestamp, date, integer, serial, boolean, json
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import { partialDate } from "./partial-date";
 
 // Career and Education interfaces for database JSONB columns
 export interface JobExperience {
@@ -324,6 +323,8 @@ export const socialAccountTypes = pgTable("social_account_types", {
 export const socialAccounts = pgTable("social_accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull(),
+  // Instagram's numeric user id (`pk`): the one handle on an account that survives a rename.
+  instagramUserId: text("instagram_user_id"),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
   groupId: varchar("group_id").references((): AnyPgColumn => groups.id, { onDelete: "cascade" }),
   typeId: varchar("type_id").references(() => socialAccountTypes.id, { onDelete: "set null" }),
@@ -405,6 +406,7 @@ export const socialAccounts = pgTable("social_accounts", {
   index("social_accounts_type_id_idx").on(t.typeId),
   index("social_accounts_interest_level_idx").on(t.interestLevel),
   index("social_accounts_scan_due_idx").on(t.scanDueAt).where(sql`scan_due_at IS NOT NULL`),
+  uniqueIndex("social_accounts_instagram_user_id_idx").on(t.instagramUserId).where(sql`instagram_user_id IS NOT NULL`),
 ]);
 
 // One row per day of social_accounts totals, written by the daily stats scheduler.
@@ -1610,6 +1612,11 @@ export const insertPersonSchema = createInsertSchema(people)
     politicalLibAuth: z.number().min(-10).max(10).optional().nullable(),
     politicalUpdatedAt: z.coerce.date().optional().nullable(),
   });
+
+// Partial dates (shared/partial-date.ts); the schema lives here so the client formatters don't pull in zod.
+export const partialDate = z
+  .string()
+  .regex(/^(\d{4})(-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?)?$/, "Use YYYY, YYYY-MM or YYYY-MM-DD");
 
 export const insertPersonAddressSchema = z.object({
   address: z.string().trim().min(1, "Address is required"),

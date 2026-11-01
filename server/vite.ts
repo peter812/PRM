@@ -24,6 +24,8 @@ export async function setupVite(app: Express, server: Server) {
     middlewareMode: true,
     hmr: { server },
     allowedHosts: true as const,
+    // Transform the shell (and Tailwind via index.css) and /me at startup, not on the first page load.
+    warmup: { clientFiles: ["./src/main.tsx", "./src/pages/me-profile.tsx"] },
   };
 
   const vite = await createViteServer({

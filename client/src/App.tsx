@@ -19,6 +19,7 @@ import { PrmS3StatusGuard } from "@/components/prm-s3-status";
 import { Button } from "@/components/ui/button";
 import { Settings, Home, Loader2 } from "lucide-react";
 import { SettingsSidebar } from "@/components/settings-sidebar";
+import { RouteSkeleton } from "@/components/route-skeleton";
 import { withImageSize } from "@shared/image-size";
 
 const PersonDialog = lazy(() =>
@@ -209,7 +210,7 @@ function LoadingState() {
 
 function Router() {
   return (
-    <Suspense fallback={<LoadingState />}>
+    <Suspense fallback={<RouteSkeleton fallback={<LoadingState />} />}>
       <Switch>
         <Route path="/welcome" component={WelcomePage} />
         <Route path="/auth" component={AuthPage} />
@@ -239,7 +240,7 @@ function Router() {
         <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
         <ProtectedRoute path="/demos" component={DemosPage} />
         <ProtectedRoute path="/games" component={GamesPage} />
-        <ProtectedRoute path="/describe-me" component={DescribeMePage} />
+        <ProtectedRoute path="/describe-me" component={() => <Redirect to="/demos/describe-me" />} />
         <ProtectedRoute path="/games/political-leaning" component={() => <Redirect to="/demos/political-leaning" />} />
         <ProtectedRoute path="/political-leaning-game" component={() => <Redirect to="/demos/political-leaning" />} />
         <ProtectedRoute path="/face-review" component={FaceReview} />
@@ -258,6 +259,7 @@ function Router() {
         <ProtectedRoute path="/demos/elo-ranking" component={EloRanking} />
         <ProtectedRoute path="/demos/political-leaning" component={PoliticalLeaningGamePage} />
         <ProtectedRoute path="/demos/account-matching" component={AccountMatching} />
+        <ProtectedRoute path="/demos/describe-me" component={DescribeMePage} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />

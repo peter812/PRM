@@ -28,6 +28,8 @@ import {
   capturesFollowing,
   type CaptureScope,
 } from "./social-account-history";
+import { followRename, instagramPkOf } from "./instagram-identity";
+import type { SocialAccount } from "@shared/schema";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -4307,12 +4309,13 @@ const handleOf = (row: any): string =>
 
 /**
  * Resolves scraped handles to social account ids, creating the ones PRM has never
- * seen before.
+ * seen before. A row carrying `pk` (Instagram's user id) matches by id first, so a
+ * renamed account is followed to its new handle rather than duplicated.
  *
  * The previous implementation ran two queries and up to two writes per CSV row, so a
- * 10,000-follower pull cost roughly 30,000 round trips. This does it in three
- * statements regardless of size, which is also what lets the whole ingest sit inside
- * a single transaction.
+ * 10,000-follower pull cost roughly 30,000 round trips. This does it in a handful of
+ * chunked statements regardless of size (plus one rename per renamed account), which
+ * is also what lets the whole ingest sit inside a single transaction.
  */
 export async function resolveScrapedAccounts(
   rows: any[],
@@ -4329,15 +4332,53 @@ export async function resolveScrapedAccounts(
 
   const handles = [...byHandle.keys()];
   const resolved = new Map<string, string>();
+  // Instagram's user id, where the scrape carried one: it names the row whatever the handle is now.
+  const pkFor = new Map<string, string>();
+  const handleFor = new Map<string, string>();
+  for (const [handle, row] of byHandle) {
+    const pk = instagramPkOf(row);
+    if (pk && !handleFor.has(pk)) {
+      pkFor.set(handle, pk);
+      handleFor.set(pk, handle);
+    }
+  }
 
   const CHUNK = 500;
-  for (let i = 0; i < handles.length; i += CHUNK) {
-    const batch = handles.slice(i, i + CHUNK);
+  const pks = [...handleFor.keys()];
+  const renamed: { account: SocialAccount; handle: string }[] = [];
+  for (let i = 0; i < pks.length; i += CHUNK) {
+    const holders = await db.select().from(socialAccounts).where(inArray(socialAccounts.instagramUserId, pks.slice(i, i + CHUNK)));
+    for (const a of holders) {
+      const handle = handleFor.get(a.instagramUserId!)!;
+      resolved.set(handle, a.id);
+      if (a.username !== handle) renamed.push({ account: a, handle });
+    }
+  }
+  // Rare, and each is a journaled rename (plus a merge when the new name already had a row).
+  for (const { account, handle } of renamed) await followRename(account, handle);
+
+  const backfill: [string, string][] = [];
+  const byName = handles.filter(h => !resolved.has(h));
+  for (let i = 0; i < byName.length; i += CHUNK) {
+    const batch = byName.slice(i, i + CHUNK);
     const existing = await db
-      .select({ id: socialAccounts.id, username: socialAccounts.username })
+      .select({ id: socialAccounts.id, username: socialAccounts.username, instagramUserId: socialAccounts.instagramUserId })
       .from(socialAccounts)
       .where(inArray(socialAccounts.username, batch));
-    for (const a of existing) resolved.set(a.username, a.id);
+    for (const a of existing) {
+      const pk = pkFor.get(a.username);
+      // A row that holds a different id is whoever had this handle before: not this account.
+      if (resolved.has(a.username) || (pk && a.instagramUserId && a.instagramUserId !== pk)) continue;
+      resolved.set(a.username, a.id);
+      if (pk && !a.instagramUserId) backfill.push([a.id, pk]);
+    }
+  }
+  for (let i = 0; i < backfill.length; i += CHUNK) {
+    await db.execute(sql`
+      UPDATE ${socialAccounts} AS sa SET instagram_user_id = v.pk
+      FROM (VALUES ${sql.join(backfill.slice(i, i + CHUNK).map(([id, pk]) => sql`(${id}, ${pk})`), sql`, `)}) AS v(id, pk)
+      WHERE sa.id = v.id AND sa.instagram_user_id IS NULL
+    `);
   }
 
   const missing = handles.filter(h => !resolved.has(h));
@@ -4349,6 +4390,7 @@ export async function resolveScrapedAccounts(
         const row = byHandle.get(handle);
         return {
           username: handle,
+          instagramUserId: pkFor.get(handle),
           typeId: typeId || undefined,
           ownerUuid: null,
           internalAccountCreationType: creationType,

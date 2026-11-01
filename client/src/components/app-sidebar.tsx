@@ -138,11 +138,6 @@ const menuItems = [
         url: "/guess-the-sex",
         icon: HelpCircle,
       },
-      {
-        title: "Describe Me",
-        url: "/describe-me",
-        icon: MessageSquareText,
-      },
     ],
   },
   {
@@ -176,6 +171,11 @@ const menuItems = [
         url: "/demos/elo-ranking",
         icon: Trophy,
       },
+      {
+        title: "Describe Me",
+        url: "/demos/describe-me",
+        icon: MessageSquareText,
+      },
     ],
   },
 ];
@@ -191,7 +191,8 @@ export function AppSidebar() {
 
   const { data: faceReviewCounts } = useQuery<{ total: number }>({
     queryKey: ["/api/face-review/counts"],
-    refetchInterval: 60_000,
+    // The counts query is expensive: fetch once per page load; face actions invalidate it.
+    staleTime: Infinity,
   });
   const faceReviewTotal = faceReviewCounts?.total ?? 0;
 

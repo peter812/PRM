@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 import { useLocation } from "wouter";
@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { SocialAccountWithCurrentProfile } from "@shared/schema";
-import { LinkSocialAccountDialog } from "./link-social-account-dialog";
+
+const LinkSocialAccountDialog = lazy(() => import("./link-social-account-dialog").then((m) => ({ default: m.LinkSocialAccountDialog })));
 
 interface PersonSocialAccountsChipsProps {
   personId: string;
@@ -125,12 +126,16 @@ export function PersonSocialAccountsChips({
         )}
       </div>
 
-      <LinkSocialAccountDialog
-        open={isDialogOpen}
-        onOpenChange={handleDialogClose}
-        personId={personId}
-        linkedAccountIds={socialAccountUuids}
-      />
+      {isDialogOpen && (
+        <Suspense fallback={null}>
+          <LinkSocialAccountDialog
+            open
+            onOpenChange={handleDialogClose}
+            personId={personId}
+            linkedAccountIds={socialAccountUuids}
+          />
+        </Suspense>
+      )}
     </>
   );
 }
