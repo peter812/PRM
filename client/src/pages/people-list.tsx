@@ -29,7 +29,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { Person } from "@shared/schema";
-import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
+import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/phone-utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { withImageSize } from "@shared/image-size";
 import { useToast } from "@/hooks/use-toast";

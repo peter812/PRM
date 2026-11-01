@@ -28,6 +28,7 @@ import { registerRoutes as registerReferences } from "./routes/references";
 import { registerRoutes as registerRecog } from "./routes/recog";
 import { registerSetupServicesRoutes } from "./routes/setup-services";
 import { registerSummaryRoutes } from "./routes/summaries";
+import { registerPromptRoutes } from "./routes/prompts";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Register sub-route modules.
@@ -54,6 +55,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerAiVector(app);
   registerAiProviders(app);
   registerSummaryRoutes(app);
+  registerPromptRoutes(app);
   registerMessages(app);
   registerOsint(app);
   registerInsights(app);

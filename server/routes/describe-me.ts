@@ -10,6 +10,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { extractJsonObject } from "../json-extract";
 import { AiConfigError, asData, chat, DATA_TAGS_NOTE, resolveModel } from "../ai/provider";
+import { getPrompt } from "../prompts";
 import {
   applyDescribeMeSchema,
 
@@ -95,23 +96,9 @@ export const DESCRIBE_ME_TOOLS = [
   },
 ];
 
-function buildSystemPrompt(): string {
+async function buildSystemPrompt(): Promise<string> {
   const today = new Date().toISOString().split("T")[0];
-  return `You analyze a spoken, informal description of a person and extract structured information for their contact profile.
-Today's date is ${today}.
-${DATA_TAGS_NOTE}
-
-You have 3 tools to propose updates for this person:
-1. create_potential_interaction: Call for any interactions, meetings, conversations, or events mentioned (resolve relative dates like "yesterday", "last weekend" using today's date: ${today}).
-2. create_potential_note: Call for general facts, personal background, preferences, hobbies, and traits (write in third person, concise, no conversational filler).
-3. create_potential_tags: Call to propose keyword tags (skills, roles, locations, hobbies).
-
-Call all relevant tools. If your environment does not support native function/tool calling, respond with ONLY a JSON object:
-{
-  "interactions": [ { "title": "...", "date": "YYYY-MM-DD", "description": "...", "type": "..." } ],
-  "notes": [ { "title": "...", "content": "..." } ],
-  "tags": [ "tag1", "tag2" ]
-}`;
+  return `${await getPrompt("describeMe")}\n\nToday's date is ${today}.\n${DATA_TAGS_NOTE}`;
 }
 
 export function parseExtractionResponse(rawResponse: any, transcript: string): DescribeMeExtractionResult & { bullets: string[] } {
@@ -314,7 +301,7 @@ export function registerRoutes(app: Express) {
       const { content, toolCalls } = await chat(resolved, {
         tools: DESCRIBE_ME_TOOLS,
         messages: [
-          { role: "system", content: buildSystemPrompt() },
+          { role: "system", content: await buildSystemPrompt() },
           { role: "user", content: `The person being described is ${person.firstName} ${person.lastName}.
 
 Description:

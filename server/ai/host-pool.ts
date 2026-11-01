@@ -29,13 +29,47 @@ function wakeWaiters() {
  * calls hold their Member and release/mark-down on it, so a copy would leak slots.
  */
 export function setHostPool(entries: { provider: AiProvider; slots: number; mlx: boolean }[]): void {
+  const sameAuthAndUrl = (a: AiProvider, b: AiProvider) =>
+    a.baseUrl === b.baseUrl &&
+    a.authType === b.authType &&
+    a.username === b.username &&
+    a.secret === b.secret &&
+    a.isExternal === b.isExternal;
+  const sameOrder =
+    entries.length === members.length &&
+    entries.every((e, i) => members[i].provider.id === e.provider.id);
+  const changed =
+    !sameOrder ||
+    entries.some((e, i) => {
+      const m = members[i];
+      return (
+        m.slots !== e.slots ||
+        m.mlx !== e.mlx ||
+        m.provider.name !== e.provider.name ||
+        !sameAuthAndUrl(m.provider, e.provider)
+      );
+    });
+
   members = entries.map(({ provider, slots, mlx }) => {
     const prior = members.find((m) => m.provider.id === provider.id);
     if (!prior) return { provider, slots, mlx, inFlight: 0, downUntil: 0, tokensPerSecond: null };
+    if (!sameAuthAndUrl(prior.provider, provider)) {
+      prior.downUntil = 0;
+    }
     return Object.assign(prior, { provider, slots, mlx });
   });
-  nextIndex = 0;
-  wakeWaiters();
+
+  if (!sameOrder) {
+    nextIndex = 0;
+  } else if (members.length > 0) {
+    nextIndex %= members.length;
+  } else {
+    nextIndex = 0;
+  }
+
+  if (changed) {
+    wakeWaiters();
+  }
 }
 
 /** Total slots across the pool; 0 = pool off. */
@@ -74,8 +108,9 @@ function pick(): Member | undefined {
   return best;
 }
 
-async function acquire(): Promise<Member> {
+async function acquire(): Promise<Member | undefined> {
   for (;;) {
+    if (hostPoolSlots() <= 0) return undefined;
     const m = pick();
     if (m) {
       m.inFlight++;
@@ -85,11 +120,14 @@ async function acquire(): Promise<Member> {
     const now = Date.now();
     const backAt = Math.min(...members.map((x) => (x.downUntil > now ? x.downUntil : Infinity)));
     await new Promise<void>((resolve) => {
-      const timer = Number.isFinite(backAt) ? setTimeout(resolve, backAt - now) : undefined;
-      waiters.push(() => {
+      const wake = () => {
         clearTimeout(timer);
+        const idx = waiters.indexOf(wake);
+        if (idx !== -1) waiters.splice(idx, 1);
         resolve();
-      });
+      };
+      const timer = Number.isFinite(backAt) ? setTimeout(wake, Math.max(0, backAt - now)) : undefined;
+      waiters.push(wake);
     });
   }
 }
@@ -99,11 +137,23 @@ function release(m: Member) {
   wakeWaiters();
 }
 
-/** Run fn on a free host with the model name that host serves; on an unreachable host, mark it down and retry on another. */
-export async function runOnHost<T>(model: string, fn: (provider: AiProvider, model: string) => Promise<T>): Promise<T> {
+/**
+ * Run fn on a free host with the model name that host serves; on an unreachable host, mark it down and retry on another.
+ * If the pool becomes empty while waiting, falls back to the resolved provider when given (or throws if none).
+ */
+export async function runOnHost<T>(
+  modelOrFallback: string | { provider: AiProvider; model: string },
+  fn: (provider: AiProvider, model: string) => Promise<T>,
+): Promise<T> {
+  const model = typeof modelOrFallback === "string" ? modelOrFallback : modelOrFallback.model;
+  const fallbackProvider = typeof modelOrFallback === "string" ? undefined : modelOrFallback.provider;
   let unreachableSince = 0;
   for (;;) {
     const m = await acquire();
+    if (!m) {
+      if (fallbackProvider) return fn(fallbackProvider, model);
+      throw new Error("No available hosts in host pool");
+    }
     try {
       return await fn(m.provider, m.mlx ? `${model}-mlx` : model);
     } catch (err) {

@@ -22,6 +22,7 @@ import { searchUniversal } from "./vector-universal";
 import { searchAppKnowledge } from "./vector-app-knowledge";
 import { computeFamilyLabels } from "./family-relations-helper";
 import { chat as aiChat, resolveModel, type AiMessage, type ResolvedModel } from "./ai/provider";
+import { getPrompt } from "./prompts";
 import type { AiUserAnswer, AiUserQuestion } from "@shared/schema";
 import { INTEREST_LEVEL_LABEL, type InterestLevel } from "@shared/interest-level";
 
@@ -253,24 +254,6 @@ function matchesQuery(haystack: string | null | undefined, q: string): boolean {
 const MAX_USER_QUESTIONS = 3;
 const MAX_QUESTION_CHARS = 300;
 const MAX_LABEL_CHARS = 60;
-
-/**
- * System-prompt addendum appended by the streaming chat loop whenever the
- * `ask_user` tool is enabled. Kept next to the tool so guidance and schema
- * evolve together.
- */
-export const ASK_USER_SYSTEM_INSTRUCTIONS =
-  "\n\n[ASKING THE USER QUESTIONS]\n" +
-  "You have an ask_user tool. Calling it pauses your turn and shows the user a short form; their answers come back as the tool result and you then continue in the same turn. " +
-  "Use it only when a decision genuinely depends on the user: the request is ambiguous, required information is missing, or you must choose between materially different actions. " +
-  "Do NOT use it for anything you can look up with your other tools, and never just to confirm you understood. " +
-  "Ask at most 3 questions per call and batch related questions into one call rather than asking one at a time. Keep every question short and self-contained.\n" +
-  "Question types: " +
-  "true_false for a yes/no decision; " +
-  "multiple_choice for 2–4 mutually exclusive options (an 'Other' free-text option is offered automatically, so the user can give a more nuanced answer if your choices don't fit — set allowOther to false only when the answer must be one of your choices); " +
-  "open_ended for free text you cannot enumerate; " +
-  "slider for degree, intensity, or preference — set lowLabel and highLabel to describe the two ends; the answer arrives as a number from 0 (low) to 100 (high).\n" +
-  "When the answers arrive, act on them immediately and do not re-ask. If the result says the user skipped, proceed with a sensible default and state the assumption you made.";
 
 /** Validate + clamp the raw `questions` arg from the model into well-formed AiUserQuestion[]. */
 function sanitizeUserQuestions(raw: unknown): AiUserQuestion[] {
@@ -1098,7 +1081,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
           const messagesPayload: AiMessage[] = [
             {
               role: "system",
-              content: `You are an expert AI summarizer. Your task is to condense large conversation logs and chat history into short, high-density, accurate summaries. Focus on extracting key dates, facts, plans, and answers to any special highlight instructions, removing all filler and small talk.`,
+              content: await getPrompt("chatSummarize"),
             },
             {
               role: "user",

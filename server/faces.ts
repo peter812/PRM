@@ -8,7 +8,7 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import { faces, people, photos, socialAccounts } from "@shared/schema";
-import { resolvePhotoSource, type ResolvedPhotoSource } from "./photo-source";
+import { resolvePhotoSources, type ResolvedPhotoSource } from "./photo-source";
 import { findLikelySameCandidatePairs, type LikelySameCandidate } from "./face-lookalikes";
 import { photosContainingFaces } from "./recognition";
 
@@ -283,24 +283,22 @@ export async function knownFaceDetail(
     pos += chunk.length;
     const photoRows = await db.select().from(photos).where(inArray(photos.id, chunk));
     const photoById = new Map(photoRows.map((p) => [p.id, p]));
-    const entries = await Promise.all(
-      chunk.map(async (photoId) => {
-        const photo = photoById.get(photoId);
-        if (!photo) return null;
-        const source = await resolvePhotoSource(photo);
-        if (!source) return null;
-        return {
-          photoId,
-          imageUrl: photo.location,
-          width: photo.widthPx,
-          height: photo.heightPx,
-          faces: facesByPhoto.get(photoId)!.map((f) => ({ faceUuid: f.id, box: normalizeBox(f.coordinates), autoMatchScore: f.autoMatchScore })),
-          uploadedAt: photo.uploadedAt ? new Date(photo.uploadedAt).toISOString() : null,
-          source,
-        };
-      }),
-    );
-    for (const e of entries) if (e) visible.push(e);
+    const sourcesMap = await resolvePhotoSources(photoRows);
+    for (const photoId of chunk) {
+      const photo = photoById.get(photoId);
+      if (!photo) continue;
+      const source = sourcesMap.get(photoId);
+      if (!source) continue;
+      visible.push({
+        photoId,
+        imageUrl: photo.location,
+        width: photo.widthPx,
+        height: photo.heightPx,
+        faces: facesByPhoto.get(photoId)!.map((f) => ({ faceUuid: f.id, box: normalizeBox(f.coordinates), autoMatchScore: f.autoMatchScore })),
+        uploadedAt: photo.uploadedAt ? new Date(photo.uploadedAt).toISOString() : null,
+        source,
+      });
+    }
   }
 
   return { header, photos: visible, nextCursor: pos < ordered.length ? String(pos) : null };

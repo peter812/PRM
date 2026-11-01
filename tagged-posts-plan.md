@@ -40,6 +40,49 @@ Nothing under `runs/*/raw` has a Tagged-tab response yet, so the parser can't be
 
 **Done when:** raw payloads are saved for all three cases and the fields above are known.
 
+### Findings (2026-10-28, `@audreys.rulz`, `runs/20261028T0957-tagged/`)
+
+Only one account was captured: a public one with 7 tagged posts. The private-followed, empty and
+multi-page cases are **not captured yet**. Re-run
+`npx tsx scripts/explore-tagged.ts <user> …` on such accounts before relying on the empty, private
+or pagination handling.
+
+**The feed:** `POST /api/graphql`, friendly name **`PolarisProfileTaggedTabContentQuery`**
+(doc_id `28512785875070926` today; match on the friendly name, since doc_ids rotate).
+- Variables are `{ count: 12, user_id }`, with an `after` cursor expected on later pages.
+- Body path: `data.xdt_api__v1__usertags__user_id__feed_connection` → `{ edges[].node, page_info }`.
+- `page_info` = `{ end_cursor, has_next_page }`. A single page reads `end_cursor: "None"` (a string)
+  with `has_next_page: false`.
+- The feed loads right after the tab click. The other responses at that moment (suggested users,
+  quick promotion) are not media, so filtering on the friendly name is enough.
+
+**What a feed node has, and what it lacks:**
+
+| Field | Feed node | `postMeta` needs it |
+|---|---|---|
+| `pk`, `code`, `media_type`, `product_type`, `caption.text`, `like_count`, `comment_count`, `like_and_view_counts_disabled`, `coauthor_producers`, `timeline_pinned_user_ids` | ✓ | ✓ |
+| `carousel_media[].image_versions2.candidates[0]` (full size, e.g. 4032 px) | ✓ | `slideBytes` ✓ |
+| `user` = **the poster**: `pk`, `username`, `full_name`, `profile_pic_url` (**s150x150**, the LQ picture) | ✓ | poster ✓ |
+| `taken_at` | **missing** | required |
+| slide `usertags` | **null** | `mentionedAccounts` |
+| `location`, music, `original_width/height` on slides, `video_versions` | **missing** | optional |
+
+Private accounts' posts have long codes (`DVnH8Xul…`), so the code is not always a plain shortcode.
+Nothing in this plan decodes codes.
+
+**The viewer has the rest.** Clicking a cell opens the post modal and loads
+**`GET /api/v1/media/<pk>/info/`**: the classic v1 `items[0]` with `taken_at`, per-slide
+`usertags.in`, `location`, music and video, the same shape `postMeta` already reads. It also loads
+`/api/v1/media/<pk>/comments/`. **ArrowRight steps to the next tagged post**
+(`/p/DeS_ZxJG5_K/` → `/p/DceThuuDxmR/`), so `PostViewer` works on the Tagged grid as it does on Posts.
+
+**Consequences for Phase 3:**
+- Every new tagged post must be opened in the viewer (`needsViewer = () => true`). Wait for
+  `wire.media.get(pk)?.taken_at` before calling `postMeta`.
+- The poster's `{ username, fullName, profilePicUrl }` comes from the **feed node's `user`**, which is
+  already in hand. The info item's `user` works too.
+- Viewer cost: one modal step per new post. A second run only opens posts that are new since the last.
+
 ---
 
 ## Phase 1: PRM schema and shared constants
@@ -74,6 +117,23 @@ following the migration-ledger pattern.
   computes cadence or due dates per kind must skip `tagged`, because it is manual only.
 
 **Done when:** `npm run check` passes and the migration applies cleanly against the dev DB.
+
+### Done (2026-10-28)
+
+- The table, relations, `SocialAccountPostTag` type, `taggedCheckedAt`, the db-init migration and the
+  `tagged` kind and label are in. The migration was applied to the dev DB.
+- `tagged` was added to every kind-keyed map: `CHECKED_COLUMN` and `CHECKED_SQL_COLUMN`, the
+  `FOLLOWED_BY_ME` and `queueAccountsRefresh` column lists, `account-tracking.tsx` `CHECKED`, and the
+  task-worker XML export/import.
+- No cadence code needed changing, because the schedule only ever creates `scan`.
+- `claimedJob` sends `comments: false` for tagged.
+- `trackingBlocker` treats a private account as blocked for tagged, as it does for posts.
+- Because the kind now shows in every kind dropdown, a stopgap was needed in PRM-stories until
+  Phase 3: `JOB_KINDS` has `"tagged"`, and the dispatch finishes the job as **failed** ("not
+  implemented yet").
+  - The kind is needed so `/track` doesn't 400 the whole run.
+  - Not `skipped`: PRM requeues a skip whose reason isn't `private`/`not_found` up to 3 times.
+  - Phase 3 replaces this branch.
 
 ---
 
@@ -139,6 +199,35 @@ for nothing older than its last node, the same rule `applyPostsSection` uses.
 under a new poster at level `none`, creates the link, queues the LQ picture and starts recognition;
 and `/link` and `/check` behave as specified.
 
+### Done (2026-10-28): what was built, where it differs from the plan above
+
+- **No `/tagged/link` route, and no `linkOnly`.** `/result` for a tagged job links every `seenPks`
+  post that PRM holds, whatever the job's status. So `/tagged/check` is just "which pks does PRM
+  hold", the same as `/posts/check`.
+  - Both check paths share one handler.
+  - `/posts` and `/tagged` also share one handler, which passes `{ taggedAccountId }` and links on
+    `/tagged`.
+- **Removals:** these are only stamped by a `completed` + `complete` run that saw at least one held
+  post.
+  - An empty tab is reported as `removalsSkipped: "empty_scan"`.
+  - An incomplete run is reported as `"incomplete"`.
+  - The result gets `{ linked, markedRemoved | removalsSkipped }`.
+  - `markChecked(…, "tagged")` comes from the existing completed/private/not_found path.
+- **`postMetaSchema.poster`** is `{ username, fullName?, profilePicUrl? }`.
+  - `author` falls back to `poster.username`.
+  - `fullName` names a newly created account, which is created with type `"prm-stories tagged"`.
+- **The LQ picture is queued only when the poster has no `imageUrl`.** Two posts by the same new
+  poster in one job would queue two downloads. **Phase 3 therefore sends `poster.profilePicUrl` only
+  on the first post per poster in a job.**
+- **`GET /api/social-accounts/:id/tagged-posts`** is in `server/routes/social-media.ts`, next to
+  `/posts`.
+  - It has `includeRemoved` and `includeDeleted`.
+  - It sorts newest first, the same as `/posts`. The Posts tab sorts on the client, so it needs no
+    `?sort=`.
+- **Verified:** the link upsert, re-tagging after a removal and the read join were checked against
+  the dev DB in a rolled-back transaction. The full multipart → poster → picture → recognition path
+  waits for the Phase 3 run.
+
 ---
 
 ## Phase 3: PRM-stories `tagged` job
@@ -167,8 +256,10 @@ and `/link` and `/check` behave as specified.
 1. `collectTagged` → pks.
 2. `checkTagged` → `linkTagged(linkOnly)` in one call. Drop `existing` and `linkOnly` from the targets.
 3. For each remaining target, run the same per-post path as `jobPosts`: `postMeta` plus `slideBytes`.
-   Open the viewer only for video (and for comments when `job.comments` is true, which it isn't
-   for now). Add `poster: { username, fullName, profilePicUrl }` from `owner(node)`.
+   Unlike Posts, **every target opens in the viewer**, because the feed node has no `taken_at` or
+   usertags (Phase 0 findings). Wait for `/media/<pk>/info/` to land in `wire.media` with `taken_at`,
+   then build `postMeta` from that node. Comments are read only when `job.comments` is true, which it
+   isn't for now. Add `poster: { username, fullName, profilePicUrl }` from the feed node's `user`.
 4. `tracking.tagged(...)` per post, counting stored, duplicate and failed posts as `jobPosts` does.
 5. `finish(job, "completed", { status: "completed", seenPks, complete, counts })`.
 
@@ -177,6 +268,24 @@ jobs call, instead of copying ~60 lines.
 
 **Done when:** `npm run tagged -- <user>` writes a sensible manifest, and a live run through PRM
 stores new posts, links already-held ones, and reports `complete`.
+
+### Done (2026-10-28): what was built, where it differs from the plan above
+
+- `Wire.tagged` (`{nodes, more}`) is filled in `ingest()` from any response whose `data` key
+  contains `usertags` and has `edges`: matched by shape, not by the GraphQL friendly name.
+  `collectTagged` resets it, clicks the tab and scrolls with `End` like `collectGrid`. If no page
+  arrives in 15 s it returns empty+complete when the tab says "No photos" / "Photos of you",
+  and otherwise it fails.
+- The `jobPosts` loop is now `readPosts(…, needsViewer, deliver)`, used by both jobs. Tagged
+  passes `needsViewer = () => true`. The viewer wait now also covers nodes without `taken_at`, and
+  a post whose detail never lands fails with "post details did not load".
+- `PostViewer` takes a `tab` (`"tagged/"`), so its fallback reload goes back to the Tagged tab, not
+  the grid.
+- No `linkTagged` call, per Phase 2: `/result` links held posts from `seenPks`. `poster` goes on
+  every post, but `profilePicUrl` only on the first one per poster in a job.
+- `taggedSink(jobId)` → `tracking.checkTagged` / `tracking.tagged`. The dry run writes the
+  standard bundle `posts` section to `runs/<stamp>-tagged/<user>/manifest.json`; `--comments`
+  turns comments on there.
 
 ---
 
@@ -216,6 +325,31 @@ view, add the Tagged view there too. Otherwise nothing changes.
 **Done when:** in the browser preview, an account's History dropdown queues *Tagged posts*, the job
 runs, and the Tagged tab shows the imported posts with poster badges. Opening a post shows its
 detail, and the poster's own Posts tab shows the same post.
+
+### Done (2026-10-28): what was built, where it differs from the plan above
+
+- **4.1:** No code. *Tagged posts* shows in History's *Update from PRM Stories* menu (seen in the
+  preview). Queuing it is left for Phase 5, because it starts a real scrape.
+- **4.2:** `components/social-posts-grid.tsx` holds the Posts tab's skeleton, cards and empty-state
+  slot, unchanged.
+  - It takes a `renderByline` prop instead of a badge, and `dimmed`.
+  - The page's sort and Sort select are now shared too (`sortPosts`, `postSortSelect`), as is
+    `openPost`.
+- **4.3:** The Tagged tab sits after Posts (`?tab=tagged`).
+  - The header reads *Tagged posts (n)*, with Sort and a *Retrieve Tagged Posts* button.
+  - The byline is the poster's avatar plus @username, linked to their account. When the tag was
+    removed, the card is dimmed and the byline says *Tag removed*.
+  - The thumbnail is the slide that tags this account, taken from the post's `mentionedAccounts`
+    (`coverIndex`). If no slide matches, it falls back to the first. Opening the post starts the
+    detail dialog on that same slide (`initialImageIndex`).
+  - The tracking-jobs poll also runs on this tab. When a tagged job leaves queued or running, it
+    refreshes `tagged-posts`. Deleting a post refreshes it as well.
+- **4.4:** No change. Neither `person-profile.tsx` nor `me-profile.tsx` embeds the account Posts view.
+- **Checked in the preview:** Posts (42) renders through the shared grid, and the Tagged tab shows
+  its empty state on `@audreys.rulz`. Tagged posts with bylines will be seen after Phase 5's live
+  run.
+- **Known gap:** opening a tagged post uses this page's `PostDetailDialog`, so its edit and delete act
+  on the post itself (owned by the poster). This is fine for a single user.
 
 ---
 

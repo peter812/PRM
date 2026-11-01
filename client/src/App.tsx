@@ -18,7 +18,8 @@ import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { PrmS3StatusGuard } from "@/components/prm-s3-status";
 import { Button } from "@/components/ui/button";
 import { Settings, Home, Loader2 } from "lucide-react";
-import { SettingsSidebar } from "@/pages/settings-layout";
+import { SettingsSidebar } from "@/components/settings-sidebar";
+import { withImageSize } from "@shared/image-size";
 
 const PersonDialog = lazy(() =>
   import("@/components/person-dialog").then((m) => ({ default: m.PersonDialog }))
@@ -68,6 +69,7 @@ const MapDemo = lazy(() => import("@/pages/map-demo"));
 const GoogleMapPage = lazy(() => import("@/pages/google-map"));
 const WordCloudDemo = lazy(() => import("@/pages/word-cloud-demo"));
 const BioWordCloudDemo = lazy(() => import("@/pages/bio-word-cloud-demo"));
+const ImageSummaryWordCloudDemo = lazy(() => import("@/pages/image-summary-word-cloud-demo"));
 const OllamaParamsDemo = lazy(() => import("@/pages/ollama-params-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const EventLogDemo = lazy(() => import("@/pages/event-log-demo"));
@@ -126,7 +128,7 @@ function useSignedMediaRefresh() {
       const now = Date.now();
       if (now - lastRefetch < 30_000) return;
       lastRefetch = now;
-      queryClient.invalidateQueries();
+      queryClient.invalidateQueries({ type: "active" });
     };
     // Media error events don't bubble; capture them at the document.
     document.addEventListener("error", onError, true);
@@ -233,14 +235,13 @@ function Router() {
         <ProtectedRoute path="/graph" component={Graph} />
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
         <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
-        <ProtectedRoute path="/elo-ranking" component={EloRanking} />
+        <ProtectedRoute path="/elo-ranking" component={() => <Redirect to="/demos/elo-ranking" />} />
         <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
-        <ProtectedRoute path="/account-matching" component={AccountMatching} />
         <ProtectedRoute path="/demos" component={DemosPage} />
         <ProtectedRoute path="/games" component={GamesPage} />
         <ProtectedRoute path="/describe-me" component={DescribeMePage} />
-        <ProtectedRoute path="/games/political-leaning" component={PoliticalLeaningGamePage} />
-        <ProtectedRoute path="/political-leaning-game" component={PoliticalLeaningGamePage} />
+        <ProtectedRoute path="/games/political-leaning" component={() => <Redirect to="/demos/political-leaning" />} />
+        <ProtectedRoute path="/political-leaning-game" component={() => <Redirect to="/demos/political-leaning" />} />
         <ProtectedRoute path="/face-review" component={FaceReview} />
         <ProtectedRoute path="/unknown-faces" component={FaceReview} />
         <ProtectedRoute path="/faces" component={Faces} />
@@ -249,10 +250,14 @@ function Router() {
         <ProtectedRoute path="/demos/google-map" component={GoogleMapPage} />
         <ProtectedRoute path="/demos/word-cloud" component={WordCloudDemo} />
         <ProtectedRoute path="/demos/bio-word-cloud" component={BioWordCloudDemo} />
+        <ProtectedRoute path="/demos/image-summary-word-cloud" component={ImageSummaryWordCloudDemo} />
         <ProtectedRoute path="/demos/ollama-params" component={OllamaParamsDemo} />
         <ProtectedRoute path="/demos/event-log" component={EventLogDemo} />
         <ProtectedRoute path="/demos/roster-import" component={RosterImportDemo} />
         <ProtectedRoute path="/demos/references" component={ReferencesPage} />
+        <ProtectedRoute path="/demos/elo-ranking" component={EloRanking} />
+        <ProtectedRoute path="/demos/political-leaning" component={PoliticalLeaningGamePage} />
+        <ProtectedRoute path="/demos/account-matching" component={AccountMatching} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />
@@ -302,6 +307,29 @@ function useInitialRoutePrefetch(location: string) {
         },
         initialPageParam: 0,
       });
+    } else if (location === "/me") {
+      // Fetch the page chunk and /api/me alongside the auth check instead of after it,
+      // then warm the profile photo (the page's LCP element) as soon as its URL is known.
+      void import("@/pages/me-profile");
+      queryClient
+        .fetchQuery<{ imageUrl?: string | null }>({ queryKey: ["/api/me"] })
+        .then((me) => {
+          // Must match the large profile image src in me-profile.
+          if (me?.imageUrl) new Image().src = withImageSize(me.imageUrl, 480);
+        })
+        .catch(() => {});
+    } else if (location.startsWith("/person/")) {
+      // Same as /me: chunk, person and profile photo start alongside the auth check.
+      const id = location.slice("/person/".length);
+      if (!id || id.includes("/")) return;
+      void import("@/pages/person-profile");
+      queryClient
+        .fetchQuery<{ imageUrl?: string | null }>({ queryKey: ["/api/people", id] })
+        .then((person) => {
+          // Must match the large profile image src in person-profile.
+          if (person?.imageUrl) new Image().src = withImageSize(person.imageUrl, 480);
+        })
+        .catch(() => {});
     } else if (location === "/social-accounts") {
       void import("@/pages/social-accounts-list");
       const searchStr = typeof window !== "undefined" ? window.location.search : "";

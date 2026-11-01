@@ -1,8 +1,11 @@
 import type { Express } from "express";
+import { db } from "../db";
+import { eq, inArray } from "drizzle-orm";
 import { storage } from "../storage";
 import { requireAuth } from "../auth";
 import { z } from "zod";
 import {
+  people,
   FAMILY_RELATIONSHIP_TYPES,
   FAMILY_RELATIONSHIP_LABELS,
   FAMILY_RELATIONSHIP_CATEGORIES,
@@ -31,13 +34,58 @@ export function registerRoutes(app: Express) {
   app.get("/api/people/:personId/family", async (req, res) => {
     try {
       const { personId } = req.params;
-      const person = await storage.getPersonById(personId);
+      const [person] = await db
+        .select({ id: people.id })
+        .from(people)
+        .where(eq(people.id, personId))
+        .limit(1);
+
       if (!person) {
         return res.status(404).json({ error: "Person not found" });
       }
 
-      const lineages = await storage.getLineageForPerson(personId);
-      const partnerships = await storage.getPartnershipsForPerson(personId);
+      const [lineages, partnerships] = await Promise.all([
+        storage.getLineageForPerson(personId),
+        storage.getPartnershipsForPerson(personId),
+      ]);
+
+      const relativeIdSet = new Set<string>();
+
+      for (const lin of lineages) {
+        const isChild = lin.childId === personId;
+        const relativeId = isChild ? lin.parentId : lin.childId;
+        if (relativeId) {
+          relativeIdSet.add(relativeId);
+        }
+      }
+
+      for (const part of partnerships) {
+        const relativeId = part.person1Id === personId ? part.person2Id : part.person1Id;
+        if (relativeId) {
+          relativeIdSet.add(relativeId);
+        }
+      }
+
+      if (relativeIdSet.size === 0) {
+        return res.json({ parents: [], spouses: [], children: [] });
+      }
+
+      const relativeIds = Array.from(relativeIdSet);
+      const relativePeople = await db
+        .select({
+          id: people.id,
+          firstName: people.firstName,
+          lastName: people.lastName,
+          imageUrl: people.imageUrl,
+          sex: people.sex,
+        })
+        .from(people)
+        .where(inArray(people.id, relativeIds));
+
+      type RelativePerson = (typeof relativePeople)[number];
+      const relativeMap = new Map<string, RelativePerson>(
+        relativePeople.map((r) => [r.id, r])
+      );
 
       const parents = [];
       const children = [];
@@ -46,7 +94,7 @@ export function registerRoutes(app: Express) {
       for (const lin of lineages) {
         const isChild = lin.childId === personId;
         const relativeId = isChild ? lin.parentId : lin.childId;
-        const relative = await storage.getPersonById(relativeId);
+        const relative = relativeMap.get(relativeId);
         if (!relative) continue;
 
         const roleKey = deriveLineageRole(isChild, relative.sex, lin.lineageType);
@@ -74,7 +122,7 @@ export function registerRoutes(app: Express) {
 
       for (const part of partnerships) {
         const relativeId = part.person1Id === personId ? part.person2Id : part.person1Id;
-        const relative = await storage.getPersonById(relativeId);
+        const relative = relativeMap.get(relativeId);
         if (!relative) continue;
 
         const roleLabel = FAMILY_RELATIONSHIP_LABELS[part.status] || part.status;

@@ -40,8 +40,13 @@ export type SummaryProgressCount = { done: number; total: number };
 /** Post job progress: each image plus the final combining run counts as one step. */
 export function postJobProgress(progress: SummaryJobProgress | null | undefined): SummaryProgressCount | null {
   if (!progress) return null;
-  const imagesFinished = progress.images.filter((i) => i.status === "done" || i.status === "failed").length;
-  return { done: imagesFinished + (progress.final === "done" ? 1 : 0), total: progress.images.length + 1 };
+  const finished = (s: SummaryStepStatus | undefined) => s === "done" || s === "failed";
+  const imagesFinished = progress.images.filter((i) => finished(i.status)).length;
+  const notesSteps = progress.notes ? 1 : 0; // fix jobs only
+  return {
+    done: imagesFinished + (progress.final === "done" ? 1 : 0) + (finished(progress.notes) ? 1 : 0),
+    total: progress.images.length + 1 + notesSteps,
+  };
 }
 
 /** Post jobs an account job is waiting on; postsQueued was snapshotted when the account job was queued. */

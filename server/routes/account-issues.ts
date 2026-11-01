@@ -123,9 +123,9 @@ export function registerAccountIssues(app: Express) {
       const { issue, account } = row;
       if (issue.status !== "open") return res.status(409).json({ error: "Issue is already closed" });
       const username = normalizeUsername(req.body?.username);
-      if (!username || username === account.username) return res.status(400).json({ error: "Enter a different username" });
+      if (!username || username === normalizeUsername(account.username)) return res.status(400).json({ error: "Enter a different username" });
       const duplicate = await instagramAccountNamed(username);
-      if (duplicate) return res.status(409).json({ error: `@${username} is already another account in PRM`, duplicate: { id: duplicate.id, username } });
+      if (duplicate && duplicate.id !== account.id) return res.status(409).json({ error: `@${username} is already another account in PRM`, duplicate: { id: duplicate.id, username } });
       const job = await renameAndRecheck(issue, account, username);
       res.json({ username, job });
     } catch (error) {
@@ -142,9 +142,10 @@ export function registerAccountIssues(app: Express) {
       const { issue, account } = row;
       if (issue.status !== "open") return res.status(409).json({ error: "Issue is already closed" });
       const username = normalizeUsername(req.body?.intoUsername);
-      if (!username || username === account.username) return res.status(400).json({ error: "Enter a different username" });
+      if (!username || username === normalizeUsername(account.username)) return res.status(400).json({ error: "Enter a different username" });
       const duplicate = await instagramAccountNamed(username);
       if (!duplicate) return res.status(404).json({ error: `@${username} is not in PRM — rename instead` });
+      if (duplicate.id === account.id) return res.status(400).json({ error: "Enter a different username" });
 
       const merged = await mergeSocialAccounts(account.id, duplicate.id);
       if (duplicate.vectorId) void deleteEntityVector("social_account", duplicate.vectorId);

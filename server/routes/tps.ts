@@ -201,6 +201,11 @@ export function registerRoutes(app: Express) {
     const { tpsId, firstName, lastName, city, state, phone } = parsed.data;
 
     try {
+      const existing = await findLinkedPerson(tpsId);
+      if (existing) {
+        return res.status(200).json({ personUuid: existing.id });
+      }
+
       // Provenance tags: mark the source and (when present) the location.
       const location = [city, state].filter(Boolean).join(", ");
       const tags = ["truepeoplesearch", ...(location ? [location] : [])];
@@ -348,12 +353,48 @@ export function registerRoutes(app: Express) {
   });
 
   /** Append the incoming entries whose (case-insensitive) key isn't already in the list. */
-  function mergeNew<T extends JobExperience | CollegeExperience>(existing: T[], incoming: T[], key: (e: T) => string) {
-    const seen = new Set(existing.map((e) => key(e).trim().toLowerCase()));
+  function mergeNew<T extends JobExperience | CollegeExperience>(
+    existing: T[],
+    incoming: T[],
+    key: (e: T) => string | { primary: string; detail: string },
+  ) {
+    const normalize = (e: T): { primary: string; detail: string; exactKey: string } => {
+      const res = key(e);
+      let primary = "";
+      let detail = "";
+      if (typeof res === "string") {
+        const sep = res.indexOf("|");
+        primary = (sep === -1 ? res : res.slice(0, sep)).trim().toLowerCase();
+        detail = (sep === -1 ? "" : res.slice(sep + 1)).trim().toLowerCase();
+      } else {
+        primary = (res.primary || "").trim().toLowerCase();
+        detail = (res.detail || "").trim().toLowerCase();
+      }
+      return { primary, detail, exactKey: `${primary}|${detail}` };
+    };
+
+    const seenExact = new Set<string>();
+    const hasDetail = new Set<string>();
+
+    for (const e of existing) {
+      const { primary, detail, exactKey } = normalize(e);
+      if (!primary && !detail) continue;
+      seenExact.add(exactKey);
+      if (detail) hasDetail.add(primary);
+    }
+
+    for (const e of incoming) {
+      const { primary, detail } = normalize(e);
+      if (primary && detail) hasDetail.add(primary);
+    }
+
     const fresh = incoming.filter((e) => {
-      const k = key(e).trim().toLowerCase();
-      if (seen.has(k)) return false;
-      seen.add(k);
+      const { primary, detail, exactKey } = normalize(e);
+      if (!primary && !detail) return false;
+      if (seenExact.has(exactKey)) return false;
+      if (!detail && hasDetail.has(primary)) return false;
+      seenExact.add(exactKey);
+      if (detail) hasDetail.add(primary);
       return true;
     });
     return { list: [...existing, ...fresh], added: fresh.length };
@@ -372,6 +413,19 @@ export function registerRoutes(app: Express) {
     try {
       const now = new Date();
       const result = await db.transaction(async (tx) => {
+        // If data.personId is passed for a person deleted in PRM, setting it to null
+        // prevents an unhandled PostgreSQL 23503 foreign key constraint violation.
+        if (data.personId) {
+          const [exists] = await tx
+            .select({ id: people.id })
+            .from(people)
+            .where(eq(people.id, data.personId))
+            .limit(1);
+          if (!exists) {
+            data.personId = null;
+          }
+        }
+
         const [record] = await tx
           .insert(truePersonSearch)
           .values({ ...data, importDate: now, updatedAt: now })
@@ -385,10 +439,18 @@ export function registerRoutes(app: Express) {
         );
 
         // Merge TPS jobs / colleges into the contact's profile, skipping ones they already have.
-        const jobs = mergeNew(person?.jobs ?? [], data.jobs ?? [], (j) => `${j.company}|${j.position}`);
+        const jobs = mergeNew(
+          person?.jobs ?? [],
+          data.jobs ?? [],
+          (j) => `${(j.company || "").trim().toLowerCase()}|${(j.position || "").trim().toLowerCase()}`,
+        );
         if (jobs.added) await tx.update(people).set({ jobs: jobs.list }).where(eq(people.id, data.personId));
         const [school] = await tx.select().from(schooling).where(eq(schooling.personId, data.personId));
-        const colleges = mergeNew(school?.colleges ?? [], data.colleges ?? [], (c) => `${c.name}|${c.degree}`);
+        const colleges = mergeNew(
+          school?.colleges ?? [],
+          data.colleges ?? [],
+          (c) => `${(c.name || "").trim().toLowerCase()}|${(c.degree || "").trim().toLowerCase()}`,
+        );
         if (colleges.added) {
           if (school) await tx.update(schooling).set({ colleges: colleges.list }).where(eq(schooling.id, school.id));
           else await tx.insert(schooling).values({ personId: data.personId, colleges: colleges.list });

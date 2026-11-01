@@ -31,6 +31,7 @@ const CHECKED: Record<TrackingKind, `${TrackingKind}CheckedAt`> = {
   scan: "scanCheckedAt",
   info: "infoCheckedAt",
   posts: "postsCheckedAt",
+  tagged: "taggedCheckedAt",
   highlights: "highlightsCheckedAt",
   follows: "followsCheckedAt",
 };
@@ -54,7 +55,7 @@ function untilScan(d: string | Date) {
   return days === 1 ? "tomorrow" : `in ${days} days`;
 }
 
-export function AccountTracking({ account }: { account: SocialAccount }) {
+export function AccountTracking({ account, uuid }: { account: SocialAccount; uuid?: string }) {
   const { toast } = useToast();
   const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
   const [editing, setEditing] = useState(false);
@@ -71,8 +72,11 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: [`/api/social-accounts/${account.id}`] });
-    // The account page caches the same account under this key.
+    // The account page caches the same account under this key (by id and route param uuid if different).
     queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", account.id], exact: true });
+    if (uuid && uuid !== account.id) {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid], exact: true });
+    }
     queryClient.invalidateQueries({ queryKey: [`/api/social-accounts/${account.id}/tracking-jobs`] });
   };
   const patch = useMutation({
@@ -102,7 +106,7 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
       <div className="flex items-center gap-2 mt-0.5">
         <InterestLevelSelect value={account.interestLevel} onChange={(interestLevel) => patch.mutate({ interestLevel })} className="h-8 w-36 text-xs" />
         {!account.interestLevelManual && !isNone && (
-          <span className="text-[11px] text-muted-foreground">set automatically</span>
+          <span className="text-[11px] text-muted-foreground">auto</span>
         )}
       </div>
       {nextScan && (

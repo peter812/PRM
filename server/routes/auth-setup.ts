@@ -128,7 +128,7 @@ export function registerRoutes(app: Express) {
       }
       const s = typeof req.query.s === "string" ? req.query.s : undefined;
       if (s !== undefined && !isValidImageSize(s)) {
-        return res.status(400).json({ error: "s must be one of 64, 128, 150, 360, 480, 1080 or max" });
+        return res.status(400).json({ error: "s must be one of 64, 128, 150, 160, 360, 480, 1080 or max" });
       }
       try {
         const safeName = path.basename(req.params.filename);

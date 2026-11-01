@@ -6,7 +6,6 @@ import {
   Trophy,
   Share2,
   GitBranch,
-  Link2,
   Settings,
   LogOut,
   Mic,
@@ -83,11 +82,6 @@ const menuItems = [
     icon: AtSign,
     subItems: [
       {
-        title: "Account Matching",
-        url: "/account-matching",
-        icon: Link2,
-      },
-      {
         title: "Pending Imports",
         url: "/social-accounts/pending-imports",
         icon: Inbox,
@@ -140,11 +134,6 @@ const menuItems = [
     icon: Gamepad2,
     subItems: [
       {
-        title: "ELO Ranking",
-        url: "/elo-ranking",
-        icon: Trophy,
-      },
-      {
         title: "Guess the Sex",
         url: "/guess-the-sex",
         icon: HelpCircle,
@@ -181,6 +170,11 @@ const menuItems = [
         title: "Google Map",
         url: "/demos/google-map",
         icon: Globe,
+      },
+      {
+        title: "ELO Ranking",
+        url: "/demos/elo-ranking",
+        icon: Trophy,
       },
     ],
   },

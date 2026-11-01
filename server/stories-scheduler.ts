@@ -18,7 +18,7 @@ import { desc, eq, gt, inArray, and, lt, or } from "drizzle-orm";
 import { db } from "./db";
 import { log } from "./vite";
 import { storyImporters, storyScrapeRuns, trackingJobs, type StoryImporter } from "@shared/schema";
-import { claimTrackingJobs, failUnfinishedJobs, postSettings, releaseTrackingJobs, rollForwardDueDates, type ClaimedJob } from "./tracking";
+import { claimTrackingJobs, failUnfinishedJobs, markClaimedJobsAttached, postSettings, releaseOrphanedTrackingJobs, releaseTrackingJobs, rollForwardDueDates, type ClaimedJob } from "./tracking";
 
 export const DEFAULT_WINDOW = "19:30-22:30";
 const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
@@ -130,15 +130,19 @@ export const triggerStoriesRun = (importer: StoryImporter, unseenOnly: boolean):
  * the service's POST /track to work them. A declined start releases them again.
  */
 export async function triggerTrackingRun(importer: StoryImporter, jobs: ClaimedJob[], budgetMinutes: number): Promise<RunStart> {
+  const ids = jobs.map((j) => j.id);
   let result: RunStart;
   try {
     result = await startRun(importer, "tracking", async (runId) => {
-      await db.update(trackingJobs).set({ runId }).where(inArray(trackingJobs.id, jobs.map((j) => j.id)));
+      await db.update(trackingJobs).set({ runId }).where(inArray(trackingJobs.id, ids));
+      markClaimedJobsAttached(ids);
       return { jobs, budgetMinutes, posts: await postSettings() };
     });
   } catch (err) {
     await releaseTrackingJobs(jobs);
     throw err;
+  } finally {
+    markClaimedJobsAttached(ids);
   }
   if (result.status !== "running") await releaseTrackingJobs(jobs);
   return result;
@@ -167,11 +171,12 @@ async function startRun(
   let error: string | null = null;
   let username: string | null = null;
   try {
+    const payload = await extra(runId);
     if (!apiUrl) throw new Error("Stories service URL is not set");
     const res = await fetch(`${apiUrl}/${kind === "stories" ? "run" : "track"}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...storiesServiceHeaders(importer) },
-      body: JSON.stringify({ runId, token, ...(await extra(runId)) }),
+      body: JSON.stringify({ runId, token, ...payload }),
       // The service opens Instagram before answering; give it time to load.
       signal: AbortSignal.timeout(120_000),
     });
@@ -269,9 +274,16 @@ async function tickTracking(importer: StoryImporter, now: Date): Promise<void> {
     log(`[Stories] ${importer.label}: nothing due for tracking`);
     return;
   }
-  // The run has the rest of the window, or longer when the claimed work needs it; whatever it doesn't reach stays due.
-  const minutesLeft = parseWindow(importer.trackingWindow)[1] - (now.getHours() * 60 + now.getMinutes());
-  const result = await triggerTrackingRun(importer, jobs, Math.min(Math.max(minutesLeft, workMinutes(jobs), 15), MAX_BUDGET_MINUTES));
+  let minutesLeft = 0;
+  let result: RunStart;
+  try {
+    // The run has the rest of the window, or longer when the claimed work needs it; whatever it doesn't reach stays due.
+    minutesLeft = parseWindow(importer.trackingWindow)[1] - (now.getHours() * 60 + now.getMinutes());
+    result = await triggerTrackingRun(importer, jobs, Math.min(Math.max(minutesLeft, workMinutes(jobs), 15), MAX_BUDGET_MINUTES));
+  } catch (err) {
+    await releaseTrackingJobs(jobs).catch(() => {});
+    throw err;
+  }
   // Busy with a stories run or a login window: try again in half an hour if the window allows.
   if (result.status === "already_running" && minutesLeft > 45) {
     await db.update(storyImporters).set({ nextTrackingRunAt: new Date(now.getTime() + 30 * 60_000) }).where(eq(storyImporters.id, importer.id));
@@ -316,7 +328,13 @@ export function kickManualTrackingJobs(delayMs = 250): void {
       if (await hasRunInFlight(importer.id, new Date())) return;
       const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs, { manualOnly: true });
       if (jobs.length === 0) return;
-      const result = await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs));
+      let result: RunStart;
+      try {
+        result = await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs));
+      } catch (err) {
+        await releaseTrackingJobs(jobs).catch(() => {});
+        throw err;
+      }
       if (result.status === "unreachable" || result.status === "paused") kickManualTrackingJobs(UNREACHABLE_RETRY_MS);
       else if (result.status === "already_running") kickManualTrackingJobs(BUSY_RETRY_MS);
     })().catch((err) => log(`[Stories] manual tracking run: ${err instanceof Error ? err.message : err}`));
@@ -327,7 +345,12 @@ export function kickManualTrackingJobs(delayMs = 250): void {
 export async function trackNow(importer: StoryImporter): Promise<RunStart & { jobs: number }> {
   const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs);
   if (jobs.length === 0) return { runId: "", status: "nothing_due", error: null, username: null, jobs: 0 };
-  return { ...(await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs))), jobs: jobs.length };
+  try {
+    return { ...(await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs))), jobs: jobs.length };
+  } catch (err) {
+    await releaseTrackingJobs(jobs).catch(() => {});
+    throw err;
+  }
 }
 
 /** A run just ended: whatever manual jobs are still queued go next. */
@@ -339,7 +362,8 @@ export function kickManualTrackingJobsAfterRun(): void {
  * A run whose manifest never came (the service died mid-run) would otherwise
  * stay "running" forever, and with it its jobs — and no manifest means nothing
  * kicks the next manual run, so a draining batch would stall. Once the run's
- * token has expired the service can't deliver anyway: close it out.
+ * token has expired the service can't deliver anyway: close it out. Also
+ * releases any jobs orphaned between claiming and attaching to a run.
  */
 async function reapStaleRuns(now: Date): Promise<void> {
   const stale = await db
@@ -351,7 +375,9 @@ async function reapStaleRuns(now: Date): Promise<void> {
     log(`[Stories] ${run.kind} run ${run.id} never finished; closing it out`);
     if (run.kind === "tracking") await failUnfinishedJobs(run.id, "error");
   }
-  if (stale.length) kickManualTrackingJobsAfterRun();
+  const orphans = await releaseOrphanedTrackingJobs();
+  if (orphans > 0) log(`[Stories] released ${orphans} orphaned tracking job(s)`);
+  if (stale.length || orphans > 0) kickManualTrackingJobsAfterRun();
 }
 
 /**

@@ -722,17 +722,22 @@ export async function photoSuggestions(pagePhotos: Photo[]): Promise<Map<string,
 
 // ── Post detail: faces + OCR per slide ───────────────────────────────────────
 
-export type PostSlideFace = Omit<FaceReviewFace, "lookAlikes">;
 export type PostSlideAnalysis = {
   slide: number;
   photoId: string;
+  kind: FaceReviewKind;
   width: number | null;
   height: number | null;
-  faces: PostSlideFace[];
+  faces: FaceReviewFace[];
+  /** Who the slide's faces probably are (owner, coauthors, slide mentions), as Face review offers them. */
+  suggestions: FaceReviewSuggestion[];
   ocrData: unknown;
 };
 
-/** Every analyzed slide of a post: its numbered face boxes (as Face review numbers them) and OCR result. */
+/**
+ * Every analyzed slide of a post: its numbered face boxes (as Face review numbers them), the
+ * naming suggestions the post/story modals offer, and its OCR result.
+ */
 export async function getPostSlideAnalysis(post: { id: string; postType: string }): Promise<PostSlideAnalysis[]> {
   const postPhotos = await db.select().from(photos).where(eq(photos.prmLocation, `post:${post.id}`));
   const items = await buildItems(postPhotos, post.postType === "story" ? "story" : "post");
@@ -742,9 +747,11 @@ export async function getPostSlideAnalysis(post: { id: string; postType: string 
     .map((item) => ({
       slide: item.slide!,
       photoId: item.photoId,
+      kind: item.kind,
       width: item.width,
       height: item.height,
-      faces: item.faces.map(({ lookAlikes: _lookAlikes, ...f }) => f),
+      faces: item.faces,
+      suggestions: item.suggestions,
       ocrData: ocrById.get(item.photoId) ?? null,
     }));
 }

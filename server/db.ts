@@ -19,9 +19,11 @@ if (!process.env.DATABASE_URL) {
 export const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL,
   ssl: false,
-  max: 20,
+  max: 25,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
+  statement_timeout: 30000, // Prevent runaway unindexed queries from permanently locking pool slots
+  query_timeout: 35000,
   keepAlive: true,
 });
 

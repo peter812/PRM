@@ -5,6 +5,7 @@
  */
 import { extractJsonObject } from "./json-extract";
 import { asData, chat, DATA_TAGS_NOTE, type ResolvedModel } from "./ai/provider";
+import { getPrompt } from "./prompts";
 
 export interface NameGuess {
   firstName: string | null;
@@ -14,13 +15,6 @@ export interface NameGuess {
 }
 
 const TIMEOUT_MS = 2 * 60 * 1000;
-
-const SYSTEM_PROMPT = `You identify the real name of the person behind an unknown phone number from the opening messages of a text conversation.
-Look for introductions ("Hi, it's Sarah from the gym"), sign-offs, how the owner addresses them, and names others use for them.
-Respond with ONLY a JSON object, no prose:
-{"firstName": string|null, "lastName": string|null, "confidence": "high"|"medium"|"low", "reason": string}
-Use null for any part of the name the messages do not support. Keep "reason" to one sentence quoting the decisive message.
-${DATA_TAGS_NOTE}`;
 
 export async function guessNameFromMessages(params: {
   resolved: ResolvedModel;
@@ -41,7 +35,7 @@ export async function guessNameFromMessages(params: {
   const { content } = await chat(resolved, {
     format: "json",
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: `${await getPrompt("findName")}\n${DATA_TAGS_NOTE}` },
       { role: "user", content: userPrompt },
     ],
     signal: AbortSignal.timeout(TIMEOUT_MS),

@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { Mic, Map as MapIcon, Cloud, SlidersHorizontal, Bell, Globe, BookUser, ScanFace } from "lucide-react";
+import { Mic, Map as MapIcon, Cloud, SlidersHorizontal, Bell, Globe, BookUser, ScanFace, Link2, Trophy, Compass } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function DemosPage() {
@@ -103,6 +103,20 @@ export default function DemosPage() {
           </Card>
         </Link>
 
+        <Link href="/demos/image-summary-word-cloud">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Cloud className="h-5 w-5" />
+                Image Summary Word Cloud
+              </CardTitle>
+              <CardDescription>
+                The most common words across every AI image summary, counted in the background and saved.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
         <Link href="/demos/ollama-params">
           <Card className="hover:bg-accent cursor-pointer transition-colors">
             <CardHeader>
@@ -154,6 +168,48 @@ export default function DemosPage() {
               </CardTitle>
               <CardDescription>
                 Browse imported references by name or keyword, or search them by face.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/account-matching">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Link2 className="h-5 w-5" />
+                Account Matching
+              </CardTitle>
+              <CardDescription>
+                Link social accounts to people one at a time from suggested matches.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/elo-ranking">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Trophy className="h-5 w-5" />
+                ELO Ranking
+              </CardTitle>
+              <CardDescription>
+                Pick the higher-ranked of two people to build an ELO ranking of your contacts.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/political-leaning">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Compass className="h-5 w-5" />
+                Political Leaning
+              </CardTitle>
+              <CardDescription>
+                Place contacts on the political compass, skipping anyone you are unsure of.
               </CardDescription>
             </CardHeader>
           </Card>

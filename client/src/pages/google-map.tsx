@@ -70,25 +70,25 @@ function PinMarkers({ pins, fit }: { pins: MapPin[]; fit: boolean }) {
   const streetView = useMapsLibrary("streetView");
   const geometry = useMapsLibrary("geometry");
   const { toast } = useToast();
-  const [markers, setMarkers] = useState<Record<string, google.maps.marker.AdvancedMarkerElement>>({});
+  const markersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
   const [selected, setSelected] = useState<MapPin | null>(null);
 
   const clusterer = useMemo(() => map && new MarkerClusterer({ map }), [map]);
   useEffect(() => () => clusterer?.setMap(null), [clusterer]);
-  useEffect(() => {
-    clusterer?.clearMarkers();
-    clusterer?.addMarkers(Object.values(markers));
-  }, [clusterer, markers]);
 
   const setMarkerRef = useCallback<SetMarkerRef>((marker, key) => {
-    setMarkers((prev) => {
-      if (marker ? prev[key] === marker : !prev[key]) return prev;
-      const next = { ...prev };
-      if (marker) next[key] = marker;
-      else delete next[key];
-      return next;
-    });
+    if (marker) {
+      markersRef.current.set(key, marker);
+    } else {
+      markersRef.current.delete(key);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!clusterer) return;
+    clusterer.clearMarkers();
+    clusterer.addMarkers(Array.from(markersRef.current.values()));
+  }, [clusterer, pins]);
 
   // Fit to everyone once, unless the URL chose a view.
   const fitted = useRef(!fit);
@@ -127,7 +127,7 @@ function PinMarkers({ pins, fit }: { pins: MapPin[]; fit: boolean }) {
       ))}
       {selected && (
         <InfoWindow
-          anchor={markers[pinKey(selected)]}
+          anchor={markersRef.current.get(pinKey(selected))}
           headerContent={<span className="font-semibold text-sm text-neutral-900">{fullName(selected)}</span>}
           onCloseClick={() => setSelected(null)}
         >

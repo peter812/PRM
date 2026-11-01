@@ -40,8 +40,8 @@ export const PRM_S3_DEFAULTS = {
   PUBLIC_ENDPOINT: process.env.PRM_S3_PUBLIC_ENDPOINT || "",
   BUCKET: process.env.PRM_S3_BUCKET || "images",
   REGION: process.env.PRM_S3_REGION || "us-east-1",
-  ACCESS_KEY: process.env.PRM_S3_ACCESS_KEY || "PRM0CDED7B21AD5BF229",
-  SECRET_KEY: process.env.PRM_S3_SECRET_KEY || "/PqaiJ2Dmd5xOZeARnZY5JhRsJnzmpMJdL/Kmnuc",
+  ACCESS_KEY: process.env.PRM_S3_ACCESS_KEY || "",
+  SECRET_KEY: process.env.PRM_S3_SECRET_KEY || "",
   DELIVERY_MODE: "direct" as PrmS3DeliveryMode,
 };
 
@@ -69,6 +69,7 @@ export type PrmS3Config = {
 let cachedClient: S3Client | null = null;
 let cachedClientKey = "";
 let configPromise: Promise<PrmS3Config> | null = null;
+let lastKnownConfig: PrmS3Config | null = null;
 
 export function normalizeEndpointUrl(endpoint: string, defaultScheme: "http" | "https"): string {
   if (!endpoint.startsWith("http://") && !endpoint.startsWith("https://")) {
@@ -101,8 +102,9 @@ async function loadPrmS3Config(): Promise<PrmS3Config> {
   const secretAccessKey = ((await storage.getAppSetting(PRM_S3_KEYS.SECRET_KEY)) || PRM_S3_DEFAULTS.SECRET_KEY).trim();
   const deliveryMode: PrmS3DeliveryMode =
     (await storage.getAppSetting(PRM_S3_KEYS.DELIVERY_MODE)) === "proxy" ? "proxy" : PRM_S3_DEFAULTS.DELIVERY_MODE;
+  const isConfigured = !!(endpoint && bucket && accessKeyId && secretAccessKey);
 
-  return {
+  const cfg: PrmS3Config = {
     endpoint,
     publicEndpoint,
     bucket,
@@ -110,9 +112,11 @@ async function loadPrmS3Config(): Promise<PrmS3Config> {
     accessKeyId,
     secretAccessKey,
     deliveryMode,
-    directDelivery: deliveryMode === "direct" && !!publicEndpoint,
-    isConfigured: !!(endpoint && bucket && accessKeyId && secretAccessKey),
+    directDelivery: deliveryMode === "direct" && !!publicEndpoint && isConfigured,
+    isConfigured,
   };
+  lastKnownConfig = cfg;
+  return cfg;
 }
 
 /**
@@ -148,6 +152,7 @@ export async function setPrmS3Config(config: {
 
   // Invalidate cached config, client and presigned URLs
   configPromise = null;
+  lastKnownConfig = null;
   cachedClient = null;
   cachedClientKey = "";
   presignedUrlCache.clear();
@@ -283,7 +288,9 @@ export type PrmS3BucketStats = {
 /** Object and baked-variant counts for the whole bucket (PRM-S3 `?stats` extension). */
 export async function getPrmS3BucketStats(): Promise<PrmS3BucketStats> {
   const cfg = await getPrmS3Config();
-  const res = await fetch(presignPrmS3PublicUrl(cfg, "", { endpoint: cfg.endpoint, query: { stats: "" } }));
+  const res = await fetch(presignPrmS3PublicUrl(cfg, "", { endpoint: cfg.endpoint, query: { stats: "" } }), {
+    signal: AbortSignal.timeout(15_000),
+  });
   if (!res.ok) throw new Error(`PRM-S3 stats failed: ${res.status} ${await res.text()}`);
   return (await res.json()) as PrmS3BucketStats;
 }
@@ -349,6 +356,7 @@ async function prmS3BackupRequest<T>(method: "GET" | "POST", action: "list" | "c
         hostname: base.hostname,
         port: base.port || undefined,
         path: canonicalQuery ? `${path}?${canonicalQuery}` : path,
+        timeout: 15_000,
         headers: {
           "x-amz-date": amzDate,
           "x-amz-content-sha256": payloadHash,
@@ -375,6 +383,7 @@ async function prmS3BackupRequest<T>(method: "GET" | "POST", action: "list" | "c
         });
       },
     );
+    req.on("timeout", () => req.destroy(new Error(`PRM-S3 backup ${action} timed out`)));
     req.on("error", reject);
     req.end();
   });
@@ -413,7 +422,7 @@ export async function copyPrmS3ObjectInPlace(key: string, contentType: string = 
 export async function isPrmS3VariantBaked(key: string, size: ImageSize = 64): Promise<{ baked: boolean; contentType: string }> {
   const cfg = await getPrmS3Config();
   const url = withImageSize(presignPrmS3PublicUrl(cfg, key, { endpoint: cfg.endpoint }), size);
-  const res = await fetch(url, { method: "HEAD" });
+  const res = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(10_000) });
   const ct = res.headers.get("content-type") || "";
   return {
     baked: res.ok && ct.includes("image/webp"),
@@ -446,6 +455,10 @@ async function ensureBucketExists(client: S3Client, bucket: string): Promise<voi
 
 export async function testPrmS3Connection(): Promise<{ ok: boolean; message: string }> {
   try {
+    const cfg = await getPrmS3Config();
+    if (!cfg.isConfigured) {
+      return { ok: false, message: "PRM-S3 credentials (access key and secret key) are not configured." };
+    }
     const { client, bucket } = await getPrmS3Client();
     try {
       await client.send(new HeadBucketCommand({ Bucket: bucket }));
@@ -479,9 +492,14 @@ export async function checkPrmS3Health(): Promise<{ ok: boolean; message: string
   if (healthCache && Date.now() - healthCache.at < HEALTH_CACHE_MS) return healthCache.result;
   let result: { ok: boolean; message: string };
   try {
-    const { client, bucket, endpoint } = await getPrmS3Client();
-    await client.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS) });
-    result = { ok: true, message: `Connected to PRM-S3 at ${endpoint}` };
+    const cfg = await getPrmS3Config();
+    if (!cfg.isConfigured) {
+      result = { ok: false, message: "PRM-S3 credentials are not configured" };
+    } else {
+      const { client, bucket, endpoint } = await getPrmS3Client();
+      await client.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS) });
+      result = { ok: true, message: `Connected to PRM-S3 at ${endpoint}` };
+    }
   } catch (error: any) {
     result = { ok: false, message: error?.message || "PRM-S3 is unreachable" };
   }
@@ -659,7 +677,13 @@ export function isPrmS3ImageUrl(url: string): boolean {
   if (url.startsWith("/api/prm-s3/")) return true;
   // Absolute URLs pointing at either PRM-S3 endpoint (or the historical default).
   if (url.includes("localhost:9000") || url.includes("127.0.0.1:9000")) return true;
-  for (const ep of [PRM_S3_DEFAULTS.ENDPOINT, PRM_S3_DEFAULTS.PUBLIC_ENDPOINT]) {
+  const endpoints = [
+    PRM_S3_DEFAULTS.ENDPOINT,
+    PRM_S3_DEFAULTS.PUBLIC_ENDPOINT,
+    lastKnownConfig?.endpoint || "",
+    lastKnownConfig?.publicEndpoint || "",
+  ];
+  for (const ep of endpoints) {
     const host = ep.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
     if (host && url.includes(`//${host}/`)) return true;
   }
@@ -684,17 +708,29 @@ function isPrivateAddress(ip: string): boolean {
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 168) ||
       (a === 169 && b === 254) || // link-local, cloud metadata
-      (a === 100 && b >= 64 && b <= 127) // carrier-grade NAT
+      (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
+      a >= 224 // multicast & reserved
     );
   }
   const v6 = ip.toLowerCase();
-  if (v6.startsWith("::ffff:")) return isPrivateAddress(v6.slice(7));
+  if (v6.startsWith("::ffff:")) {
+    const mapped = v6.slice(7);
+    if (net.isIPv4(mapped)) return isPrivateAddress(mapped);
+    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hexMatch) {
+      const hi = parseInt(hexMatch[1], 16);
+      const lo = parseInt(hexMatch[2], 16);
+      return isPrivateAddress(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
+    }
+    return true;
+  }
   return (
     v6 === "::1" ||
     v6 === "::" ||
     v6.startsWith("fc") ||
     v6.startsWith("fd") ||
-    v6.startsWith("fe80")
+    v6.startsWith("fe80") ||
+    v6.startsWith("ff")
   );
 }
 
@@ -710,11 +746,15 @@ async function assertSafeExternalUrl(raw: string): Promise<URL> {
     throw new Error(`Refusing to fetch image over unsupported protocol: ${url.protocol}`);
   }
 
-  if (net.isIP(url.hostname) && isPrivateAddress(url.hostname)) {
-    throw new Error(`Refusing to fetch image from private/internal IP: ${url.hostname}`);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(host)) {
+    if (isPrivateAddress(host)) {
+      throw new Error(`Refusing to fetch image from private/internal IP: ${url.hostname}`);
+    }
+    return url;
   }
 
-  const addresses = await dns.lookup(url.hostname, { all: true });
+  const addresses = await dns.lookup(host, { all: true });
   if (!addresses || addresses.length === 0) {
     throw new Error(`Unable to resolve host: ${url.hostname}`);
   }
@@ -757,6 +797,9 @@ async function readCappedBuffer(response: Response, maxBytes: number = MAX_EXTER
 export async function fetchImageBuffer(location: string): Promise<{ buffer: Buffer; mimeType: string }> {
   if (!location) throw new Error("Empty image location");
 
+  if (!lastKnownConfig) {
+    await getPrmS3Config().catch(() => {});
+  }
   if (isPrmS3ImageUrl(location)) {
     return await getPrmS3ObjectBuffer(location);
   }

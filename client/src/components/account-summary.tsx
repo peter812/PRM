@@ -4,6 +4,8 @@ import { ChevronDown, Loader2, Sparkles, AlertTriangle, CheckCircle2, History, R
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { AiBackendNotes } from "@/components/ai-backend-notes";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -27,10 +29,13 @@ export function PostSummarySection({
   postId,
   initialSummary,
   currentImageIndex,
+  isStory,
 }: {
   postId: string;
   initialSummary?: PostAiSummary | unknown;
   currentImageIndex?: number;
+  /** Stories have one summary and no per-image descriptions, so Fix corrects the whole story. */
+  isStory?: boolean;
 }) {
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(true);
@@ -59,16 +64,33 @@ export function PostSummarySection({
     },
   });
 
+  const [fixText, setFixText] = useState<string | null>(null);
+  const fixMutation = useMutation({
+    mutationFn: async ({ imageIndex, text }: { imageIndex: number; text: string }) => {
+      const res = await apiRequest("POST", `/api/social-posts/${postId}/images/${imageIndex}/append`, { text });
+      return res.json() as Promise<{ queued: boolean }>;
+    },
+    onSuccess: () => {
+      setFixText(null);
+      toast({ title: "Fix queued", description: "The image is being re-described with your correction." });
+      queryClient.invalidateQueries({ queryKey: [`/api/social-posts/${postId}/summary`] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to queue fix", description: err.message, variant: "destructive" });
+    },
+  });
+
   const summary = (data?.aiSummary ?? initialSummary ?? null) as PostAiSummary | null;
   const job = data?.job;
   const isRunning = job?.status === "pending" || job?.status === "running";
   // Summaries from before jobs were tracked (or whose job was cleared) count as finished.
   const step = job ? jobStep(job.status) : summary ? "done" : null;
   const progressCount = isRunning ? postJobProgress(job?.progress) : null;
-  const imageDesc =
-    currentImageIndex !== undefined
-      ? summary?.images?.find((img) => img.imageIndex === currentImageIndex)?.description
-      : undefined;
+  const currentImage =
+    currentImageIndex !== undefined ? summary?.images?.find((img) => img.imageIndex === currentImageIndex) : undefined;
+  const imageDesc = currentImage?.description;
+  const canFix = isStory ? !!summary : !!currentImage?.description;
+  const fixes = (isStory ? summary?.appended : currentImage?.appended) ?? [];
 
   return (
     <div className="rounded-md bg-muted/50 p-2.5 space-y-2" data-testid="post-summary-section">
@@ -86,6 +108,18 @@ export function PostSummarySection({
         </button>
         {step && <JobStatusBadge step={step} />}
         <span className="flex-1" />
+        {settings?.postEnabled && canFix && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => setFixText((t) => (t === null ? "" : null))}
+            disabled={fixMutation.isPending || isRunning}
+            data-testid="button-fix-image"
+          >
+            Fix
+          </Button>
+        )}
         {settings?.postEnabled && (
           <Button
             variant="ghost"
@@ -101,7 +135,7 @@ export function PostSummarySection({
                 Summarizing...
               </>
             ) : summary ? (
-              "Regenerate"
+              "Regen"
             ) : (
               "Summarize"
             )}
@@ -110,6 +144,34 @@ export function PostSummarySection({
       </div>
 
       {progressCount && <SummaryProgressBar count={progressCount} label="steps" />}
+
+      {fixText !== null && currentImageIndex !== undefined && (
+        <div className="space-y-1.5" data-testid="fix-image-form">
+          <Textarea
+            value={fixText}
+            onChange={(e) => setFixText(e.target.value)}
+            placeholder="What did the summary get wrong? e.g. the boy is her nephew Sam, not her son"
+            className="text-xs min-h-[60px]"
+            maxLength={1000}
+            autoFocus
+            data-testid="input-fix-image"
+          />
+          <div className="flex justify-end gap-1">
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => setFixText(null)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 px-2 text-[11px]"
+              disabled={!fixText.trim() || fixMutation.isPending}
+              onClick={() => fixMutation.mutate({ imageIndex: currentImageIndex, text: fixText.trim() })}
+              data-testid="button-save-fix"
+            >
+              {fixMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {expanded && job?.status === "failed" && job.error && (
         <p className="text-[11px] text-destructive">Failed: {job.error}</p>
@@ -125,6 +187,11 @@ export function PostSummarySection({
               <span className="font-medium">Slide {(currentImageIndex ?? 0) + 1}:</span> {imageDesc}
             </p>
           )}
+          {fixes.map((text, i) => (
+            <p key={i} className="text-[11px] text-muted-foreground italic" data-testid="text-image-fix">
+              <span className="font-medium not-italic">You:</span> {text}
+            </p>
+          ))}
         </div>
       ) : (
         <p className="text-xs text-muted-foreground italic">No summary generated yet.</p>
@@ -429,7 +496,8 @@ export function SocialAccountSummaryTab({ socialAccountId }: { socialAccountId: 
           </div>
           {data?.current?.content && (
             <CardDescription className="text-xs">
-              Covers {data.current.content.postCount ?? 0} post(s) and {data.current.content.storyCount ?? 0} story/stories.
+              Covers {data.current.content.postCount ?? 0} post(s) and {data.current.content.storyCount ?? 0} story/stories
+              {data.current.content.connectionCount ? ` and ${data.current.content.connectionCount} connection(s)` : ""}.
             </CardDescription>
           )}
         </CardHeader>
@@ -443,6 +511,8 @@ export function SocialAccountSummaryTab({ socialAccountId }: { socialAccountId: 
           )}
         </CardContent>
       </Card>
+
+      <AiBackendNotes kind="social-accounts" id={socialAccountId} />
 
       {/* Historical Summaries */}
       <div className="space-y-3">

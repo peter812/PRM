@@ -27,12 +27,10 @@ export function etagMiddleware(req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  const originalJson = res.json.bind(res);
-
   res.json = function (body: any) {
-    // Generate ETag from the response body
+    // Generate ETag from the serialized response body once
     const bodyStr = JSON.stringify(body);
-    const hash = crypto.createHash("sha256").update(bodyStr).digest("hex").slice(0, 32);
+    const hash = crypto.createHash("md5").update(bodyStr).digest("hex");
     const etag = `"${hash}"`;
 
     res.setHeader("ETag", etag);
@@ -46,7 +44,10 @@ export function etagMiddleware(req: Request, res: Response, next: NextFunction):
       return res;
     }
 
-    return originalJson(body);
+    if (!res.getHeader("Content-Type")) {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+    }
+    return res.send(bodyStr);
   };
 
   next();

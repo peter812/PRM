@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Phone, ExternalLink, MicOff, FileX, X, Instagram } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MessageAttachment, MessageMetadata } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 
 // Image by photo UUID. The message payload embeds the serving URL; the photos
 // API is only hit for messages that predate that field.
@@ -28,7 +29,12 @@ function MessageImage({ photoId, location }: { photoId: string; location?: strin
       rel="noreferrer"
       className="block overflow-hidden rounded border hover:opacity-90 transition-opacity"
     >
-      <img src={photo.location} alt="Attachment" className="max-h-60 max-w-full object-cover rounded" />
+      <img
+        src={withImageSize(photo.location, 360)}
+        alt="Attachment"
+        loading="lazy"
+        className="max-h-60 max-w-full object-cover rounded"
+      />
     </a>
   );
 }

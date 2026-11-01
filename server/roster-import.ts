@@ -170,7 +170,20 @@ export async function paragraphLines(page: Buffer, r: Rect): Promise<TextLine[]>
   const paper = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) paper[i] = Math.min(255, (grey[i] * 255) / Math.max(1, blur[i] + 10));
   // White out the photo's edge beside the text and any vertical rule: columns dark over most of their height.
-  const colMedian = (x: number) => { const c = Array.from({ length: h }, (_, y) => grey[y * w + x]).sort((a, b) => a - b); return c[h >> 1]; };
+  const hist = new Uint32Array(256);
+  const half = h >> 1;
+  const colMedian = (x: number): number => {
+    hist.fill(0);
+    for (let y = 0; y < h; y++) {
+      hist[grey[y * w + x]]++;
+    }
+    let acc = 0;
+    for (let v = 0; v < 256; v++) {
+      acc += hist[v];
+      if (acc > half) return v;
+    }
+    return 128;
+  };
   const medians = Array.from({ length: w }, (_, x) => colMedian(x));
   const paperLevel = [...medians].sort((a, b) => a - b)[Math.floor(w * 0.75)];
   const blank = (x: number) => { for (let y = 0; y < h; y++) grey[y * w + x] = paper[y * w + x] = 255; };

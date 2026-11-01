@@ -1,20 +1,17 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import { useLoadOnce } from "@/hooks/use-load-once";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import { Loader2, ImageIcon, Cpu, MessageSquare, AlertCircle } from "lucide-react";
 import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/components/provider-model-picker";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
-const DEFAULT_PROMPT = "Return 2 sentences explaining what is happening in this image.";
-
 type AiSettings = {
-  visionPrompt: string;
   autoDescribeImages: boolean;
   vision: ModelSelection;
 };
@@ -24,7 +21,6 @@ export default function IntelligenceImagesSettingsPage() {
 
   const [autoDescribeImages, setAutoDescribeImages] = useState(false);
   const [vision, setVision] = useState<ModelSelection>({ providerId: "", model: "" });
-  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
 
   const { data: settings, isLoading } = useQuery<AiSettings>({
     queryKey: ["/api/ai/settings"],
@@ -33,7 +29,6 @@ export default function IntelligenceImagesSettingsPage() {
   useLoadOnce(settings, (s) => {
     setAutoDescribeImages(s.autoDescribeImages ?? false);
     if (s.vision) setVision(s.vision);
-    setPrompt(s.visionPrompt || DEFAULT_PROMPT);
   });
 
   const saveMutation = useMutation({
@@ -57,10 +52,6 @@ export default function IntelligenceImagesSettingsPage() {
 
   const handleSaveModel = () => {
     saveMutation.mutate({ vision });
-  };
-
-  const handleSavePrompt = () => {
-    saveMutation.mutate({ visionPrompt: prompt });
   };
 
   const aiReady = !!settings?.vision?.model;
@@ -154,39 +145,13 @@ export default function IntelligenceImagesSettingsPage() {
               Image Description Prompt
             </CardTitle>
             <CardDescription>
-              The instruction sent to the model along with each image. Edit this to change what kind of description the AI produces.
+              The instruction sent to the model with each image. It lives on the Prompts page with the other AI prompts.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            <Textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={3}
-              className="resize-y"
-              data-testid="textarea-vision-prompt"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
-                  onClick={() => setPrompt(DEFAULT_PROMPT)}
-                  data-testid="button-reset-prompt"
-                >
-                  Reset to default
-                </button>
-                <span className="text-xs text-muted-foreground" data-testid="text-prompt-char-count">
-                  {prompt.length} characters
-                </span>
-              </div>
-              <Button
-                onClick={handleSavePrompt}
-                disabled={!prompt.trim() || saveMutation.isPending}
-                data-testid="button-save-prompt"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-              </Button>
-            </div>
+          <CardContent>
+            <Button variant="outline" asChild data-testid="link-vision-prompt">
+              <Link href="/intelligence/prompts?prompt=imageDescribe">Open prompt</Link>
+            </Button>
           </CardContent>
         </Card>
       </div>

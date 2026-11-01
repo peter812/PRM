@@ -438,7 +438,10 @@ export interface IStorage {
     starredOnly?: boolean;
     sortBy?: string;
   }): Promise<SocialAccountWithCurrentProfile[]>;
+  getSocialAccountsCount(searchQuery?: string, typeId?: string): Promise<number>;
   getSocialAccountById(id: string): Promise<SocialAccountWithCurrentProfile | undefined>;
+  getSocialAccountByUsername(username: string): Promise<SocialAccountWithCurrentProfile | undefined>;
+  getSocialAccountsByUsernames(usernames: string[]): Promise<SocialAccountWithCurrentProfile[]>;
   getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]>;
   getSocialAccountsByOwner(ownerUuid: string): Promise<SocialAccountWithCurrentProfile[]>;
   getSocialAccountsByGroup(groupId: string): Promise<SocialAccountWithCurrentProfile[]>;
@@ -500,7 +503,7 @@ export interface IStorage {
   deleteSocialAccountType(id: string): Promise<void>;
 
   // Social account post operations
-  getPostsBySocialAccountId(socialAccountId: string, includeDeleted?: boolean, postType?: string): Promise<SocialAccountPost[]>;
+  getPostsBySocialAccountId(socialAccountId: string, includeDeleted?: boolean, postType?: string, limit?: number, cursorDate?: Date): Promise<SocialAccountPost[]>;
   getAllPosts(): Promise<SocialAccountPost[]>;
   getPostById(id: string): Promise<SocialAccountPost | undefined>;
   createPost(post: InsertSocialAccountPost): Promise<SocialAccountPost>;
@@ -523,6 +526,7 @@ export interface IStorage {
   // Task operations
   createTask(task: InsertTask): Promise<Task>;
   getNextPendingTask(): Promise<Task | undefined>;
+  claimNextPendingTask(): Promise<Task | undefined>;
   updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined>;
   updateTaskProgress(id: string, progress: number, message?: string): Promise<void>;
   getCurrentTasks(recentWindowSeconds?: number): Promise<Task[]>;
@@ -586,6 +590,7 @@ export interface IStorage {
 
   // Image task operations
   createImageTask(task: InsertImageTask): Promise<ImageTask>;
+  createImageTasksBatch(tasks: InsertImageTask[]): Promise<ImageTask[]>;
   getImageTaskById(id: string): Promise<ImageTask | undefined>;
   claimNextImageTask(filter: { types?: string[]; excludeTypes?: string[] }): Promise<ImageTask | undefined>;
   updateImageTaskStatus(id: string, status: string, result?: string): Promise<void>;
@@ -624,6 +629,13 @@ export interface IStorage {
   getConversationParticipants(conversationId: string): Promise<ConversationParticipant[]>;
 
   createMessage(data: InsertMessage, recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>): Promise<Message>;
+  bulkCreateMessages(
+    items: Array<{
+      data: InsertMessage;
+      recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>;
+    }>
+  ): Promise<Message[]>;
+  createMessagesBatch(conversationId: string, items: Array<{ data: InsertMessage; recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }> }>): Promise<Message[]>;
   getMessagesByConversation(conversationId: string, offset: number, limit: number, order?: "asc" | "desc"): Promise<{ messages: MessageWithRecipients[]; total: number }>;
   /** Phone conversations whose counterpart numbers include `address` (normalized) */
   getPhoneConversationsByAddress(address: string): Promise<Conversation[]>;
@@ -3558,6 +3570,29 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  async getSocialAccountsCount(searchQuery?: string, typeId?: string): Promise<number> {
+    const conditions = [];
+    if (searchQuery && searchQuery.trim() !== "") {
+      const searchPattern = `%${searchQuery.trim()}%`;
+      conditions.push(
+        or(
+          ilike(socialAccounts.username, searchPattern),
+          ilike(socialAccounts.nickname, searchPattern),
+          ilike(socialAccounts.accountUrl, searchPattern),
+        ),
+      );
+    }
+    if (typeId) {
+      conditions.push(eq(socialAccounts.typeId, typeId));
+    }
+    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
+    const [res] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(socialAccounts)
+      .where(whereCondition);
+    return Number(res?.count ?? 0);
+  }
+
   async getSocialAccountById(id: string): Promise<SocialAccountWithCurrentProfile | undefined> {
     const [row] = await db
       .select({
@@ -3571,6 +3606,35 @@ export class DatabaseStorage implements IStorage {
     const currentState = await this.getNetworkState(id);
 
     return this.buildSocialAccountWithProfile(row.account, currentState);
+  }
+
+  async getSocialAccountByUsername(username: string): Promise<SocialAccountWithCurrentProfile | undefined> {
+    const [row] = await db
+      .select({
+        account: socialAccounts,
+      })
+      .from(socialAccounts)
+      .where(sql`LOWER(${socialAccounts.username}) = LOWER(${username})`)
+      .limit(1);
+
+    if (!row) return undefined;
+
+    const currentState = await this.getNetworkState(row.account.id);
+
+    return this.buildSocialAccountWithProfile(row.account, currentState);
+  }
+
+  async getSocialAccountsByUsernames(usernames: string[]): Promise<SocialAccountWithCurrentProfile[]> {
+    if (usernames.length === 0) return [];
+    const lowerUsernames = Array.from(new Set(usernames.map((u) => u.toLowerCase())));
+    const rows = await db
+      .select({
+        account: socialAccounts,
+      })
+      .from(socialAccounts)
+      .where(inArray(sql`LOWER(${socialAccounts.username})`, lowerUsernames));
+
+    return rows.map((row) => this.buildSocialAccountWithProfile(row.account, null));
   }
 
   async getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]> {
@@ -3656,16 +3720,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteSocialAccount(id: string): Promise<void> {
-    const allPeople = await db.select().from(people);
-    for (const person of allPeople) {
-      if (person.socialAccountUuids && person.socialAccountUuids.includes(id)) {
-        const updatedAccounts = person.socialAccountUuids.filter((accountId) => accountId !== id);
-        await db
-          .update(people)
-          .set({ socialAccountUuids: updatedAccounts })
-          .where(eq(people.id, person.id));
-      }
-    }
+    // Remove this social account ID from all people's socialAccountUuids arrays in a single SQL query
+    await db.execute(sql`
+      UPDATE people
+      SET social_account_uuids = array_remove(social_account_uuids, ${id})
+      WHERE ${id} = ANY(social_account_uuids)
+    `);
     
     await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
     meSocialAccountIdsCache.clear();
@@ -3882,17 +3942,11 @@ export class DatabaseStorage implements IStorage {
           .where(eq(socialNetworkChanges.socialAccountId, dup.id));
           
         // 5. Update people
-        const allPeople = await db.select().from(people);
-        for (const person of allPeople) {
-          if (person.socialAccountUuids && person.socialAccountUuids.includes(dup.id)) {
-            let updated = person.socialAccountUuids.map(id => id === dup.id ? keptAccount.id : id);
-            updated = Array.from(new Set(updated));
-            await db
-              .update(people)
-              .set({ socialAccountUuids: updated })
-              .where(eq(people.id, person.id));
-          }
-        }
+        await db.execute(sql`
+          UPDATE people
+          SET social_account_uuids = array_replace(social_account_uuids, ${dup.id}, ${keptAccount.id})
+          WHERE ${dup.id} = ANY(social_account_uuids)
+        `);
         
         // 6. Delete duplicate account
         await db
@@ -4885,6 +4939,31 @@ export class DatabaseStorage implements IStorage {
     return task || undefined;
   }
 
+  async claimNextPendingTask(): Promise<Task | undefined> {
+    const [task] = await db
+      .update(tasks)
+      .set({ status: "in_progress", startedAt: new Date() })
+      .where(
+        eq(
+          tasks.id,
+          sql`(SELECT id FROM tasks WHERE status = 'pending' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)`
+        )
+      )
+      .returning();
+    if (task) {
+      sseManager.broadcast("task.updated", {
+        id: task.id,
+        type: task.type,
+        status: task.status,
+        title: task.title,
+        progress: task.progress,
+        message: task.progressMessage,
+        result: task.result,
+      });
+    }
+    return task || undefined;
+  }
+
   async updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined> {
     const updates: Partial<typeof tasks.$inferInsert> & { startedAt?: Date; completedAt?: Date } = { status };
     if (status === "in_progress") {
@@ -5027,7 +5106,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Social account post operations
-  async getPostsBySocialAccountId(socialAccountId: string, includeDeleted: boolean = false, postType?: string): Promise<SocialAccountPost[]> {
+  async getPostsBySocialAccountId(socialAccountId: string, includeDeleted: boolean = false, postType?: string, limit?: number, cursorDate?: Date): Promise<SocialAccountPost[]> {
     const conditions = [postedBy(socialAccountId)];
     if (!includeDeleted) {
       conditions.push(eq(socialAccountPosts.isDeleted, false));
@@ -5035,11 +5114,16 @@ export class DatabaseStorage implements IStorage {
     if (postType) {
       conditions.push(eq(socialAccountPosts.postType, postType));
     }
-    return await db
+    if (cursorDate) {
+      conditions.push(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt}) < ${cursorDate}`);
+    }
+    const baseQuery = db
       .select()
       .from(socialAccountPosts)
       .where(and(...conditions))
       .orderBy(desc(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt})`));
+
+    return await (limit && limit > 0 ? baseQuery.limit(limit) : baseQuery);
   }
 
   async getAllPosts(): Promise<SocialAccountPost[]> {
@@ -5431,6 +5515,26 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
+  async createImageTasksBatch(tasks: InsertImageTask[]): Promise<ImageTask[]> {
+    if (tasks.length === 0) return [];
+    const allCreated: ImageTask[] = [];
+    for (let i = 0; i < tasks.length; i += 500) {
+      const chunk = tasks.slice(i, i + 500);
+      const inserted = await db.insert(imageTasks).values(chunk).returning();
+      allCreated.push(...inserted);
+    }
+    for (const created of allCreated) {
+      sseManager.broadcast("image_task.updated", {
+        id: created.id,
+        parentTaskId: created.parentTaskId ?? null,
+        imageTaskGroupId: created.imageTaskGroupId ?? null,
+        status: created.status,
+        action: "created",
+      });
+    }
+    return allCreated;
+  }
+
   async getImageTaskById(id: string): Promise<ImageTask | undefined> {
     const [task] = await db
       .select()
@@ -5775,17 +5879,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   async replaceDailyNoteEvents(dailyNoteId: string, events: Array<{ text: string; position: number }>): Promise<DailyNoteEvent[]> {
-    await db.delete(dailyNoteEvents).where(eq(dailyNoteEvents.dailyNoteId, dailyNoteId));
-    if (events.length === 0) return [];
-    const inserted = await db.insert(dailyNoteEvents).values(events.map(e => ({ dailyNoteId, text: e.text, position: e.position }))).returning();
-    return inserted.sort((a, b) => a.position - b.position);
+    return await db.transaction(async (tx) => {
+      await tx.delete(dailyNoteEvents).where(eq(dailyNoteEvents.dailyNoteId, dailyNoteId));
+      if (events.length === 0) return [];
+      const inserted = await tx.insert(dailyNoteEvents).values(events.map(e => ({ dailyNoteId, text: e.text, position: e.position }))).returning();
+      return inserted.sort((a, b) => a.position - b.position);
+    });
   }
 
   async replaceDailyNoteParties(dailyNoteId: string, parties: Array<{ partyType: string; refId: string }>): Promise<DailyNoteInvolvedParty[]> {
-    await db.delete(dailyNoteInvolvedParties).where(eq(dailyNoteInvolvedParties.dailyNoteId, dailyNoteId));
-    if (parties.length === 0) return [];
-    const inserted = await db.insert(dailyNoteInvolvedParties).values(parties.map(p => ({ dailyNoteId, partyType: p.partyType, refId: p.refId }))).returning();
-    return inserted;
+    return await db.transaction(async (tx) => {
+      await tx.delete(dailyNoteInvolvedParties).where(eq(dailyNoteInvolvedParties.dailyNoteId, dailyNoteId));
+      if (parties.length === 0) return [];
+      const inserted = await tx.insert(dailyNoteInvolvedParties).values(parties.map(p => ({ dailyNoteId, partyType: p.partyType, refId: p.refId }))).returning();
+      return inserted;
+    });
   }
 
   async addDailyNoteAuditLog(dailyNoteId: string, action: string, pinUsed: boolean): Promise<DailyNoteAuditLog> {
@@ -5856,14 +5964,20 @@ export class DatabaseStorage implements IStorage {
       interactionRows,
       groupRows,
       profileRows,
+      versionRows,
+      historyRows,
       postRows,
+      messageRows,
     ] = await Promise.all([
       db.select({ imageUrl: people.imageUrl }).from(people),
       db.select({ imageUrl: notes.imageUrl, imageUuid: notes.imageUuid }).from(notes),
       db.select({ imageUrl: interactions.imageUrl, imageUuid: interactions.imageUuid }).from(interactions),
       db.select({ imageUrl: groups.imageUrl }).from(groups),
       db.select({ imageUrl: socialAccounts.imageUrl, externalImageUrl: socialAccounts.externalImageUrl }).from(socialAccounts),
+      db.select({ imageUrl: socialProfileVersions.imageUrl, externalImageUrl: socialProfileVersions.externalImageUrl }).from(socialProfileVersions),
+      db.select({ previousImageUrl: socialAccountHistory.previousImageUrl }).from(socialAccountHistory),
       db.select({ content: socialAccountPosts.content }).from(socialAccountPosts),
+      db.select({ imageUuids: messages.imageUuids }).from(messages),
     ]);
     // The 1080s still parked in the retired _hq columns are active until the tier migration moves them.
     const legacyHq = await legacyHqImageUrls();
@@ -5882,6 +5996,13 @@ export class DatabaseStorage implements IStorage {
       if (r.imageUrl) activeUrls.add(r.imageUrl);
       if (r.externalImageUrl) activeUrls.add(r.externalImageUrl);
     }
+    for (const r of versionRows) {
+      if (r.imageUrl) activeUrls.add(r.imageUrl);
+      if (r.externalImageUrl) activeUrls.add(r.externalImageUrl);
+    }
+    for (const r of historyRows) {
+      if (r.previousImageUrl) activeUrls.add(r.previousImageUrl);
+    }
     for (const r of legacyHq.accounts) activeUrls.add(r.imageUrlHq);
     for (const r of legacyHq.history) activeUrls.add(r.previousImageUrlHq);
     for (const r of postRows) {
@@ -5892,6 +6013,11 @@ export class DatabaseStorage implements IStorage {
             for (const u of urls) if (u) activeUrls.add(u);
           }
         } catch {}
+      }
+    }
+    for (const r of messageRows) {
+      if (Array.isArray(r.imageUuids)) {
+        for (const id of r.imageUuids) if (id) activeUuids.add(id);
       }
     }
 
@@ -5908,8 +6034,28 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Pass 2: Mark sub-images (face crops) active if their parent is active,
-    // and mark parent photos active if their sub-images are active.
+    // Pass 2a: Mark parent photos active if any of their sub-images are active.
+    for (const photo of allPhotos) {
+      if (activePhotoIds.has(photo.id)) {
+        const derivedFromId = (photo.ogMetadata as any)?.derivedFromPhotoId;
+        if (derivedFromId) {
+          activePhotoIds.add(derivedFromId);
+        }
+      }
+      if (photo.faceUuids && !activePhotoIds.has(photo.id)) {
+        const faceArr = photo.faceUuids as Array<{ subImagePhotoId?: string }>;
+        if (Array.isArray(faceArr)) {
+          for (const item of faceArr) {
+            if (item?.subImagePhotoId && activePhotoIds.has(item.subImagePhotoId)) {
+              activePhotoIds.add(photo.id);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Pass 2b: Mark sub-images (face crops / thumbs) active if their parent is active.
     for (const photo of allPhotos) {
       if (photo.faceUuids && activePhotoIds.has(photo.id)) {
         const faceArr = photo.faceUuids as Array<{ subImagePhotoId?: string }>;
@@ -5921,11 +6067,9 @@ export class DatabaseStorage implements IStorage {
           }
         }
       }
-      if (activePhotoIds.has(photo.id)) {
-        const derivedFromId = (photo.ogMetadata as any)?.derivedFromPhotoId;
-        if (derivedFromId) {
-          activePhotoIds.add(derivedFromId);
-        }
+      const derivedFromId = (photo.ogMetadata as any)?.derivedFromPhotoId;
+      if (derivedFromId && activePhotoIds.has(derivedFromId)) {
+        activePhotoIds.add(photo.id);
       }
     }
 
@@ -5935,20 +6079,27 @@ export class DatabaseStorage implements IStorage {
     // 5. Delete orphans (both records and files)
     let filesDeleted = 0;
     const deletedPhotosList: Array<{ id: string; location: string; vectorId: string | null }> = [];
+    const orphanIdsToDelete: string[] = [];
 
     for (const orphan of orphans) {
       // Delete the physical file; external (non-PRM-S3) locations have nothing to delete
-      try {
-        if (isPrmS3ImageUrl(orphan.location)) {
+      if (isPrmS3ImageUrl(orphan.location)) {
+        try {
           await deleteImageFromPrmS3(orphan.location);
           filesDeleted++;
+        } catch (err: any) {
+          const isMissing =
+            err?.name === "NoSuchKey" ||
+            err?.name === "NotFound" ||
+            err?.$metadata?.httpStatusCode === 404;
+          if (!isMissing) {
+            console.error(`Failed to delete physical file for orphan photo ${orphan.id} at ${orphan.location}:`, err);
+            continue;
+          }
         }
-      } catch (err) {
-        console.error(`Failed to delete physical file for orphan photo ${orphan.id} at ${orphan.location}:`, err);
       }
 
-      // Delete from DB
-      await db.delete(photos).where(eq(photos.id, orphan.id));
+      orphanIdsToDelete.push(orphan.id);
       deletedPhotosList.push({
         id: orphan.id,
         location: orphan.location,
@@ -5956,8 +6107,14 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
+    // Batch delete from DB in chunks of 200
+    for (let i = 0; i < orphanIdsToDelete.length; i += 200) {
+      const chunk = orphanIdsToDelete.slice(i, i + 200);
+      await db.delete(photos).where(inArray(photos.id, chunk));
+    }
+
     return {
-      photosDeleted: orphans.length,
+      photosDeleted: deletedPhotosList.length,
       filesDeleted,
       deletedPhotos: deletedPhotosList,
     };
@@ -6160,52 +6317,96 @@ export class DatabaseStorage implements IStorage {
       .limit(limit)
       .offset(offset);
 
-    const conversationsWithDetails = await Promise.all(
-      rows.map(async (conv) => {
-        const parts = await db
-          .select()
-          .from(conversationParticipants)
-          .where(eq(conversationParticipants.conversationId, conv.id));
+    if (rows.length === 0) {
+      return { conversations: [], total };
+    }
 
-        const participantsWithDetails = await Promise.all(
-          parts.map(async (p) => {
-            let personDetails;
-            let socialAccountDetails;
-            if (p.personId) {
-              personDetails = await db.select().from(people).where(eq(people.id, p.personId)).then((r) => r[0]);
-            }
-            if (p.socialAccountId) {
-              socialAccountDetails = await db.select().from(socialAccounts).where(eq(socialAccounts.id, p.socialAccountId)).then((r) => r[0]);
-            }
-            return {
-              ...p,
-              person: personDetails,
-              socialAccount: socialAccountDetails,
-            };
-          })
-        );
+    const convIds = rows.map((c) => c.id);
 
-        const [lastMsg] = await db
-          .select()
-          .from(messages)
-          .where(eq(messages.conversationId, conv.id))
-          .orderBy(desc(messages.sentAt), desc(messages.createdAt))
-          .limit(1);
+    // 1. Batch fetch all participants, latest messages (via DISTINCT ON), and message counts in parallel
+    const [allParticipants, lastMessagesRes, countsRes] = await Promise.all([
+      db
+        .select()
+        .from(conversationParticipants)
+        .where(inArray(conversationParticipants.conversationId, convIds)),
+      db.execute(sql`
+        SELECT DISTINCT ON (conversation_id) *
+        FROM messages
+        WHERE conversation_id IN (${sql.join(convIds.map((id) => sql`${id}`), sql`, `)})
+        ORDER BY conversation_id, sent_at DESC NULLS LAST, created_at DESC
+      `),
+      db
+        .select({
+          conversationId: messages.conversationId,
+          count: sql<number>`count(*)`,
+        })
+        .from(messages)
+        .where(inArray(messages.conversationId, convIds))
+        .groupBy(messages.conversationId),
+    ]);
 
-        const countRes = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(messages)
-          .where(eq(messages.conversationId, conv.id));
-        const messageCount = Number(countRes[0]?.count ?? 0);
-
-        return {
-          ...conv,
-          participants: participantsWithDetails,
-          lastMessage: lastMsg,
-          messageCount,
-        };
-      })
+    // 2. Collect distinct personIds and socialAccountIds across all participants
+    const personIds = Array.from(
+      new Set(allParticipants.map((p) => p.personId).filter((id): id is string => Boolean(id)))
     );
+    const socialAccountIds = Array.from(
+      new Set(allParticipants.map((p) => p.socialAccountId).filter((id): id is string => Boolean(id)))
+    );
+
+    const [peopleRows, socialRows] = await Promise.all([
+      personIds.length > 0 ? db.select().from(people).where(inArray(people.id, personIds)) : [],
+      socialAccountIds.length > 0
+        ? db.select().from(socialAccounts).where(inArray(socialAccounts.id, socialAccountIds))
+        : [],
+    ]);
+
+    const peopleMap = new Map(peopleRows.map((p) => [p.id, p]));
+    const socialMap = new Map(socialRows.map((s) => [s.id, s]));
+
+    // 3. Map participants, lastMessage, and counts by conversationId
+    const participantsByConv = new Map<string, Array<ConversationParticipant & { person?: Person; socialAccount?: SocialAccount }>>();
+    for (const p of allParticipants) {
+      const list = participantsByConv.get(p.conversationId) ?? [];
+      list.push({
+        ...p,
+        person: p.personId ? peopleMap.get(p.personId) : undefined,
+        socialAccount: p.socialAccountId ? socialMap.get(p.socialAccountId) : undefined,
+      });
+      participantsByConv.set(p.conversationId, list);
+    }
+
+    // Map snake_case raw row from DISTINCT ON to Drizzle Message shape
+    const lastMsgByConv = new Map<string, Message>();
+    for (const r of ((lastMessagesRes as any).rows ?? lastMessagesRes ?? []) as Record<string, any>[]) {
+      lastMsgByConv.set(r.conversation_id, {
+        id: r.id,
+        conversationId: r.conversation_id,
+        senderPersonId: r.sender_person_id,
+        senderSocialAccountId: r.sender_social_account_id,
+        content: r.content,
+        contentType: r.content_type,
+        imageUuids: r.image_uuids,
+        attachments: r.attachments,
+        externalId: r.external_id,
+        sentAt: r.sent_at ? new Date(r.sent_at) : null,
+        metadata: r.metadata,
+        importDate: r.import_date ? new Date(r.import_date) : null,
+        importUuid: r.import_uuid,
+        createdAt: r.created_at ? new Date(r.created_at) : new Date(),
+      });
+    }
+
+    const countByConv = new Map<string, number>();
+    for (const c of countsRes) {
+      countByConv.set(c.conversationId, Number(c.count ?? 0));
+    }
+
+    const conversationsWithDetails: ConversationWithParticipants[] = rows.map((conv) => ({
+      ...conv,
+      participants: participantsByConv.get(conv.id) ?? [],
+      lastMessage: lastMsgByConv.get(conv.id),
+      messageCount: countByConv.get(conv.id) ?? 0,
+    }));
 
     return { conversations: conversationsWithDetails, total };
   }
@@ -6297,6 +6498,137 @@ export class DatabaseStorage implements IStorage {
     });
     scheduleRechunk(created.conversationId);
     return created;
+  }
+
+  async bulkCreateMessages(
+    items: Array<{
+      data: InsertMessage;
+      recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>;
+    }>
+  ): Promise<Message[]> {
+    if (items.length === 0) return [];
+    const CHUNK_SIZE = 250;
+    const allCreated: Message[] = [];
+    const touchedConversations = new Map<string, Date>();
+
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+        const chunk = items.slice(i, i + CHUNK_SIZE);
+        const inserted = await tx
+          .insert(messages)
+          .values(chunk.map((c) => c.data))
+          .returning();
+
+        allCreated.push(...inserted);
+
+        const recipientsToInsert: Array<typeof messageRecipients.$inferInsert> = [];
+        for (let j = 0; j < inserted.length; j++) {
+          const msgRow = inserted[j];
+          const recs = chunk[j].recipients;
+          for (const r of recs) {
+            recipientsToInsert.push({
+              messageId: msgRow.id,
+              personId: r.personId,
+              socialAccountId: r.socialAccountId,
+              recipientType: r.recipientType || "to",
+              importDate: chunk[j].data.importDate,
+              importUuid: chunk[j].data.importUuid,
+            });
+          }
+          const ts = msgRow.sentAt || msgRow.createdAt;
+          const prev = touchedConversations.get(msgRow.conversationId);
+          if (!prev || ts > prev) {
+            touchedConversations.set(msgRow.conversationId, ts);
+          }
+        }
+
+        if (recipientsToInsert.length > 0) {
+          await tx.insert(messageRecipients).values(recipientsToInsert);
+        }
+      }
+
+      for (const [convId, lastTs] of touchedConversations.entries()) {
+        await tx
+          .update(conversations)
+          .set({ lastMessageAt: lastTs })
+          .where(eq(conversations.id, convId));
+      }
+    });
+
+    for (const convId of touchedConversations.keys()) {
+      scheduleRechunk(convId);
+    }
+
+    return allCreated;
+  }
+
+  async createMessagesBatch(
+    conversationId: string,
+    items: Array<{ data: InsertMessage; recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }> }>
+  ): Promise<Message[]> {
+    if (items.length === 0) return [];
+
+    const insertedMessages = await db.transaction(async (tx) => {
+      const allInserted: Message[] = [];
+
+      for (let i = 0; i < items.length; i += 500) {
+        const chunk = items.slice(i, i + 500);
+        const inserted = await tx
+          .insert(messages)
+          .values(chunk.map((x) => x.data))
+          .returning();
+        allInserted.push(...inserted);
+
+        const chunkRecipients: Array<InsertMessageRecipient> = [];
+        for (let j = 0; j < chunk.length; j++) {
+          const msg = inserted[j];
+          const item = chunk[j];
+          if (item.recipients && item.recipients.length > 0) {
+            for (const r of item.recipients) {
+              chunkRecipients.push({
+                messageId: msg.id,
+                personId: r.personId,
+                socialAccountId: r.socialAccountId,
+                recipientType: r.recipientType || "to",
+                importDate: item.data.importDate,
+                importUuid: item.data.importUuid,
+              });
+            }
+          }
+        }
+
+        if (chunkRecipients.length > 0) {
+          for (let rIdx = 0; rIdx < chunkRecipients.length; rIdx += 500) {
+            await tx
+              .insert(messageRecipients)
+              .values(chunkRecipients.slice(rIdx, rIdx + 500));
+          }
+        }
+      }
+
+      let latestDate: Date | null = null;
+      for (const item of items) {
+        const d = item.data.sentAt || (item.data as { createdAt?: Date | string | null }).createdAt;
+        if (d) {
+          const dateObj = d instanceof Date ? d : new Date(d);
+          if (!latestDate || dateObj > latestDate) {
+            latestDate = dateObj;
+          }
+        }
+      }
+
+      if (latestDate) {
+        await tx
+          .update(conversations)
+          .set({ lastMessageAt: latestDate })
+          .where(eq(conversations.id, conversationId));
+      }
+
+      return allInserted;
+    });
+
+    scheduleRechunk(conversationId);
+    return insertedMessages;
   }
 
   async getMessagesByConversation(
@@ -6619,8 +6951,8 @@ export class DatabaseStorage implements IStorage {
         accountEmail: pendingSocialAccountImports.accountEmail,
         accountPhone: pendingSocialAccountImports.accountPhone,
         accountLocationArea: pendingSocialAccountImports.accountLocationArea,
-        accountFollowers: pendingSocialAccountImports.accountFollowers,
-        accountFollowing: pendingSocialAccountImports.accountFollowing,
+        hasFollowersCsv: sql<boolean>`(${pendingSocialAccountImports.accountFollowers} IS NOT NULL AND length(${pendingSocialAccountImports.accountFollowers}) > 0)`,
+        hasFollowingCsv: sql<boolean>`(${pendingSocialAccountImports.accountFollowing} IS NOT NULL AND length(${pendingSocialAccountImports.accountFollowing}) > 0)`,
         accountImageUrl: pendingSocialAccountImports.accountImageUrl,
         accountFollowersCount: pendingSocialAccountImports.accountFollowersCount,
         accountFollowingCount: pendingSocialAccountImports.accountFollowingCount,
@@ -6635,19 +6967,18 @@ export class DatabaseStorage implements IStorage {
       .limit(limit)
       .offset(offset);
 
-    const items = rows.map(row => {
-      const followersCount = countPendingImportEntries(row.accountFollowers, row.accountFollowersCount);
-      const followingCount = countPendingImportEntries(row.accountFollowing, row.accountFollowingCount);
-      const { accountFollowers, accountFollowing, ...rest } = row;
+    const items = rows.map((row) => {
+      const followersCount = countPendingImportEntries(undefined, row.accountFollowersCount);
+      const followingCount = countPendingImportEntries(undefined, row.accountFollowingCount);
       return {
-        ...rest,
+        ...row,
         followersCount,
         followingCount,
         // A count can now come from the profile's reported totals, so it no
         // longer implies there is a CSV to download. Callers gate the export
         // affordances on these instead.
-        hasFollowersCsv: Boolean(accountFollowers && accountFollowers.trim()),
-        hasFollowingCsv: Boolean(accountFollowing && accountFollowing.trim()),
+        hasFollowersCsv: Boolean(row.hasFollowersCsv),
+        hasFollowingCsv: Boolean(row.hasFollowingCsv),
       };
     });
 

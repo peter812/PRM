@@ -106,7 +106,7 @@ function jitteredDue(days: number | null): Date | null {
 
 /** The sections a job can read; each stamps its own `*_checked_at`. */
 export type Section = Exclude<TrackingKind, "scan">;
-const CHECKED_COLUMN = { info: "infoCheckedAt", follows: "followsCheckedAt", posts: "postsCheckedAt", highlights: "highlightsCheckedAt" } as const;
+const CHECKED_COLUMN = { info: "infoCheckedAt", follows: "followsCheckedAt", posts: "postsCheckedAt", tagged: "taggedCheckedAt", highlights: "highlightsCheckedAt" } as const;
 
 export type TrackingPatch = Partial<Pick<SocialAccount, "interestLevel" | "scanEveryDays">>;
 
@@ -221,7 +221,7 @@ export type ScanJob = JobBase & {
 /** A single-section job someone asked for (Refresh / Run now). */
 export type SectionJob = JobBase & {
   kind: Exclude<TrackingKind, "scan">;
-  /** Posts jobs at a deep level. */
+  /** Posts jobs at a deep level; tagged jobs never, for now (tagged-posts-plan.md). */
   comments?: boolean;
 };
 
@@ -248,21 +248,27 @@ type ClaimedRow = {
   skip_stories: boolean;
 };
 
+type DbRunner = Pick<typeof db, "execute" | "select">;
+
 /** The claimed jobs `ids`, with what their accounts say the service should do. */
-async function toClaimed(ids: string[]): Promise<ClaimedJob[]> {
+async function toClaimed(ids: string[], runner: DbRunner = db): Promise<ClaimedJob[]> {
   if (!ids.length) return [];
-  const { rows } = await db.execute<ClaimedRow>(sql`
+  const { rows } = await runner.execute<ClaimedRow>(sql`
     SELECT j.id, j.kind, j.scan_mode, sa.id AS account_id, sa.username, sa.interest_level, sa.joined_at, sa.posts_checked_at, sa.skip_stories
     FROM tracking_jobs j JOIN social_accounts sa ON sa.id = j.social_account_id
     WHERE ${inArray(sql`j.id`, ids)}
   `);
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const jobs = ids.map((id) => claimedJob(byId.get(id)!));
+  const jobs = ids
+    .map((id) => byId.get(id))
+    .filter((r): r is ClaimedRow => Boolean(r))
+    .map(claimedJob);
   const scans = jobs.filter((j): j is ScanJob => j.kind === "scan");
   const accountOf = (j: ClaimedJob) => byId.get(j.id)!.account_id;
   const known = await knownContent(
     scans.filter((j) => j.posts).map(accountOf),
     scans.filter((j) => j.highlights).map(accountOf),
+    runner,
   );
   for (const j of scans) j.known = known(accountOf(j));
   return jobs;
@@ -271,7 +277,7 @@ async function toClaimed(ids: string[]): Promise<ClaimedJob[]> {
 function claimedJob(r: ClaimedRow): ClaimedJob {
   const deep = DEEP_LEVELS.includes(r.interest_level);
   const base = { id: r.id, username: r.username, needJoinedAt: (r.kind === "info" || r.kind === "scan") && r.joined_at == null };
-  if (r.kind !== "scan") return { ...base, kind: r.kind, ...(r.kind === "posts" && { comments: deep }) };
+  if (r.kind !== "scan") return { ...base, kind: r.kind, ...(r.kind === "posts" && { comments: deep }), ...(r.kind === "tagged" && { comments: false }) };
   const job: ScanJob = { ...base, kind: "scan", known: { posts: [], storyPks: [], highlightIds: [] } };
   if (r.scan_mode === "full") {
     job.posts = r.posts_checked_at == null ? "full" : "recent";
@@ -286,14 +292,18 @@ function claimedJob(r: ClaimedRow): ClaimedJob {
  * highlights (`highlightAccounts`): three queries for the whole claim, then a
  * lookup per account.
  */
-async function knownContent(postAccounts: string[], highlightAccounts: string[]): Promise<(accountId: string) => KnownContent> {
+async function knownContent(
+  postAccounts: string[],
+  highlightAccounts: string[],
+  runner: DbRunner = db,
+): Promise<(accountId: string) => KnownContent> {
   const posts = new Map<string, KnownContent["posts"]>();
   const storyPks = new Map<string, string[]>();
   const highlightIds = new Map<string, string[]>();
   const push = <T,>(m: Map<string, T[]>, k: string, v: T) => (m.get(k) ?? m.set(k, []).get(k)!).push(v);
   if (postAccounts.length) {
     const wanted = new Set(postAccounts);
-    const rows = await db
+    const rows = await runner
       .select({
         accountId: socialAccountPosts.socialAccountId,
         coauthors: socialAccountPosts.coauthorAccountIds,
@@ -317,12 +327,12 @@ async function knownContent(postAccounts: string[], highlightAccounts: string[])
     }
   }
   if (highlightAccounts.length) {
-    const stories = await db
+    const stories = await runner
       .select({ accountId: socialAccountPosts.socialAccountId, pk: socialAccountPosts.instagramPk })
       .from(socialAccountPosts)
       .where(and(inArray(socialAccountPosts.socialAccountId, highlightAccounts), eq(socialAccountPosts.postType, "story"), sql`${socialAccountPosts.instagramPk} IS NOT NULL`));
     for (const r of stories) push(storyPks, r.accountId, r.pk!);
-    const sets = await db
+    const sets = await runner
       .select({ accountId: instagramHighlights.socialAccountId, id: instagramHighlights.instagramId })
       .from(instagramHighlights)
       .where(and(inArray(instagramHighlights.socialAccountId, highlightAccounts), sql`${instagramHighlights.deletedSeenAt} IS NULL`));
@@ -358,6 +368,18 @@ function dueAt(at: SQL, skipRecent: boolean): SQL {
 }
 
 /**
+ * Active claim transactions and claimed job IDs awaiting their `run_id` stamp
+ * in this process, so `releaseOrphanedTrackingJobs` never races with an
+ * in-flight handoff between `claimTrackingJobs` and `triggerTrackingRun`.
+ */
+let activeClaimCount = 0;
+const inFlightClaimIds = new Set<string>();
+
+export function markClaimedJobsAttached(ids: string[]): void {
+  for (const id of ids) inFlightClaimIds.delete(id);
+}
+
+/**
  * Claim up to `limit` jobs for `importerId`, reserved on the spot (importer
  * set) so two importers (or the morning tick and a manual kick) can never take
  * the same one: queued manual jobs first (oldest first), then one scan per
@@ -368,37 +390,44 @@ function dueAt(at: SQL, skipRecent: boolean): SQL {
  */
 export async function claimTrackingJobs(importerId: string, limit: number, opts: { manualOnly?: boolean } = {}): Promise<ClaimedJob[]> {
   const skipRecent = opts.manualOnly ? false : await skipRecentlyChecked();
-  const claimed = await db.transaction(async (tx) => {
-    const manual = await tx.execute<{ id: string; created_at: Date }>(sql`
-      UPDATE tracking_jobs j
-      SET importer_id = ${importerId}, attempts = j.attempts + 1
-      WHERE j.id IN (
-          SELECT id FROM tracking_jobs
-          WHERE status = 'queued' AND origin = 'manual' AND importer_id IS NULL
-          ORDER BY created_at
-          LIMIT ${limit}
-          FOR UPDATE SKIP LOCKED
-        )
-      RETURNING j.id, j.created_at
-    `);
-    const manualIds = manual.rows.sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map((r) => r.id);
-    const remaining = limit - manualIds.length;
-    if (opts.manualOnly || remaining <= 0) return manualIds;
+  activeClaimCount++;
+  let claimed: ClaimedJob[];
+  try {
+    claimed = await db.transaction(async (tx) => {
+      const manual = await tx.execute<{ id: string; created_at: Date }>(sql`
+        UPDATE tracking_jobs j
+        SET importer_id = ${importerId}, attempts = j.attempts + 1
+        WHERE j.id IN (
+            SELECT id FROM tracking_jobs
+            WHERE status = 'queued' AND origin = 'manual' AND importer_id IS NULL
+            ORDER BY created_at
+            LIMIT ${limit}
+            FOR UPDATE SKIP LOCKED
+          )
+        RETURNING j.id, j.created_at
+      `);
+      const manualIds = manual.rows.sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map((r) => r.id);
+      const remaining = limit - manualIds.length;
+      if (opts.manualOnly || remaining <= 0) return toClaimed(manualIds, tx);
 
-    const due = await tx.execute<{ id: string }>(sql`
-      INSERT INTO tracking_jobs (social_account_id, kind, scan_mode, origin, status, importer_id, attempts)
-      SELECT d.id, 'scan', d.scan_mode, 'schedule', 'queued', ${importerId}, 1
-      FROM (
-        SELECT sa.id, ${scanModeFor(sql`sa.interest_level`)} AS scan_mode
-        ${dueAt(sql`now()`, skipRecent)}
-        ORDER BY sa.scan_due_at ASC
-        LIMIT ${remaining}
-        FOR UPDATE OF sa SKIP LOCKED
-      ) d
-      RETURNING id
-    `);
-    return [...manualIds, ...due.rows.map((r) => r.id)];
-  }).then(toClaimed);
+      const due = await tx.execute<{ id: string }>(sql`
+        INSERT INTO tracking_jobs (social_account_id, kind, scan_mode, origin, status, importer_id, attempts)
+        SELECT d.id, 'scan', d.scan_mode, 'schedule', 'queued', ${importerId}, 1
+        FROM (
+          SELECT sa.id, ${scanModeFor(sql`sa.interest_level`)} AS scan_mode
+          ${dueAt(sql`now()`, skipRecent)}
+          ORDER BY sa.scan_due_at ASC
+          LIMIT ${remaining}
+          FOR UPDATE OF sa SKIP LOCKED
+        ) d
+        RETURNING id
+      `);
+      return toClaimed([...manualIds, ...due.rows.map((r) => r.id)], tx);
+    });
+    for (const job of claimed) inFlightClaimIds.add(job.id);
+  } finally {
+    activeClaimCount--;
+  }
   if (claimed.length > 0) {
     sseManager.broadcast("tracking_job.updated", { action: "claimed", count: claimed.length });
   }
@@ -466,12 +495,49 @@ const OPEN = ["queued", "running"];
 export async function releaseTrackingJobs(jobs: ClaimedJob[]): Promise<void> {
   if (jobs.length === 0) return;
   const ids = jobs.map((j) => j.id);
-  await db.delete(trackingJobs).where(and(inArray(trackingJobs.id, ids), eq(trackingJobs.origin, "schedule"), inArray(trackingJobs.status, OPEN)));
-  await db
+  try {
+    const claimedOpen = and(inArray(trackingJobs.id, ids), inArray(trackingJobs.status, OPEN), sql`${trackingJobs.importerId} IS NOT NULL`);
+    await db.delete(trackingJobs).where(and(claimedOpen, eq(trackingJobs.origin, "schedule")));
+    await db
+      .update(trackingJobs)
+      .set({ status: "queued", importerId: null, runId: null, startedAt: null, attempts: sql`greatest(${trackingJobs.attempts} - 1, 0)` })
+      .where(claimedOpen);
+    sseManager.broadcast("tracking_job.updated", { action: "released", count: jobs.length });
+  } finally {
+    markClaimedJobsAttached(ids);
+  }
+}
+
+/**
+ * Release jobs that were claimed (`importer_id` set) but never attached to a
+ * run (`run_id` null) — e.g. if the process crashed between `claimTrackingJobs`
+ * and stamping `run_id`, or if a run row was deleted. Skips while a claim
+ * transaction is committing and excludes jobs currently in flight in memory.
+ */
+export async function releaseOrphanedTrackingJobs(): Promise<number> {
+  if (activeClaimCount > 0) return 0;
+  const inFlight = [...inFlightClaimIds];
+  const orphanFilter = and(
+    inArray(trackingJobs.status, OPEN),
+    sql`${trackingJobs.importerId} IS NOT NULL`,
+    isNull(trackingJobs.runId),
+    isNull(trackingJobs.scanReceivedAt),
+    inFlight.length > 0 ? sql`${trackingJobs.id} NOT IN (${sql.join(inFlight.map((id) => sql`${id}`), sql`, `)})` : undefined,
+  );
+  const deleted = await db
+    .delete(trackingJobs)
+    .where(and(orphanFilter, eq(trackingJobs.origin, "schedule")))
+    .returning({ id: trackingJobs.id });
+  const released = await db
     .update(trackingJobs)
     .set({ status: "queued", importerId: null, runId: null, startedAt: null, attempts: sql`greatest(${trackingJobs.attempts} - 1, 0)` })
-    .where(and(inArray(trackingJobs.id, ids), inArray(trackingJobs.status, OPEN)));
-  sseManager.broadcast("tracking_job.updated", { action: "released", count: jobs.length });
+    .where(orphanFilter)
+    .returning({ id: trackingJobs.id });
+  const count = deleted.length + released.length;
+  if (count > 0) {
+    sseManager.broadcast("tracking_job.updated", { action: "released", count });
+  }
+  return count;
 }
 
 /**
@@ -572,7 +638,7 @@ export async function resolveMentionedAccounts(handles: string[]): Promise<Queue
 
 /** The Instagram accounts Me's accounts follow — ones with a username, the only ones a job can open. */
 const FOLLOWED_BY_ME = sql`
-  SELECT DISTINCT f.followed_id AS id, sa.scan_checked_at, sa.info_checked_at, sa.follows_checked_at, sa.posts_checked_at, sa.highlights_checked_at
+  SELECT DISTINCT f.followed_id AS id, sa.scan_checked_at, sa.info_checked_at, sa.follows_checked_at, sa.posts_checked_at, sa.tagged_checked_at, sa.highlights_checked_at
   FROM social_follows f
   JOIN social_accounts sa ON sa.id = f.followed_id
   WHERE f.follower_id IN (${ME_ACCOUNTS})
@@ -596,7 +662,7 @@ const hasOpenJob = (kind: TrackingKind) => sql`EXISTS (
   WHERE j.social_account_id = d.id AND j.kind = ${kind} AND j.status IN ('queued', 'running')
 )`;
 
-const CHECKED_SQL_COLUMN = { scan: sql`d.scan_checked_at`, info: sql`d.info_checked_at`, follows: sql`d.follows_checked_at`, posts: sql`d.posts_checked_at`, highlights: sql`d.highlights_checked_at` } as const;
+const CHECKED_SQL_COLUMN = { scan: sql`d.scan_checked_at`, info: sql`d.info_checked_at`, follows: sql`d.follows_checked_at`, posts: sql`d.posts_checked_at`, tagged: sql`d.tagged_checked_at`, highlights: sql`d.highlights_checked_at` } as const;
 
 export type QueuedBatch = { batch: BatchSummary | null; skippedRecent: number };
 
@@ -643,7 +709,7 @@ export function queueFollowingRefresh(kind: TrackingKind): Promise<QueuedBatch> 
 export function queueAccountsRefresh(kind: TrackingKind, accountIds: string[]): Promise<QueuedBatch> {
   if (!accountIds.length) return Promise.resolve({ batch: null, skippedRecent: 0 });
   const source = sql`
-    SELECT ${socialAccounts.id} AS id, scan_checked_at, info_checked_at, follows_checked_at, posts_checked_at, highlights_checked_at FROM social_accounts
+    SELECT ${socialAccounts.id} AS id, scan_checked_at, info_checked_at, follows_checked_at, posts_checked_at, tagged_checked_at, highlights_checked_at FROM social_accounts
     WHERE ${inArray(socialAccounts.id, accountIds)}
       AND ${socialAccounts.typeId} = ${INSTAGRAM_TYPE_ID}
       AND ${socialAccounts.username} IS NOT NULL AND ${socialAccounts.username} <> ''`;

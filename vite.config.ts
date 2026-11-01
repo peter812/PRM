@@ -44,6 +44,30 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, "/");
+          if (normalized.includes("node_modules")) {
+            if (normalized.includes("/react/") || normalized.includes("/react-dom/") || normalized.includes("/wouter/")) {
+              return "vendor-react";
+            }
+            if (normalized.includes("@tanstack/react-query")) {
+              return "vendor-query";
+            }
+            if (normalized.includes("@radix-ui/")) {
+              return "vendor-radix";
+            }
+            if (normalized.includes("lucide-react") || normalized.includes("react-icons")) {
+              return "vendor-icons";
+            }
+            // three / pixi / @xyflow are deliberately left to Rollup: forcing them into
+            // named chunks created a cycle with vendor-react that made every page
+            // preload ~1.9 MB of graph code. Unassigned, they split with their lazy routes.
+          }
+        },
+      },
+    },
   },
   server: {
     fs: {

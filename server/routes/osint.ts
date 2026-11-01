@@ -15,6 +15,7 @@ import {
   OSINT_API_URL_KEY,
   OSINT_API_KEY_KEY,
   normalizeOsintUrl,
+  invalidateOsintConfigCache,
   loadOsintConfig as loadConfig,
   isOsintConfigured as isConfigured,
   osintFetch,
@@ -69,6 +70,7 @@ export function registerRoutes(app: Express) {
       if (typeof apiKey === "string" && apiKey.trim()) {
         await setOsintSetting(OSINT_API_KEY_KEY, apiKey.trim());
       }
+      invalidateOsintConfigCache();
       res.json({ success: true });
     } catch (error) {
       console.error("Error saving OSINT settings:", error);

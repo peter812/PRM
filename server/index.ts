@@ -17,6 +17,7 @@ import { startSummaryRunner } from "./summary-queue";
 import { startStoriesScheduler } from "./stories-scheduler";
 import { startFaceAutoAssignScheduler } from "./recognition";
 import { startFaceClusteringScheduler } from "./face-clusters";
+import { startBackupScheduler } from "./backup-scheduler";
 import { storage } from "./storage";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { etagMiddleware } from "./middleware/etag-cache";
@@ -39,12 +40,6 @@ app.use((req, res, next) => {
   next();
 });
 
-declare module 'http' {
-  interface IncomingMessage {
-    rawBody: unknown
-  }
-}
-
 // --- Upgrade #10: Response compression (gzip/br) ---
 // Compress responses with body size >= 1KB, but skip streaming endpoints
 // (compression buffers the full response which defeats chunked streaming).
@@ -56,13 +51,17 @@ app.use(compression({
   },
 }));
 
-app.use(express.json({
-  limit: '100mb',
-  verify: (req, _res, buf) => {
-    req.rawBody = buf;
+// Tracking scan bundles can be up to 100MB; keep the high limit scoped to that route
+// while protecting all other endpoints with a safe 5MB default and no rawBody buffer duplication.
+const scanJsonParser = express.json({ limit: '100mb' });
+const defaultJsonParser = express.json({ limit: '5mb' });
+app.use((req, res, next) => {
+  if (req.method === "POST" && SCAN_UPLOAD.test(req.path)) {
+    return scanJsonParser(req, res, next);
   }
-}));
-app.use(express.urlencoded({ limit: '100mb', extended: false }));
+  return defaultJsonParser(req, res, next);
+});
+app.use(express.urlencoded({ limit: '5mb', extended: false }));
 
 // --- Upgrade #8 (partial): Request ID middleware ---
 app.use(requestIdMiddleware);
@@ -208,6 +207,7 @@ app.use(prmS3DirectMiddleware);
     startStoriesScheduler();
     startFaceAutoAssignScheduler();
     startFaceClusteringScheduler();
+    startBackupScheduler();
     // Daily social account totals for the Stats dialog; a restart just refreshes today's row.
     const snapshotAccountStats = () =>
       storage.recordSocialAccountDailyStats().catch((err) => log(`[AccountStats] snapshot failed: ${err?.message ?? err}`));

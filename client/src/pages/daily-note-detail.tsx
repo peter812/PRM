@@ -63,9 +63,23 @@ export default function DailyNoteDetail() {
     enabled: !!id,
   });
 
-  const { data: people = [] } = useQuery<any[]>({ queryKey: ["/api/people"] });
-  const { data: groups = [] } = useQuery<any[]>({ queryKey: ["/api/groups"] });
-  const { data: socialAccounts = [] } = useQuery<any[]>({ queryKey: ["/api/social-accounts"] });
+  const addPartyOpen = editOpen;
+  const hasPersonParties = Boolean(note?.involvedParties?.some(p => p.partyType === "person"));
+  const hasGroupParties = Boolean(note?.involvedParties?.some(p => p.partyType === "group"));
+  const hasSocialParties = Boolean(note?.involvedParties?.some(p => p.partyType === "social_account"));
+
+  const { data: people = [] } = useQuery<any[]>({
+    queryKey: ["/api/people"],
+    enabled: addPartyOpen || hasPersonParties,
+  });
+  const { data: groups = [] } = useQuery<any[]>({
+    queryKey: ["/api/groups"],
+    enabled: addPartyOpen || hasGroupParties,
+  });
+  const { data: socialAccounts = [] } = useQuery<any[]>({
+    queryKey: ["/api/social-accounts"],
+    enabled: addPartyOpen || hasSocialParties,
+  });
 
   const deleteMutation = useMutation({
     mutationFn: () => apiRequest("DELETE", `/api/daily-notes/${id}`),

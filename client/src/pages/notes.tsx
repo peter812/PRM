@@ -43,23 +43,27 @@ function groupOf(key: string, notes: NoteRow[]): NoteGroup {
   return { key, notes, sightings, days: new Set(sightings.map(day)).size };
 }
 
-function NoteCard({ group }: { group: NoteGroup }) {
+function NoteCard({ group, hideAccount }: { group: NoteGroup; hideAccount?: boolean }) {
   const [open, setOpen] = useState(false);
   const note = group.notes[0];
   const expandable = group.notes.length > 1 || group.sightings.length > 1;
   return (
     <Card data-testid={`note-${note.noteId}`}>
       <CardContent className="p-4 flex gap-3">
-        <Avatar className="w-10 h-10 shrink-0">
-          {note.imageUrl && <AvatarImage src={withImageSize(note.imageUrl, 64)} alt={note.username} />}
-          <AvatarFallback>{getInitials(note.username)}</AvatarFallback>
-        </Avatar>
+        {!hideAccount && (
+          <Avatar className="w-10 h-10 shrink-0">
+            {note.imageUrl && <AvatarImage src={withImageSize(note.imageUrl, 64)} alt={note.username} />}
+            <AvatarFallback>{getInitials(note.username)}</AvatarFallback>
+          </Avatar>
+        )}
         <div className="flex-1 min-w-0 space-y-1">
           <div className="flex items-center gap-2 flex-wrap text-sm">
-            <Link href={`/social-accounts/${note.socialAccountId}`} className="font-medium hover:underline">
-              @{note.username}
-            </Link>
-            {note.ownerUuid && note.ownerName && (
+            {!hideAccount && (
+              <Link href={`/social-accounts/${note.socialAccountId}`} className="font-medium hover:underline">
+                @{note.username}
+              </Link>
+            )}
+            {!hideAccount && note.ownerUuid && note.ownerName && (
               <Link href={`/person/${note.ownerUuid}`} className="text-muted-foreground hover:underline">
                 · {note.ownerName}
               </Link>
@@ -67,15 +71,9 @@ function NoteCard({ group }: { group: NoteGroup }) {
             {group.days > 1 && <Badge variant="secondary">seen on {group.days} days</Badge>}
             {group.notes.length > 1 && <Badge variant="outline">posted {group.notes.length} times</Badge>}
           </div>
-          {note.text && <p className="text-sm whitespace-pre-wrap break-words">{note.text}</p>}
-          {note.song && (
-            <p className="text-sm text-muted-foreground flex items-center gap-1">
-              <Music className="h-3.5 w-3.5 shrink-0" /> {note.song.title} — {note.song.artist}
-            </p>
-          )}
           <button
             type="button"
-            className="text-xs text-muted-foreground text-left flex items-center gap-1 disabled:cursor-default"
+            className="text-xs text-foreground/80 text-left flex items-center gap-1 disabled:cursor-default"
             onClick={() => setOpen((v) => !v)}
             disabled={!expandable}
             data-testid={`button-expand-${note.noteId}`}
@@ -85,13 +83,19 @@ function NoteCard({ group }: { group: NoteGroup }) {
             {group.sightings.length > 1 && ` – ${when(group.sightings[group.sightings.length - 1])}`}
           </button>
           {open && (
-            <ul className="text-xs text-muted-foreground space-y-1 pl-4 pt-1">
+            <ul className="text-xs text-foreground/80 space-y-1 pl-4 pb-1">
               {group.notes.map((n) => (
                 <li key={n.noteId}>
                   Posted {when(n.createdAt)}: seen {n.seenAt.map(when).join(", ")}
                 </li>
               ))}
             </ul>
+          )}
+          {note.text && <p className="text-sm whitespace-pre-wrap break-words">{note.text}</p>}
+          {note.song && (
+            <p className="text-sm text-muted-foreground flex items-center gap-1">
+              <Music className="h-3.5 w-3.5 shrink-0" /> {note.song.title} — {note.song.artist}
+            </p>
           )}
         </div>
       </CardContent>
@@ -181,7 +185,7 @@ export function NotesList({ socialAccountId }: { socialAccountId?: string }) {
             )}
           </p>
           {groups.map((g) => (
-            <NoteCard key={g.key} group={g} />
+            <NoteCard key={g.key} group={g} hideAccount={!!socialAccountId} />
           ))}
         </div>
       )}

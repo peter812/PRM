@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, X, Trash2, Loader2, ScanFace, ScanText } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, X, Trash2, Loader2, ScanText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LikesHiddenBadge } from "@/components/likes-hidden-badge";
@@ -14,7 +14,7 @@ import { postPosters } from "@/lib/instagram";
 import { withImageSize } from "@shared/image-size";
 import { Link } from "wouter";
 import { PostSummarySection } from "@/components/account-summary";
-import { FaceBoxOverlay, type FaceBox } from "@/components/face-box-overlay";
+import { PhotoFaces, postSlidesKey, type PostSlide } from "@/components/photo-faces";
 import { isOcrData } from "@/components/ocr-run-dialog";
 import { VideoTranscript } from "@/components/video-transcript";
 import { SeenBy } from "@/components/stories-tab";
@@ -22,22 +22,6 @@ import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
-
-/** One analyzed slide from GET /api/social-account-posts/:id/slides (server/face-review.ts PostSlideAnalysis). */
-interface PostSlide {
-  slide: number;
-  width: number | null;
-  height: number | null;
-  faces: {
-    faceUuid: string;
-    number: number;
-    box: FaceBox | null;
-    color: string;
-    identified: { socialAccountId?: string; personId?: string; username?: string; label: string } | null;
-    dismissed: boolean;
-  }[];
-  ocrData: unknown;
-}
 
 interface MentionEntry {
   imageIndex: number;
@@ -71,9 +55,11 @@ interface PostDetailDialogProps {
   post: SocialAccountPost;
   onEdit: () => void;
   onDelete: () => void;
+  /** The slide to open on; the tagged view opens on the one tagging the account. */
+  initialImageIndex?: number;
 }
 
-export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }: PostDetailDialogProps) {
+export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete, initialImageIndex = 0 }: PostDetailDialogProps) {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [showFaces, setShowFaces] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(true);
@@ -81,12 +67,23 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const images: string[] = safeJsonParse<string[]>(post.content, []);
+  const safeImageIndex = images.length > 0 ? Math.min(Math.max(0, currentImageIndex), images.length - 1) : 0;
+
+  // Reset carousel slide, face overlay, and OCR expansion whenever the post or open state changes.
+  useEffect(() => {
+    setCurrentImageIndex(initialImageIndex);
+    setShowFaces(false);
+    setOcrOpen(false);
+  }, [post.id, open]);
 
   // Warm the browser cache for every slide so paging through the carousel is instant.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !post.content) return;
+    const urls = safeJsonParse<string[]>(post.content, []);
+    if (!Array.isArray(urls)) return;
     const videos: HTMLVideoElement[] = [];
-    for (const url of safeJsonParse<string[]>(post.content, [])) {
+    for (const url of urls) {
+      if (!url || typeof url !== "string") continue;
       if (isVideoUrl(url)) {
         const v = document.createElement("video");
         v.preload = "auto";
@@ -94,7 +91,10 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
         v.src = url;
         videos.push(v);
       } else {
-        new Image().src = withImageSize(url, "max");
+        const sized = withImageSize(url, "max");
+        if (sized) {
+          new Image().src = sized;
+        }
       }
     }
     return () => {
@@ -112,7 +112,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
   });
 
   const { data: slides } = useQuery<PostSlide[]>({
-    queryKey: [`/api/social-account-posts/${post.id}/slides`],
+    queryKey: postSlidesKey(post.id),
     enabled: open && !!post.id,
   });
 
@@ -123,14 +123,14 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
     : `${post.commentCount ?? 0}`;
 
   const nextImage = () => {
-    if (currentImageIndex < images.length - 1) {
-      setCurrentImageIndex(currentImageIndex + 1);
+    if (safeImageIndex < images.length - 1) {
+      setCurrentImageIndex(safeImageIndex + 1);
     }
   };
 
   const prevImage = () => {
-    if (currentImageIndex > 0) {
-      setCurrentImageIndex(currentImageIndex - 1);
+    if (safeImageIndex > 0) {
+      setCurrentImageIndex(safeImageIndex - 1);
     }
   };
 
@@ -139,13 +139,9 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
     if (e.key === "ArrowRight") nextImage();
   };
 
-  const mentionsForCurrentImage = getMentionsForImage(post.mentionedAccounts, currentImageIndex);
-  const currentSlide = slides?.find((s) => s.slide === currentImageIndex);
-  const slideFaces = currentSlide?.faces ?? [];
-  // Mentions not already shown as a named face on this slide.
-  const faceUsernames = new Set(slideFaces.map((f) => f.identified?.username?.toLowerCase()).filter(Boolean));
-  const extraMentions = mentionsForCurrentImage.filter((m) => !faceUsernames.has(m.toLowerCase()));
-  const hasFaceInfo = slideFaces.length > 0 || mentionsForCurrentImage.length > 0;
+  const mentionsForCurrentImage = getMentionsForImage(post.mentionedAccounts, safeImageIndex);
+  const currentSlide = slides?.find((s) => s.slide === safeImageIndex);
+  const currentIsVideo = isVideoUrl(images[safeImageIndex]);
   const ocr = isOcrData(currentSlide?.ocrData) && currentSlide.ocrData.text?.trim() ? currentSlide.ocrData : null;
   const posters = postPosters(post);
 
@@ -176,6 +172,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
       if (!o) {
         setCurrentImageIndex(0);
         setShowFaces(false);
+        setOcrOpen(false);
       }
     }}>
       <DialogContent
@@ -198,108 +195,38 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
           <div className="relative flex-1 bg-black flex items-center justify-center min-h-[300px] md:min-h-[400px] overflow-hidden">
             {images.length > 0 ? (
               <div className="relative max-w-full max-h-[60vh] md:max-h-[80vh] flex items-center justify-center w-fit h-fit">
-                {isVideoUrl(images[currentImageIndex]) ? (
-                  <video
-                    ref={videoRef}
-                    src={images[currentImageIndex]}
-                    controls
-                    className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain block"
-                    data-testid="video-post-detail"
-                  />
-                ) : showFaces && slideFaces.some((f) => f.box) ? (
-                  <FaceBoxOverlay
-                    src={withImageSize(images[currentImageIndex], "max")}
-                    faces={slideFaces.map((f) => ({
-                      key: f.faceUuid,
-                      box: f.box,
-                      color: f.color,
-                      label: String(f.number),
-                      variant: f.dismissed ? "muted" : f.identified ? "solid" : "dashed",
-                    }))}
-                    width={currentSlide?.width}
-                    height={currentSlide?.height}
-                    imgClassName="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain"
-                  />
-                ) : (
-                  <img
-                    src={withImageSize(images[currentImageIndex], "max")}
-                    alt={`Post image ${currentImageIndex + 1}`}
-                    className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain block"
-                    data-testid="img-post-detail"
-                  />
-                )}
-
-                {/* Faces & mentions toggle */}
-                {hasFaceInfo && (
-                  <button
-                    type="button"
-                    className={`absolute left-3 top-3 z-20 flex h-8 w-8 items-center justify-center rounded-full shadow-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer ${
-                      showFaces ? "bg-white text-black" : "bg-black/60 text-white hover:bg-black/80"
-                    }`}
-                    onClick={() => setShowFaces((v) => !v)}
-                    data-testid="button-toggle-faces"
-                    aria-label={showFaces ? "Hide faces and mentions" : "Show faces and mentions"}
-                    aria-pressed={showFaces}
-                  >
-                    <ScanFace className="h-4 w-4" />
-                  </button>
-                )}
-
-                {showFaces && hasFaceInfo && (
-                  <div
-                    className="absolute left-3 top-14 z-20 w-56 max-h-[60%] overflow-y-auto rounded-md bg-black/75 p-2.5 text-xs text-white shadow-lg backdrop-blur-sm space-y-2.5"
-                    data-testid="panel-faces"
-                  >
-                    {slideFaces.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-white/60">Faces</p>
-                        {slideFaces.map((f) => {
-                          const href = f.identified?.socialAccountId
-                            ? `/social-accounts/${f.identified.socialAccountId}`
-                            : f.identified?.personId
-                              ? `/person/${f.identified.personId}`
-                              : null;
-                          return (
-                            <div key={f.faceUuid} className="flex items-center gap-2" data-testid={`face-row-${f.number}`}>
-                              <span
-                                className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-1 text-[10px] font-semibold"
-                                style={{ backgroundColor: f.dismissed ? "rgb(107,114,128)" : f.color }}
-                              >
-                                {f.number}
-                              </span>
-                              {href ? (
-                                <Link href={href} className="truncate hover:underline" onClick={() => onOpenChange(false)}>
-                                  {f.identified!.label}
-                                </Link>
-                              ) : (
-                                <span className="truncate italic text-white/60">{f.dismissed ? "Dismissed" : "Unknown"}</span>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {extraMentions.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-white/60">
-                          {slideFaces.length > 0 ? "Also mentioned" : "Mentioned"}
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {extraMentions.map((account) => (
-                            <span key={account} className="rounded-sm bg-white/15 px-1.5 py-0.5">
-                              @{account}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+                <PhotoFaces
+                  postId={post.id}
+                  slide={safeImageIndex}
+                  src={currentIsVideo ? undefined : withImageSize(images[safeImageIndex], "max")}
+                  imgClassName="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain"
+                  mentions={mentionsForCurrentImage}
+                  show={showFaces}
+                  onShowChange={setShowFaces}
+                  onNavigate={() => onOpenChange(false)}
+                >
+                  {currentIsVideo ? (
+                    <video
+                      ref={videoRef}
+                      src={images[safeImageIndex]}
+                      controls
+                      className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain block"
+                      data-testid="video-post-detail"
+                    />
+                  ) : (
+                    <img
+                      src={withImageSize(images[safeImageIndex], "max")}
+                      alt={`Post image ${safeImageIndex + 1}`}
+                      className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain block"
+                      data-testid="img-post-detail"
+                    />
+                  )}
+                </PhotoFaces>
 
                 {/* Navigation Arrows */}
                 {images.length > 1 && (
                   <>
-                    {currentImageIndex > 0 && (
+                    {safeImageIndex > 0 && (
                       <button
                         type="button"
                         className="absolute left-3 top-1/2 -translate-y-1/2 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white shadow-md transition-colors hover:bg-black/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
@@ -310,7 +237,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                         <ChevronLeft className="h-5 w-5" />
                       </button>
                     )}
-                    {currentImageIndex < images.length - 1 && (
+                    {safeImageIndex < images.length - 1 && (
                       <button
                         type="button"
                         className="absolute right-3 top-1/2 -translate-y-1/2 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white shadow-md transition-colors hover:bg-black/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white cursor-pointer"
@@ -329,7 +256,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                           type="button"
                           key={idx}
                           className={`w-2 h-2 rounded-full transition-colors ${
-                            idx === currentImageIndex ? "bg-white" : "bg-white/40"
+                            idx === safeImageIndex ? "bg-white" : "bg-white/40"
                           }`}
                           onClick={() => setCurrentImageIndex(idx)}
                           data-testid={`button-image-dot-${idx}`}
@@ -405,7 +332,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                 <PostSummarySection
                   postId={post.id}
                   initialSummary={post.aiSummary}
-                  currentImageIndex={currentImageIndex}
+                  currentImageIndex={safeImageIndex}
                 />
 
                 {/* Text read from the current image */}
@@ -420,7 +347,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                     >
                       <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ocrOpen ? "" : "-rotate-90"}`} />
                       <ScanText className="h-3.5 w-3.5" />
-                      Text in image{images.length > 1 ? ` (slide ${currentImageIndex + 1})` : ""}
+                      Text in image{images.length > 1 ? ` (slide ${safeImageIndex + 1})` : ""}
                     </button>
                     {ocrOpen && (
                       <p className="text-sm whitespace-pre-wrap leading-relaxed break-words" data-testid="text-post-ocr">

@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useSyncExternalStore } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { motion, AnimatePresence } from "framer-motion";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -377,113 +376,103 @@ export function TaskTrackerModal() {
 
   const hasTasks = rows.length > 0;
 
-  return (
-    <AnimatePresence>
-      {hasTasks && (
-        <div className="fixed z-50 left-4 md:left-6 bottom-[4.5rem] md:bottom-6 pointer-events-none">
-          <AnimatePresence mode="wait">
-            {minimized ? (
-              <motion.button
-                key="minimized-bubble"
-                initial={{ scale: 0, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0, opacity: 0 }}
-                whileHover={{ scale: 1.05 }}
-                onClick={() => setMinimized(false)}
-                className="pointer-events-auto h-12 w-12 rounded-full flex items-center justify-center bg-primary text-primary-foreground shadow-lg border border-primary/20 relative"
-                title="Expand Tasks Panel"
-              >
-                <Layers className="h-5 w-5 animate-pulse" />
-                {activeTasksCount > 0 && (
-                  <Badge className="absolute -top-1 -right-1 h-5 min-w-5 flex items-center justify-center px-1 bg-destructive border-2 border-background text-[10px] font-bold">
-                    {activeTasksCount + moreWaiting}
-                  </Badge>
-                )}
-                {activeTasksCount === 0 && (
-                  <div className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-green-500 border-2 border-background" />
-                )}
-              </motion.button>
-            ) : (
-              <motion.div
-                key="expanded-panel"
-                initial={{ y: 50, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: 50, opacity: 0 }}
-                className="pointer-events-auto w-[calc(100vw-2rem)] md:w-96 rounded-xl border border-border/80 bg-background/95 backdrop-blur-md shadow-xl overflow-hidden"
-              >
-                {/* Header */}
-                <div className="flex items-center justify-between px-3 py-2 border-b bg-muted/30">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold">Background Tasks</span>
-                    <Badge variant="secondary" className="px-1.5 py-0 text-xs font-normal">
-                      {activeTasksCount + moreWaiting} active
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground mr-1 cursor-pointer">
-                      Scheduled
-                      <Switch
-                        checked={showScheduled}
-                        onCheckedChange={setShowScheduledTasks}
-                        className="scale-75"
-                        aria-label="Show scheduled social checks"
-                      />
-                    </label>
-                    {terminalKeys.length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => dismiss(terminalKeys)}
-                        className="text-xs h-7 px-2 text-muted-foreground hover:text-foreground"
-                      >
-                        Clear Finished
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setMinimized(true)}
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                      title="Minimize"
-                    >
-                      <ChevronDown className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+  if (!hasTasks) return null;
 
-                {/* Task rows */}
-                <div className="py-1 max-h-[300px] overflow-y-auto custom-scrollbar">
-                  {rows.map((task) => {
-                    const style = STATUS_STYLE[task.status] ?? STATUS_STYLE.pending;
-                    return (
-                      <div key={task.key} className="flex items-center gap-2 px-3 py-1 text-xs hover:bg-muted/40">
-                        <span className="font-semibold truncate min-w-0">{task.name}</span>
-                        {task.sub && <span className="text-muted-foreground truncate min-w-0">{task.sub}</span>}
-                        <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${style.className}`}>
-                          {style.label}
-                        </span>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          onClick={() => handleTrash(task)}
-                          disabled={cancelGeneralMutation.isPending || cancelSocialMutation.isPending}
-                          title={isActive(task.status) ? "Cancel" : "Dismiss"}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    );
-                  })}
-                  {moreWaiting > 0 && (
-                    <div className="px-3 py-1 text-[11px] text-muted-foreground">+{moreWaiting} more waiting</div>
-                  )}
+  return (
+    <div className="fixed z-50 left-4 md:left-6 bottom-[4.5rem] md:bottom-6 pointer-events-none">
+      {minimized ? (
+        <button
+          type="button"
+          key="minimized-bubble"
+          onClick={() => setMinimized(false)}
+          className="pointer-events-auto h-12 w-12 rounded-full flex items-center justify-center bg-primary text-primary-foreground shadow-lg border border-primary/20 relative transition-all duration-200 ease-out animate-in fade-in zoom-in-95 hover:scale-105"
+          title="Expand Tasks Panel"
+        >
+          <Layers className="h-5 w-5 animate-pulse" />
+          {activeTasksCount > 0 && (
+            <Badge className="absolute -top-1 -right-1 h-5 min-w-5 flex items-center justify-center px-1 bg-destructive border-2 border-background text-[10px] font-bold">
+              {activeTasksCount + moreWaiting}
+            </Badge>
+          )}
+          {activeTasksCount === 0 && (
+            <div className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-green-500 border-2 border-background" />
+          )}
+        </button>
+      ) : (
+        <div
+          key="expanded-panel"
+          className="pointer-events-auto w-[calc(100vw-2rem)] md:w-96 rounded-xl border border-border/80 bg-background/95 backdrop-blur-md shadow-xl overflow-hidden transition-all duration-200 ease-out animate-in fade-in slide-in-from-bottom-4"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-2 border-b bg-muted/30">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold">Background Tasks</span>
+              <Badge variant="secondary" className="px-1.5 py-0 text-xs font-normal">
+                {activeTasksCount + moreWaiting} active
+              </Badge>
+            </div>
+            <div className="flex items-center gap-1">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground mr-1 cursor-pointer">
+                Scheduled
+                <Switch
+                  checked={showScheduled}
+                  onCheckedChange={setShowScheduledTasks}
+                  className="scale-75"
+                  aria-label="Show scheduled social checks"
+                />
+              </label>
+              {terminalKeys.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => dismiss(terminalKeys)}
+                  className="text-xs h-7 px-2 text-muted-foreground hover:text-foreground"
+                >
+                  Clear Finished
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setMinimized(true)}
+                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                title="Minimize"
+              >
+                <ChevronDown className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Task rows */}
+          <div className="py-1 max-h-[300px] overflow-y-auto custom-scrollbar">
+            {rows.map((task) => {
+              const style = STATUS_STYLE[task.status] ?? STATUS_STYLE.pending;
+              return (
+                <div key={task.key} className="flex items-center gap-2 px-3 py-1 text-xs hover:bg-muted/40">
+                  <span className="font-semibold truncate min-w-0">{task.name}</span>
+                  {task.sub && <span className="text-muted-foreground truncate min-w-0">{task.sub}</span>}
+                  <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${style.className}`}>
+                    {style.label}
+                  </span>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => handleTrash(task)}
+                    disabled={cancelGeneralMutation.isPending || cancelSocialMutation.isPending}
+                    title={isActive(task.status) ? "Cancel" : "Dismiss"}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
                 </div>
-              </motion.div>
+              );
+            })}
+            {moreWaiting > 0 && (
+              <div className="px-3 py-1 text-[11px] text-muted-foreground">+{moreWaiting} more waiting</div>
             )}
-          </AnimatePresence>
+          </div>
         </div>
       )}
-    </AnimatePresence>
+    </div>
   );
 }

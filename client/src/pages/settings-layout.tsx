@@ -1,26 +1,8 @@
-import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive,  MessageSquare, Radar, Instagram, Server, History, Globe, Palette } from "lucide-react";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { Route, Switch, Redirect } from "wouter";
+import { Loader2 } from "lucide-react";
 import { lazy, Suspense } from "react";
+
+export { SettingsSidebar } from "@/components/settings-sidebar";
 
 const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
 const UnifiedSetupPage = lazy(() => import("@/pages/unified-setup-page"));
@@ -54,229 +36,12 @@ const IntelligenceSettingsPage = lazy(() => import("@/pages/intelligence-setting
 const IntelligenceToolsSettingsPage = lazy(() => import("@/pages/intelligence-tools-settings"));
 const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelligence-external-tools-settings"));
 const IntelligenceImagesSettingsPage = lazy(() => import("@/pages/intelligence-images-settings"));
+const PromptsSettingsPage = lazy(() => import("@/pages/prompts-settings"));
 const VectorSettingsPage = lazy(() => import("@/pages/vector-settings"));
 const OsintSettingsPage = lazy(() => import("@/pages/osint-settings"));
 const MapsSettingsPage = lazy(() => import("@/pages/maps-settings"));
 const TaskDetailPage = lazy(() => import("@/pages/task-detail"));
 const NotFound = lazy(() => import("@/pages/not-found"));
-
-interface MenuItem {
-  title: string;
-  url: string;
-  icon: React.ComponentType<{ className?: string }>;
-  subItems?: { title: string; url: string; icon: React.ComponentType<{ className?: string }> }[];
-}
-
-const settingsMenuItems: MenuItem[] = [
-  {
-    title: "Back to Site",
-    url: "/people",
-    icon: ArrowLeft,
-  },
-  {
-    title: "Home",
-    url: "/settings/home",
-    icon: Home,
-  },
-  {
-    title: "Unified Setup",
-    url: "/settings/setup",
-    icon: Sparkles,
-  },
-  {
-    title: "User Options",
-    url: "/settings/user",
-    icon: User,
-  },
-  {
-    title: "App Options",
-    url: "/settings/app",
-    icon: Settings,
-    subItems: [
-      { title: "Looks", url: "/settings/looks", icon: Palette },
-      { title: "Social Graph", url: "/settings/social-graph", icon: Network },
-      { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
-      { title: "Search Options", url: "/settings/search", icon: Search },
-      { title: "Maps", url: "/settings/maps", icon: Globe },
-      { title: "Data Types", url: "/settings/data-types", icon: Layers },
-      { title: "Delete Options", url: "/settings/delete", icon: Trash2 },
-    ],
-  },
-  {
-    title: "Image Storage",
-    url: "/settings/image-storage",
-    icon: HardDrive,
-    subItems: [
-      { title: "Storage", url: "/settings/image-storage", icon: HardDrive },
-      { title: "Image Table", url: "/settings/image-storage/table", icon: Table2 },
-    ],
-  },
-  {
-    title: "Intelligence",
-    url: "/settings/intelligence",
-    icon: BrainCircuit,
-    subItems: [
-      { title: "Tools", url: "/settings/intelligence/tools", icon: Wrench },
-      { title: "External Tools", url: "/settings/intelligence/external-tools", icon: Plug },
-      { title: "Images", url: "/settings/intelligence/images", icon: ImageIcon },
-      { title: "Vector Storage", url: "/settings/vector", icon: Database },
-      { title: "OSINT", url: "/settings/osint", icon: Radar },
-    ],
-  },
-  {
-    title: "Tasks",
-    url: "/settings/tasks",
-    icon: ListTodo,
-    subItems: [
-      { title: "Image Tasks", url: "/settings/image-storage/tasks", icon: ImageIcon },
-      { title: "Social Tasks", url: "/settings/tasks/social", icon: History },
-      { title: "OSINT Tasks", url: "/settings/tasks/osint", icon: Radar },
-      { title: "Summary Tasks", url: "/settings/tasks/summaries", icon: Sparkles },
-    ],
-  },
-  {
-    title: "Import & Export",
-    url: "/settings/import-export",
-    icon: FolderSync,
-    subItems: [
-      { title: "Contacts", url: "/settings/import-export/contacts", icon: Users },
-      { title: "Messages", url: "/settings/import-export/messages", icon: MessageSquare },
-      { title: "Extension Imports", url: "/settings/import-export/extension-imports", icon: Chrome },
-      { title: "Backups", url: "/settings/import-export/backups", icon: Archive },
-    ],
-  },
-  {
-    title: "Instagram",
-    url: "/settings/instagram",
-    icon: Instagram,
-    subItems: [
-      { title: "Importers", url: "/settings/instagram", icon: Server },
-      { title: "Tracking", url: "/settings/instagram/tracking", icon: Radar },
-      { title: "Posts", url: "/settings/instagram/posts", icon: ImageIcon },
-    ],
-  },
-  {
-    title: "Recognition",
-    url: "/settings/recognition",
-    icon: Scan,
-  },
-  {
-    title: "API Documentation",
-    url: "/settings/api",
-    icon: Book,
-    subItems: [
-      { title: "API Settings", url: "/settings/api/settings", icon: Key },
-    ],
-  },
-];
-
-export function SettingsSidebar() {
-  const [location] = useLocation();
-
-  const isImportExportActive = location.startsWith("/settings/import-export");
-  const isInstagramActive = location.startsWith("/settings/instagram");
-  const isAppOptionsActive =
-    location.startsWith("/settings/app") ||
-    location.startsWith("/settings/looks") ||
-    location.startsWith("/settings/social-graph") ||
-    location.startsWith("/settings/chrome-extension") ||
-    location.startsWith("/settings/search") ||
-    location.startsWith("/settings/data-types") ||
-    location.startsWith("/settings/delete");
-  const isApiDocsActive = location.startsWith("/settings/api");
-  const isImageStorageActive = location.startsWith("/settings/image-storage") && location !== "/settings/image-storage/tasks";
-  const isIntelligenceActive =
-    location.startsWith("/settings/intelligence") ||
-    location === "/settings/vector" ||
-    location.startsWith("/settings/osint");
-  const isTasksActive =
-    location.startsWith("/settings/tasks") ||
-    location === "/settings/social-tasks" ||
-    location === "/settings/image-tasks" ||
-    location === "/settings/image-storage/tasks";
-
-  function getIsActive(item: MenuItem): boolean {
-    switch (item.url) {
-      case "/settings/app": return isAppOptionsActive;
-      case "/settings/image-storage": return isImageStorageActive;
-      case "/settings/intelligence": return isIntelligenceActive;
-      case "/settings/tasks": return isTasksActive;
-      case "/settings/instagram": return isInstagramActive;
-      case "/settings/api": return isApiDocsActive;
-      default: return isImportExportActive;
-    }
-  }
-
-  return (
-    <Sidebar>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Settings</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {settingsMenuItems.map((item) => {
-                if (item.subItems) {
-                  const isActive = getIsActive(item);
-                  return (
-                    <Collapsible
-                      key={item.title}
-                      asChild
-                      open={isActive}
-                      className="group/collapsible"
-                    >
-                      <SidebarMenuItem>
-                        <CollapsibleTrigger asChild>
-                          <SidebarMenuButton
-                            asChild
-                            isActive={location === item.url}
-                          >
-                            <Link href={item.url} data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                              <item.icon />
-                              <span>{item.title}</span>
-                              <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
-                            </Link>
-                          </SidebarMenuButton>
-                        </CollapsibleTrigger>
-                        <CollapsibleContent>
-                          <SidebarMenuSub>
-                            {item.subItems.map((subItem) => (
-                              <SidebarMenuSubItem key={subItem.title}>
-                                <SidebarMenuSubButton
-                                  asChild
-                                  isActive={location === subItem.url}
-                                >
-                                  <Link href={subItem.url} data-testid={`link-${subItem.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                                    <subItem.icon className="h-4 w-4" />
-                                    <span>{subItem.title}</span>
-                                  </Link>
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
-                            ))}
-                          </SidebarMenuSub>
-                        </CollapsibleContent>
-                      </SidebarMenuItem>
-                    </Collapsible>
-                  );
-                }
-
-                return (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild isActive={location === item.url}>
-                      <Link href={item.url} data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-    </Sidebar>
-  );
-}
 
 export default function SettingsLayout() {
   return (
@@ -299,18 +64,19 @@ export default function SettingsLayout() {
           <Route path="/image-tasks" component={ImageTasksSettingsPage} />
           <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
           <Route path="/image-storage/table" component={ImageTablePage} />
-          <Route path="/image-storage/faces" component={() => <Redirect to="/faces" />} />
+          <Route path="/image-storage/faces" component={() => <Redirect to="~/faces" />} />
           <Route path="/image-storage" component={ImageStorageSettingsPage} />
           <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
           <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
           <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
+          <Route path="/intelligence/prompts" component={PromptsSettingsPage} />
           <Route path="/intelligence" component={IntelligenceSettingsPage} />
           <Route path="/vector" component={VectorSettingsPage} />
           <Route path="/osint" component={OsintSettingsPage} />
-          <Route path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export" />} />
+          <Route path="/import-export/instagram-xml" component={() => <Redirect to="/import-export" />} />
           <Route path="/instagram/tracking" component={InstagramTrackingPage} />
           <Route path="/instagram/posts" component={InstagramPostsPage} />
-          <Route path="/instagram/runs" component={() => <Redirect to="/settings/tasks/social" />} />
+          <Route path="/instagram/runs" component={() => <Redirect to="/tasks/social" />} />
           <Route path="/instagram" component={InstagramImportersPage} />
           <Route path="/tasks/social" component={SocialTasksPage} />
           <Route path="/tasks/osint" component={OsintTasksPage} />
@@ -319,17 +85,17 @@ export default function SettingsLayout() {
           <Route path="/tasks" component={TasksSettingsPage} />
           <Route path="/task/:id" component={TaskDetailPage} />
           <Route path="/social-graph" component={SocialGraphSettingsPage} />
-          <Route path="/recognition/faces" component={() => <Redirect to="/faces" />} />
+          <Route path="/recognition/faces" component={() => <Redirect to="~/faces" />} />
           <Route path="/recognition" component={RecognitionSettingsPage} />
           <Route path="/import-export/stories" component={() => <Redirect to="/instagram" />} />
           <Route path="/import-export/contacts" component={ImportContactsPage} />
-          <Route path="/import-export/social-media" component={() => <Redirect to="/settings/import-export" />} />
+          <Route path="/import-export/social-media" component={() => <Redirect to="/import-export" />} />
           <Route path="/import-export/messages" component={ImportMessagesPage} />
           <Route path="/import-export/extension-imports" component={ExtensionImportsSettingsPage} />
           <Route path="/import-export/backups" component={BackupsPage} />
           <Route path="/backups" component={BackupsPage} />
-          <Route path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
-          <Route path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export" />} />
+          <Route path="/import-export/application" component={() => <Redirect to="/import-export/backups" />} />
+          <Route path="/import-export/image-pass-in" component={() => <Redirect to="/import-export" />} />
           <Route path="/import-export" component={ImportExportHome} />
           <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
           <Route path="/api/settings" component={ApiSettingsPage} />

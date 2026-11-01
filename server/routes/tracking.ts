@@ -19,17 +19,18 @@ import { requireAuth } from "../auth";
 import { sseManager } from "../middleware/sse";
 import { uploadImage, uploadMedia, uploadPostImage } from "../prm-s3";
 import { syncEntityInBackground } from "../vector-universal";
-import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, imageTaskGroups, instagramHighlights, instagramHighlightMemberships, nextHighlightColor, type SocialAccount, type TrackingJob, type HighlightWithStints } from "@shared/schema";
+import { photos, socialAccountPosts, socialAccountPostTags, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, imageTaskGroups, instagramHighlights, instagramHighlightMemberships, nextHighlightColor, type SocialAccount, type TrackingJob, type HighlightWithStints } from "@shared/schema";
 import { TRACKING_KINDS, type TrackingKind } from "@shared/interest-level";
 import { generateDeterministicUuid } from "./social-media";
 import { authedRun, existingStoryPks, ingestStoryItem, runImageTaskGroup, storeStoryItem, storyMetaSchema, storyPostId, storyUpload, type Upload } from "./stories";
 import { kickManualTrackingJobs, manualImporter, rateLimitedUntil } from "../stories-scheduler";
 import { applySnapshot, recordPostsCapture, type CaptureScope } from "../social-account-history";
 import { profileImageFromBuffer, classifyProfileImage, applyProfileImageVerdict, getImageDimensions, type ProfileImageOutcome } from "../profile-image";
-import { resolveScrapedAccounts } from "../task-worker";
+import { queueSocialProfileImage, resolveScrapedAccounts } from "../task-worker";
 import { onPostAddedForSummary } from "../summary-queue";
 import {
   INSTAGRAM_TYPE_ID,
+  MAX_JOB_ATTEMPTS,
   canRetry,
   cancelBatch,
   followingCounts,
@@ -124,6 +125,8 @@ const postMetaSchema = z.object({
   /** Instagram's listed author — the primary poster. Missing on an older scraper: the tracked account then. */
   author: z.string().min(1).optional(),
   coauthors: z.array(z.string()).optional(),
+  /** Tagged jobs: the poster as the Tagged tab lists them, so a new account gets a name and an LQ picture. */
+  poster: z.object({ username: z.string().min(1), fullName: z.string().nullable().optional(), profilePicUrl: z.string().url().nullable().optional() }).optional(),
   /** The @username the scraper was logged in as — provenance, as on stories. */
   scrapedFrom: z.string().min(1),
 });
@@ -132,7 +135,7 @@ const resultSchema = z.object({
   status: z.enum(["completed", "failed", "skipped"]),
   result: z.record(z.unknown()).optional(),
   error: z.string().nullable().optional(),
-  /** posts: every pk the grid showed, so missing ones can be marked deleted. */
+  /** posts: every pk the grid showed, so missing ones can be marked deleted. tagged: every pk the Tagged tab showed. */
   seenPks: z.array(z.string()).optional(),
   /** The grid was walked to its end (else it stopped at the scan limit). */
   complete: z.boolean().optional(),
@@ -206,8 +209,17 @@ export async function upsertHighlight(accountId: string, meta: z.infer<typeof hi
       await tx.update(instagramHighlightMemberships).set({ lastConfirmedAt: now }).where(inArray(instagramHighlightMemberships.id, kept.map((m) => m.id)));
     }
     const moved = kept.filter((m) => m.position !== position.get(m.storyPk));
-    for (const m of moved) {
+    if (moved.length === 1) {
+      const m = moved[0];
       await tx.update(instagramHighlightMemberships).set({ position: position.get(m.storyPk)! }).where(eq(instagramHighlightMemberships.id, m.id));
+    } else if (moved.length > 1) {
+      const records = moved.map((m) => ({ id: m.id, pos: position.get(m.storyPk)! }));
+      await tx.execute(sql`
+        UPDATE instagram_highlight_memberships AS m
+        SET position = v.pos
+        FROM jsonb_to_recordset(${JSON.stringify(records)}::jsonb) AS v(id varchar, pos integer)
+        WHERE m.id = v.id
+      `);
     }
     if (outcome === "unchanged" && (joined.length || left.length || moved.length)) outcome = "updated";
     return outcome;
@@ -319,13 +331,15 @@ type PostOutcome = { outcome: "updated" | "duplicate" | "stored"; postId: string
 
 /**
  * One post. A post PRM already has (a redelivery) is updated in place; its
- * slides stay.
+ * slides stay. With `taggedAccountId` the post came from that account's
+ * Tagged tab: it is stored under its poster, who need not be tracked.
  */
 export async function applyPost(
   ctx: { job: TrackingJob; account: SocialAccount },
   meta: z.infer<typeof postMetaSchema>,
   slides: Upload[],
   video: Upload | null,
+  opts: { taggedAccountId?: string } = {},
 ): Promise<PostOutcome> {
   const id = postId(meta.pk);
 
@@ -335,16 +349,20 @@ export async function applyPost(
   // A collab post is one row under its primary poster, with the other
   // posters alongside. Whichever collaborator's grid it came from, the
   // posters are resolved to accounts (created if PRM hasn't met them) and
-  // the tracked account must be one of them.
-  const author = (meta.author ?? ctx.account.username).trim().toLowerCase();
+  // the tracked account must be one of them — unless it was only tagged.
+  // New posters start at the default level (none) and aren't otherwise queued.
+  const tagged = Boolean(opts.taggedAccountId);
+  const author = (meta.author ?? meta.poster?.username ?? ctx.account.username).trim().toLowerCase();
   const coauthorNames = (meta.coauthors ?? []).map((u) => u.trim().toLowerCase()).filter((u) => u && u !== author);
-  const resolved = await resolveScrapedAccounts([author, ...coauthorNames].map((username) => ({ username })), INSTAGRAM_TYPE_ID, "prm-stories");
+  const rows = [{ username: author, full_name: meta.poster?.fullName }, ...coauthorNames.map((username) => ({ username }))];
+  const resolved = await resolveScrapedAccounts(rows, INSTAGRAM_TYPE_ID, tagged ? "prm-stories tagged" : "prm-stories");
   const primaryId = resolved.get(author);
   if (!primaryId) throw new IngestError(500, `Could not resolve @${author}`);
   const coauthorAccountIds = [...new Set(coauthorNames.map((u) => resolved.get(u)).filter((v): v is string => Boolean(v)))];
-  if (primaryId !== ctx.account.id && !coauthorAccountIds.includes(ctx.account.id)) {
+  if (!tagged && primaryId !== ctx.account.id && !coauthorAccountIds.includes(ctx.account.id)) {
     throw new IngestError(409, `Post belongs to @${author}, not the tracked account`);
   }
+  if (tagged && meta.poster?.profilePicUrl) await queuePosterImage(primaryId, meta.poster.profilePicUrl);
   await queueMentioned(meta.slides.flatMap((s) => s.usertags));
 
   const metadata: Record<string, unknown> = {
@@ -437,6 +455,49 @@ export async function applyPost(
   void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined, imageTaskGroupId, socialAccountId: primaryId });
   void onPostAddedForSummary(id, primaryId);
   return { outcome: "stored", postId: id };
+}
+
+/** A poster with no picture yet gets the LQ one the Tagged tab showed; one that has a picture keeps it. */
+async function queuePosterImage(accountId: string, url: string): Promise<void> {
+  const [poster] = await db.select({ imageUrl: socialAccounts.imageUrl }).from(socialAccounts).where(eq(socialAccounts.id, accountId)).limit(1);
+  if (poster && !poster.imageUrl) await queueSocialProfileImage(accountId, url);
+}
+
+/** Link posts to the account whose Tagged tab showed them; a link seen again is live again. */
+async function linkTagged(accountId: string, postIds: string[]): Promise<number> {
+  if (!postIds.length) return 0;
+  const rows = await db
+    .insert(socialAccountPostTags)
+    .values(postIds.map((postId) => ({ postId, socialAccountId: accountId })))
+    .onConflictDoUpdate({ target: [socialAccountPostTags.postId, socialAccountPostTags.socialAccountId], set: { lastSeenAt: sql`now()`, removedSeenAt: null } })
+    .returning({ postId: socialAccountPostTags.postId });
+  return rows.length;
+}
+
+/**
+ * After a tagged job, whatever its status: every post the tab showed that PRM
+ * holds is linked (imports were linked as they landed; held ones only here).
+ * A complete walk that showed something also marks the links it no longer
+ * showed as removed; an incomplete or empty one vouches for nothing missing.
+ */
+async function applyTaggedSection(account: SocialAccount, r: { status: string; seenPks?: string[]; complete?: boolean }): Promise<Record<string, unknown>> {
+  if (!r.seenPks) return { removalsSkipped: "no_seen_pks" };
+  const held = r.seenPks.length
+    ? await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts).where(inArray(socialAccountPosts.instagramPk, r.seenPks))
+    : [];
+  const ids = held.map((p) => p.id);
+  const out: Record<string, unknown> = { linked: await linkTagged(account.id, ids) };
+  if (r.status !== "completed" || !r.complete) out.removalsSkipped = "incomplete";
+  else if (!ids.length) out.removalsSkipped = "empty_scan";
+  else {
+    const removed = await db
+      .update(socialAccountPostTags)
+      .set({ removedSeenAt: new Date() })
+      .where(and(eq(socialAccountPostTags.socialAccountId, account.id), isNull(socialAccountPostTags.removedSeenAt), notInArray(socialAccountPostTags.postId, ids)))
+      .returning({ postId: socialAccountPostTags.postId });
+    out.markedRemoved = removed.length;
+  }
+  return out;
 }
 
 type PostsSection = { seenPks?: string[]; complete?: boolean; oldestSeenAt?: string };
@@ -742,7 +803,40 @@ export async function ingestScan(jobId: string): Promise<void> {
     // highlights stay unchecked until a scan actually reads them.
     const decided = (s: SectionState) => s.status === "completed" || DECIDED.has(s.reason ?? "");
     for (const [kind, s] of states) if (s.status === "completed" || (kind === "info" && decided(s))) await markChecked(account.id, kind);
-    if (states.some(([, s]) => decided(s))) await markScanned(account.id);
+    if (states.some(([, s]) => decided(s))) {
+      await markScanned(account.id);
+    } else {
+      // If the scan failed or was skipped without any completed or decided section:
+      // Don't leave scanDueAt overdue (<= now()), otherwise the scheduler immediately re-claims
+      // the account in an infinite loop every run.
+      // After MAX_JOB_ATTEMPTS consecutive failed scans, call markScanned to advance by normal cadence.
+      // Otherwise, back off scanDueAt by at least 1 day so it doesn't spin on every tick.
+      const recentScans = await db
+        .select({ status: trackingJobs.status })
+        .from(trackingJobs)
+        .where(and(
+          eq(trackingJobs.socialAccountId, account.id),
+          eq(trackingJobs.kind, "scan"),
+          ne(trackingJobs.id, job.id),
+        ))
+        .orderBy(desc(trackingJobs.createdAt))
+        .limit(MAX_JOB_ATTEMPTS - 1);
+
+      let priorConsecutiveFailures = 0;
+      for (const s of recentScans) {
+        if (s.status === "failed") priorConsecutiveFailures++;
+        else break;
+      }
+
+      if (priorConsecutiveFailures + 1 >= MAX_JOB_ATTEMPTS) {
+        await markScanned(account.id);
+      } else if (account.interestLevel !== "none") {
+        const retryDue = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        if (!account.scanDueAt || account.scanDueAt <= new Date()) {
+          await db.update(socialAccounts).set({ scanDueAt: retryDue }).where(eq(socialAccounts.id, account.id));
+        }
+      }
+    }
     const reasons = new Set(states.map(([, s]) => s.reason));
     const issueJob = { id: job.id, kind: "scan" as TrackingKind };
     if (reasons.has("private")) {
@@ -753,8 +847,9 @@ export async function ingestScan(jobId: string): Promise<void> {
     if (infoState.status === "completed") await resolveIssues(account.id, ["not_found"], "recheck_ok");
     if (states.some(([kind, s]) => kind !== "info" && s.status === "completed")) await resolveIssues(account.id, ["not_found", "private"], "recheck_ok");
 
-    // A section that failed or ran out of budget is retried on its own, now.
-    const retry = states.filter(([, s]) => s.status === "failed" || (s.status === "skipped" && s.reason === "budget")).map(([kind]) => kind);
+    // A section that ran out of budget is retried on its own, now.
+    // Unrecoverable section failures are not auto-spawned as manual jobs to prevent retry loops.
+    const retry = states.filter(([, s]) => s.status === "skipped" && s.reason === "budget").map(([kind]) => kind);
     if (retry.length) {
       const open = await db
         .select({ kind: trackingJobs.kind })
@@ -886,8 +981,9 @@ export function registerTracking(app: Express) {
     }
   });
 
-  // Which of these posts PRM already holds; the scraper imports only the rest.
-  app.post("/api/v1/tracking/jobs/:id/posts/check", async (req, res) => {
+  // Which of these posts PRM already holds, from any account; the scraper
+  // imports only the rest. A tagged job's held posts are linked by /result.
+  app.post(["/api/v1/tracking/jobs/:id/posts/check", "/api/v1/tracking/jobs/:id/tagged/check"], async (req, res) => {
     try {
       if (!(await jobFor(req, res))) return;
       const pks: string[] = Array.isArray(req.body?.pks) ? req.body.pks.map(String) : [];
@@ -901,17 +997,21 @@ export function registerTracking(app: Express) {
   });
 
   // One post: multipart `meta` JSON + `slide_<n>` images + optional `video`.
-  app.post("/api/v1/tracking/jobs/:id/posts", upload.any(), async (req, res) => {
+  // On /tagged (tagged-posts-plan.md) it is stored under its poster and linked
+  // to the tracked account, whose Tagged tab showed it.
+  app.post(["/api/v1/tracking/jobs/:id/posts", "/api/v1/tracking/jobs/:id/tagged"], upload.any(), async (req, res) => {
     try {
       const ctx = await jobFor(req, res);
       if (!ctx) return;
       const meta = parseMeta(req, res, postMetaSchema);
       if (!meta) return;
+      const tagged = req.path.endsWith("/tagged");
       const files = (req.files ?? []) as Express.Multer.File[];
       const slides = files
         .filter((f) => /^slide_\d+$/.test(f.fieldname))
         .sort((a, b) => Number(a.fieldname.slice(6)) - Number(b.fieldname.slice(6)));
-      const stored = await applyPost(ctx, meta, slides, files.find((f) => f.fieldname === "video") ?? null);
+      const stored = await applyPost(ctx, meta, slides, files.find((f) => f.fieldname === "video") ?? null, tagged ? { taggedAccountId: ctx.account.id } : {});
+      if (tagged) await linkTagged(ctx.account.id, [stored.postId]);
       res.status(stored.outcome === "stored" ? 201 : 200).json(stored);
     } catch (error) {
       fail(res, "store post", error);
@@ -1014,6 +1114,7 @@ export function registerTracking(app: Express) {
       if (reason === "private") await db.update(socialAccounts).set({ isPrivate: true }).where(eq(socialAccounts.id, account.id));
 
       if (r.status === "completed" && job.kind === "posts") Object.assign(result, await applyPostsSection(job, account, r));
+      if (job.kind === "tagged") Object.assign(result, await applyTaggedSection(account, r));
       if (r.status === "completed" && job.kind === "highlights" && r.complete && r.seenHighlightIds) {
         result.setsDeleted = await applyHighlightsSection(account, r.seenHighlightIds);
       }

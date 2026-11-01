@@ -9,10 +9,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { safeJsonParse } from "@/lib/utils";
-import { HIGHLIGHT_PALETTE, type HighlightWithStints, type SocialAccountPost, type StorySeenBy, type TrackingJob } from "@shared/schema";
+import { HIGHLIGHT_PALETTE } from "@shared/constants";
+import type { HighlightWithStints, SocialAccountPost, StorySeenBy, TrackingJob } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
 import { PostSummarySection } from "@/components/account-summary";
 import { VideoTranscript } from "@/components/video-transcript";
+import { PhotoFaces } from "@/components/photo-faces";
 
 /** What prm-stories puts in social_account_posts.metadata for a story. */
 interface StoryMetadata {
@@ -136,6 +138,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 /** One story, or a day's worth of them with arrows to step through. */
 export function StoryDialog({ stories, highlights, onClose }: { stories: SocialAccountPost[]; highlights: HighlightWithStints[]; onClose: () => void }) {
   const [index, setIndex] = useState(0);
+  const [showFaces, setShowFaces] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const story = stories[index];
   if (!story) return null;
@@ -163,22 +166,37 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
         <DialogTitle className="sr-only">Story</DialogTitle>
         <div className="flex flex-col md:flex-row max-h-[85vh]">
           <div className="relative bg-black flex items-center justify-center md:w-[45%] shrink-0">
-            {meta.videoUrl ? (
-              <video
-                ref={videoRef}
-                key={story.id}
-                src={meta.videoUrl}
-                poster={withImageSize(image, 1080)}
-                controls
-                playsInline
-                className="max-h-[85vh] w-full object-contain"
-                data-testid="video-story"
-              />
-            ) : image ? (
-              <img src={withImageSize(image, 1080)} alt={story.description ?? "Story"} className="max-h-[85vh] w-full object-contain" />
-            ) : (
-              <ImageIcon className="h-12 w-12 text-muted-foreground/40 my-24" />
-            )}
+            {/* A video's faces are on its cover frame: showing them pauses it and draws the boxes on the poster. */}
+            <PhotoFaces
+              postId={story.id}
+              slide={0}
+              src={withImageSize(image, 1080)}
+              imgClassName="max-h-[85vh] object-contain"
+              mentions={mentions}
+              show={showFaces}
+              onShowChange={(on) => {
+                if (on) videoRef.current?.pause();
+                setShowFaces(on);
+              }}
+              onNavigate={onClose}
+            >
+              {meta.videoUrl ? (
+                <video
+                  ref={videoRef}
+                  key={story.id}
+                  src={meta.videoUrl}
+                  poster={withImageSize(image, 1080)}
+                  controls
+                  playsInline
+                  className="max-h-[85vh] w-full object-contain"
+                  data-testid="video-story"
+                />
+              ) : image ? (
+                <img src={withImageSize(image, 1080)} alt={story.description ?? "Story"} className="max-h-[85vh] w-full object-contain" />
+              ) : (
+                <ImageIcon className="h-12 w-12 text-muted-foreground/40 my-24" />
+              )}
+            </PhotoFaces>
             {stories.length > 1 && (
               <>
                 <button
@@ -245,7 +263,7 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
                 videoRef.current.play();
               }}
             />
-            <PostSummarySection postId={story.id} initialSummary={story.aiSummary} currentImageIndex={0} />
+            <PostSummarySection postId={story.id} initialSummary={story.aiSummary} currentImageIndex={0} isStory />
             {mentions.length > 0 && (
               <Row label="Mentions">
                 <div className="flex flex-wrap gap-x-3 gap-y-1">{mentions.map(igLink)}</div>

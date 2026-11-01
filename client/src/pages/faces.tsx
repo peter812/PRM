@@ -2,9 +2,9 @@
 // linked to a person and/or a social account. Browse, search, open the
 // person/account, merge two identities together, or pull a mistaken face
 // back out of a group.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useMutation } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import {
   Search,
   Loader2,
@@ -142,12 +142,32 @@ async function invalidateFacesQueries() {
 }
 
 export default function FacesPage() {
+  const [, navigate] = useLocation();
+  const searchParams = useSearch();
+  const groupParam = useMemo(() => new URLSearchParams(searchParams).get("group"), [searchParams]);
+
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sort, setSort] = useState<"recent" | "count">("recent");
-  const [openIdentity, setOpenIdentity] = useState<string | null>(null);
+  const [openIdentity, setOpenIdentity] = useState<string | null>(() => groupParam);
   const [likelySameOpen, setLikelySameOpen] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (groupParam) {
+      setOpenIdentity(groupParam);
+    }
+  }, [groupParam]);
+
+  const handleCloseIdentity = useCallback(() => {
+    setOpenIdentity(null);
+    if (groupParam) {
+      const params = new URLSearchParams(searchParams);
+      params.delete("group");
+      const remaining = params.toString();
+      navigate(remaining ? `/faces?${remaining}` : "/faces", { replace: true });
+    }
+  }, [groupParam, searchParams, navigate]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -322,7 +342,7 @@ export default function FacesPage() {
       )}
 
       {openIdentity && (
-        <IdentityDialog personfaceUuid={openIdentity} onClose={() => setOpenIdentity(null)} />
+        <IdentityDialog personfaceUuid={openIdentity} onClose={handleCloseIdentity} />
       )}
 
       {likelySameOpen && (

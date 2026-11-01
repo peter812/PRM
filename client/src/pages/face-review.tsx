@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Search, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban, Users, EyeOff, CheckCheck } from "lucide-react";
+import { ChevronLeft, ChevronRight, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban, Users, EyeOff, CheckCheck } from "lucide-react";
 import { useBannedActionToggle } from "@/components/banned-action-toggle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,67 +20,24 @@ import { withImageSize } from "@shared/image-size";
 import { FaceBoxOverlay, type OverlayFace } from "@/components/face-box-overlay";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useNoFaceToggle } from "@/components/no-face-account";
-import { IdentitySearch } from "@/components/identity-search";
+import {
+  FaceIdentifyChips, placedIdsOf, serverError,
+  type FaceReviewFace, type FaceReviewKind, type FaceReviewSuggestion,
+} from "@/components/face-identify-chips";
 import { FaceClustersTab } from "@/components/face-clusters-tab";
 import { FaceVerifyTab } from "@/components/face-verify-tab";
 import type { ImageTask } from "@shared/schema";
 
-type FaceReviewKind = "story" | "profile" | "post" | "message";
 const KINDS: FaceReviewKind[] = ["story", "profile", "post", "message"];
 const KIND_LABEL: Record<FaceReviewKind, string> = { story: "Stories", profile: "Profile images", post: "Posts", message: "Messages" };
 
 type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number; dismissed: number };
-
-export type FaceReviewSuggestion = {
-  socialAccountId?: string;
-  personId?: string;
-  username?: string;
-  imageUrl?: string | null;
-  ownerName?: string | null;
-  label: string;
-  reason: "owner" | "coauthor" | "mentioned" | "profile_account" | "sender" | "participant" | "lookalike";
-};
-
-type FaceReviewFaceLookAlike = {
-  personfaceUuid: string;
-  score: number;
-  socialAccountId?: string;
-  personId?: string;
-  label: string;
-  cropUrl: string;
-};
-
-type FaceReviewFace = {
-  faceUuid: string;
-  number: number;
-  box: { x: number; y: number; w: number; h: number } | null;
-  cropUrl: string;
-  color: string;
-  identified: { socialAccountId?: string; personId?: string; label: string } | null;
-  dismissed: boolean;
-  /** Set when PRM auto-assigned this face and nobody has confirmed it. */
-  autoMatchScore: number | null;
-  /** A quality-noise face (too small, low confidence or blurry); hidden unless "Show noise" is on. */
-  noise: boolean;
-  cluster: { id: string; size: number } | null;
-  lookAlikes: FaceReviewFaceLookAlike[];
-};
 
 type FaceState = Pick<FaceReviewFace, "identified" | "dismissed" | "autoMatchScore">;
 const faceState = (f: FaceReviewFace): FaceState => ({ identified: f.identified, dismissed: f.dismissed, autoMatchScore: f.autoMatchScore });
 
 /** An optimistic queue edit: the faces' states before it, to restore if the server refuses it. */
 type Optimistic = { photoId: string; key: unknown[]; before: Map<string, FaceState>; states: Map<string, Partial<FaceState>> };
-
-/** apiRequest's "409: {"error":"…"}" as just the server's message. */
-function serverError(err: Error): string {
-  const body = err.message.replace(/^\d+:\s*/, "");
-  try {
-    return JSON.parse(body).error ?? body;
-  } catch {
-    return body;
-  }
-}
 
 type FaceReviewItem = {
   photoId: string;
@@ -108,21 +65,6 @@ type AutoRecognitionSettings = {
   story: { face: boolean; ocr: boolean; transcribe: boolean };
   message: { face: boolean };
 };
-
-export const SUGGESTION_COPY: Record<string, string> = {
-  owner: "(posted this)",
-  coauthor: "(coauthor)",
-  mentioned: "(mentioned)",
-  profile_account: "",
-  sender: "(sent this)",
-  participant: "(in this conversation)",
-  lookalike: "(looks like them)",
-};
-
-function suggestionLabel(kind: FaceReviewKind, s: FaceReviewSuggestion): string {
-  if (kind === "post" && s.reason === "mentioned") return `${s.label} (tagged on this slide)`;
-  return `${s.label} ${SUGGESTION_COPY[s.reason] ?? ""}`.trim();
-}
 
 function contextLine(item: FaceReviewItem): string {
   if (item.kind === "story") return "Story";
@@ -289,9 +231,12 @@ export default function FaceReviewPage() {
   useEffect(() => {
     if (focusedFace) document.querySelector(`[data-testid="row-face-${focusedFace}"]`)?.scrollIntoView({ block: "nearest" });
   }, [focusedFace]);
-  const [searchFace, setSearchFace] = useState<string | null>(null);
   const currentPhotoId = useRef<string | undefined>(undefined);
   currentPhotoId.current = item?.photoId;
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  const queueQueryRef = useRef(queueQuery);
+  queueQueryRef.current = queueQuery;
 
   // Optimistic face states still waiting on the server, so a reply to an earlier action doesn't undo them.
   const pendingFaces = useRef(new Map<string, Partial<FaceState>>());
@@ -369,25 +314,30 @@ export default function FaceReviewPage() {
       advanceTimerRef.current = window.setTimeout(async () => {
         if (currentPhotoId.current !== updated.photoId) return;
 
+        const currentItems = queryClient.getQueryData<{ pages: FaceReviewPage[] }>(queueKey)?.pages.flatMap((p) => p.items) ?? [];
+        const itemIndex = currentItems.findIndex((it) => it.photoId === updated.photoId);
+        const currentIndex = itemIndex >= 0 ? itemIndex : indexRef.current;
+
         // 1. If there's an item directly after this in the currently loaded list, step forward.
-        if (index < items.length - 1) {
-          setIndex((i) => i + 1);
+        if (currentIndex < currentItems.length - 1) {
+          setIndex(currentIndex + 1);
           return;
         }
 
-        // 2. We're on the last loaded item (index === items.length - 1).
+        // 2. We're on the last loaded item (currentIndex === currentItems.length - 1).
         // If more pages are available, trigger fetch and wait to step forward.
-        if (queueQuery.hasNextPage) {
+        const query = queueQueryRef.current;
+        if (query.hasNextPage) {
           waitingForMoreRef.current = true;
-          if (!queueQuery.isFetchingNextPage) {
-            queueQuery.fetchNextPage();
+          if (!query.isFetchingNextPage) {
+            query.fetchNextPage();
           }
           return;
         }
 
         // 3. No more pages in the cursor sequence. Check if there are earlier skipped/unresolved items in this loaded batch.
-        const earlierUnresolved = items.findIndex((it) => remainingActionable(it.photoId === updated.photoId ? updated : it));
-        if (earlierUnresolved !== -1 && earlierUnresolved !== index) {
+        const earlierUnresolved = currentItems.findIndex((it) => remainingActionable(it.photoId === updated.photoId ? updated : it));
+        if (earlierUnresolved !== -1 && earlierUnresolved !== currentIndex) {
           setIndex(earlierUnresolved);
           return;
         }
@@ -439,7 +389,6 @@ export default function FaceReviewPage() {
       return (await res.json()) as FaceReviewItem;
     },
     onMutate: (vars) => {
-      setSearchFace(null);
       setFocusedFace(null);
       const identified = { socialAccountId: vars.socialAccountId, personId: vars.personId, label: vars.label };
       return applyOptimistic(vars.photoId, new Map([[vars.faceUuid, { identified, dismissed: false, autoMatchScore: null }]]), true);
@@ -555,7 +504,6 @@ export default function FaceReviewPage() {
     patchItem(updated);
     if (currentPhotoId.current === photoId) {
       setFocusedFace(null);
-      setSearchFace(null);
     }
     queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
     toast({ title: `Re-scan found ${updated.faces.length} face${updated.faces.length === 1 ? "" : "s"}` });
@@ -599,13 +547,7 @@ export default function FaceReviewPage() {
   const assignProfileAccount = (faceUuid: string) =>
     item?.account && assignMutation.mutate({ photoId: item.photoId, faceUuid, label: `@${item.account.username}`, socialAccountId: item.account.id });
 
-  // Identities already on a face in this photo stay assignable (one person can appear more than
-  // once in a photo); they're listed after the others and marked.
-  const placedIds = new Set(item?.faces.flatMap((f) => [f.identified?.socialAccountId, f.identified?.personId]).filter(Boolean));
-  const isPlaced = (s: { socialAccountId?: string; personId?: string }) =>
-    (!!s.socialAccountId && placedIds.has(s.socialAccountId)) || (!!s.personId && placedIds.has(s.personId));
-  const placedLast = <T,>(list: T[], placed: (x: T) => boolean) => [...list.filter((x) => !placed(x)), ...list.filter(placed)];
-  const ALSO_HERE = " (also in this photo)";
+  const placedIds = placedIdsOf(item?.faces ?? []);
 
   return (
     <div className="h-full overflow-y-auto container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
@@ -824,15 +766,7 @@ export default function FaceReviewPage() {
 
             <div className="space-y-4 min-h-0 overflow-y-auto p-0.5 pr-1" data-testid="list-faces">
               {actionableFaces.map((face) => {
-                const lookAlikeMerged: (FaceReviewSuggestion & { score?: number })[] = placedLast(item.suggestions, isPlaced).map((s) => {
-                  const match = face.lookAlikes.find((la) => (la.socialAccountId && la.socialAccountId === s.socialAccountId) || (la.personId && la.personId === s.personId));
-                  return match ? { ...s, score: match.score } : s;
-                });
-                const extraLookAlikes = placedLast(face.lookAlikes, isPlaced).filter(
-                  (la) => !item.suggestions.some((s) => (la.socialAccountId && la.socialAccountId === s.socialAccountId) || (la.personId && la.personId === s.personId)),
-                );
                 const isFocused = focusedFace === face.faceUuid;
-                const isSearching = searchFace === face.faceUuid;
 
                 return (
                   <div
@@ -872,69 +806,15 @@ export default function FaceReviewPage() {
                       </Button>
                     )}
 
-                    <div className="flex flex-wrap gap-1.5">
-                      {lookAlikeMerged.map((s) => (
-                        <button
-                          key={`${s.socialAccountId ?? s.personId ?? s.username}-${s.reason}`}
-                          type="button"
-                          className="text-xs px-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1"
-                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label: s.label, socialAccountId: s.socialAccountId, personId: s.personId, username: s.username }); }}
-                          data-testid={`chip-suggestion-${s.socialAccountId ?? s.personId ?? s.username}`}
-                        >
-                          {suggestionLabel(item.kind, s)}
-                          {isPlaced(s) && <span className="text-muted-foreground">{ALSO_HERE}</span>}
-                          {s.score !== undefined && <span className="text-muted-foreground">· {Math.round(s.score * 100)}%</span>}
-                        </button>
-                      ))}
-                      {extraLookAlikes.map((la) => (
-                        <button
-                          key={la.personfaceUuid}
-                          type="button"
-                          className="text-xs pl-1 pr-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1.5"
-                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label: la.label, socialAccountId: la.socialAccountId, personId: la.personId }); }}
-                          data-testid={`chip-lookalike-${la.personfaceUuid}`}
-                        >
-                          <img src={withImageSize(la.cropUrl, 64)} alt="" className="h-4 w-4 rounded-full object-cover" />
-                          looks like {la.label} · {Math.round(la.score * 100)}%
-                          {isPlaced(la) && <span className="text-muted-foreground">{ALSO_HERE}</span>}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        className={cn("text-xs px-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1", isSearching && "bg-accent")}
-                        onClick={(e) => { e.stopPropagation(); setSearchFace(isSearching ? null : face.faceUuid); }}
-                        data-testid={`chip-search-${face.faceUuid}`}
-                      >
-                        <Search className="h-3 w-3" /> Someone else…
-                      </button>
-                      {!dismissedFilter ? (
-                        <button
-                          type="button"
-                          className="text-xs px-2 py-1 rounded-full border border-dashed text-muted-foreground hover:bg-accent flex items-center gap-1"
-                          onClick={(e) => { e.stopPropagation(); dismissMutation.mutate({ photoId: item.photoId, faceUuids: [face.faceUuid] }); }}
-                          data-testid={`button-dismiss-${face.faceUuid}`}
-                        >
-                          <SkipForward className="h-3 w-3" /> Skip
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="text-xs px-2 py-1 rounded-full border border-dashed text-muted-foreground hover:bg-accent flex items-center gap-1"
-                          onClick={(e) => { e.stopPropagation(); undismissMutation.mutate({ photoId: item.photoId, faceUuids: [face.faceUuid] }); }}
-                          data-testid={`button-undismiss-${face.faceUuid}`}
-                        >
-                          Unskip
-                        </button>
-                      )}
-                    </div>
-
-                    {isSearching && (
-                      <IdentitySearch
-                        placedIds={placedIds}
-                        onPick={(target, label) => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label: label ?? `@${target.username ?? "…"}`, ...target })}
-                        onCancel={() => setSearchFace(null)}
-                      />
-                    )}
+                    <FaceIdentifyChips
+                      face={face}
+                      kind={item.kind}
+                      suggestions={item.suggestions}
+                      placedIds={placedIds}
+                      onAssign={(target, label) => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label, ...target })}
+                      onSkip={() => dismissMutation.mutate({ photoId: item.photoId, faceUuids: [face.faceUuid] })}
+                      onUnskip={() => undismissMutation.mutate({ photoId: item.photoId, faceUuids: [face.faceUuid] })}
+                    />
                   </div>
                 );
               })}

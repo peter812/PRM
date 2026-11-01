@@ -1,6 +1,6 @@
-export type ImageSize = 64 | 128 | 150 | 360 | 480 | 1080 | "max" | "64" | "128" | "150" | "360" | "480" | "1080";
+export type ImageSize = 64 | 128 | 150 | 160 | 360 | 480 | 1080 | "max" | "64" | "128" | "150" | "160" | "360" | "480" | "1080";
 
-export const ALLOWED_IMAGE_SIZES = new Set(["64", "128", "150", "360", "480", "1080", "max"]);
+export const ALLOWED_IMAGE_SIZES = new Set(["64", "128", "150", "160", "360", "480", "1080", "max"]);
 
 export function isValidImageSize(size: unknown): size is ImageSize {
   return typeof size === "number" || typeof size === "string" ? ALLOWED_IMAGE_SIZES.has(String(size)) : false;

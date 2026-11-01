@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { FaceBox } from "@shared/face-box";
 
-export type FaceBox = { x: number; y: number; w: number; h: number };
+export type { FaceBox };
 
 /** Face colours, indexed by face order in the image. Bright enough to read on any photo in either theme. */
 export const FACE_COLORS = ["#f43f5e", "#3b82f6", "#22c55e", "#f59e0b", "#a855f7", "#06b6d4", "#ec4899", "#84cc16"];
@@ -34,6 +35,7 @@ export function FaceBoxOverlay({
   onRemove,
   className,
   imgClassName,
+  children,
 }: {
   src: string;
   faces: OverlayFace[];
@@ -45,12 +47,20 @@ export function FaceBoxOverlay({
   onRemove?: (key: string) => void;
   className?: string;
   imgClassName?: string;
+  /** Extra layers in the image's frame (e.g. a popover anchor), given each box's placement as a percentage rect and the natural size boxes are in. */
+  children?: (boxStyle: (box: FaceBox) => CSSProperties, natural: { w: number; h: number }) => ReactNode;
 }) {
   // Boxes are in the original image's pixels, so the stored original size wins
   // over the loaded size (src may be a smaller resized variant). Loaded size is
   // only a fallback and is tagged with its src so it never carries over.
   const [loaded, setLoaded] = useState<{ src: string; w: number; h: number } | null>(null);
   const nat = width && height ? { w: width, h: height } : loaded?.src === src ? loaded : null;
+  const boxStyle = (box: FaceBox): CSSProperties => ({
+    left: `${(box.x / nat!.w) * 100}%`,
+    top: `${(box.y / nat!.h) * 100}%`,
+    width: `${(box.w / nat!.w) * 100}%`,
+    height: `${(box.h / nat!.h) * 100}%`,
+  });
 
   return (
     <div className={cn("relative inline-block", className)}>
@@ -65,16 +75,7 @@ export function FaceBoxOverlay({
           if (!f.box) return null;
           const tagColor = f.variant === "muted" ? "rgb(107,114,128)" : f.color;
           return (
-            <div
-              key={f.key}
-              className="absolute"
-              style={{
-                left: `${(f.box.x / nat.w) * 100}%`,
-                top: `${(f.box.y / nat.h) * 100}%`,
-                width: `${(f.box.w / nat.w) * 100}%`,
-                height: `${(f.box.h / nat.h) * 100}%`,
-              }}
-            >
+            <div key={f.key} className="absolute" style={boxStyle(f.box)}>
               <button
                 type="button"
                 disabled={!onFaceClick}
@@ -108,6 +109,7 @@ export function FaceBoxOverlay({
             </div>
           );
         })}
+      {nat && children?.(boxStyle, nat)}
     </div>
   );
 }

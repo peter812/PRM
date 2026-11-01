@@ -16,7 +16,7 @@ type NoFaceAccount = { id: string; username: string; noFace: boolean };
 type NoFaceImpact = { personfaceUuid: string | null; unlinkedFaces: number };
 
 /** `toggle(account)` flips the flag, asking first when the account already has a face linked. Render `dialog`. */
-export function useNoFaceToggle() {
+export function useNoFaceToggle(onChanged?: (accountId: string) => void) {
   const { toast } = useToast();
   const [confirm, setConfirm] = useState<{ account: NoFaceAccount; impact: NoFaceImpact } | null>(null);
 
@@ -29,6 +29,7 @@ export function useNoFaceToggle() {
       queryClient.invalidateQueries({ queryKey: ["/api/face-review"] });
       queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", v.account.id] });
+      onChanged?.(v.account.id);
       toast({
         title: v.noFace ? `@${v.account.username} marked as having no face` : `@${v.account.username} can be matched to faces again`,
         description: v.clearLinks ? "Its face link was removed." : undefined,

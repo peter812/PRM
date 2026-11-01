@@ -5,6 +5,14 @@ import multer from "multer";
 import { storage } from "../storage";
 import { triggerTaskWorker } from "../task-worker";
 import { requireAuth } from "../auth";
+import {
+  BACKUP_INTERVAL_DAYS,
+  BACKUP_KEEP_OPTIONS,
+  getBackupSchedule,
+  nextBackupAt,
+  saveBackupSchedule,
+  type BackupSchedule,
+} from "../backup-scheduler";
 
 const BACKUPS_DIR = path.join(process.cwd(), "backups");
 
@@ -89,6 +97,51 @@ export function registerRoutes(app: Express) {
     } catch (error) {
       console.error("Error listing backups:", error);
       res.status(500).json({ error: "Failed to list backups" });
+    }
+  });
+
+  const scheduleResponse = (schedule: BackupSchedule) => ({
+    ...schedule,
+    nextRunAt: schedule.enabled ? nextBackupAt(schedule).toISOString() : null,
+  });
+
+  // GET /api/backups/schedule - Auto backup settings plus the next run time
+  app.get("/api/backups/schedule", async (_req: Request, res: Response) => {
+    try {
+      res.json(scheduleResponse(await getBackupSchedule()));
+    } catch (error) {
+      console.error("Error reading backup schedule:", error);
+      res.status(500).json({ error: "Failed to read backup schedule" });
+    }
+  });
+
+  // PUT /api/backups/schedule - Update auto backup settings
+  app.put("/api/backups/schedule", async (req: Request, res: Response) => {
+    try {
+      const current = await getBackupSchedule();
+      const { enabled, intervalDays, time, includeHistory, keepLast } = req.body ?? {};
+      if (intervalDays !== undefined && !BACKUP_INTERVAL_DAYS.includes(intervalDays)) {
+        return res.status(400).json({ error: "Invalid backup frequency" });
+      }
+      if (keepLast !== undefined && !BACKUP_KEEP_OPTIONS.includes(keepLast)) {
+        return res.status(400).json({ error: "Invalid retention count" });
+      }
+      if (time !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+        return res.status(400).json({ error: "Invalid backup time" });
+      }
+      const next: BackupSchedule = {
+        ...current,
+        ...(typeof enabled === "boolean" ? { enabled } : {}),
+        ...(intervalDays !== undefined ? { intervalDays } : {}),
+        ...(time !== undefined ? { time } : {}),
+        ...(typeof includeHistory === "boolean" ? { includeHistory } : {}),
+        ...(keepLast !== undefined ? { keepLast } : {}),
+      };
+      await saveBackupSchedule(next);
+      res.json(scheduleResponse(next));
+    } catch (error) {
+      console.error("Error saving backup schedule:", error);
+      res.status(500).json({ error: "Failed to save backup schedule" });
     }
   });
 
@@ -259,9 +312,14 @@ export function registerRoutes(app: Express) {
         return res.status(404).json({ error: "Backup file not found" });
       }
 
-      res.setHeader("Content-Type", "application/xml");
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-      fs.createReadStream(filePath).pipe(res);
+      res.download(filePath, filename, (err) => {
+        if (err) {
+          console.error("Error downloading backup:", err);
+          if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to download backup" });
+          }
+        }
+      });
     } catch (error) {
       console.error("Error downloading backup:", error);
       res.status(500).json({ error: "Failed to download backup" });

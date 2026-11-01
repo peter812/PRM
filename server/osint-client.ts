@@ -32,7 +32,20 @@ export function normalizeOsintUrl(raw: string): string | null {
 
 export type OsintConfig = { enabled: boolean; apiUrl: string; apiKey: string };
 
-export async function loadOsintConfig(): Promise<OsintConfig> {
+let cachedOsintConfig: OsintConfig | null = null;
+let osintConfigLastFetchedAt = 0;
+const OSINT_CONFIG_TTL_MS = 60_000;
+
+export function invalidateOsintConfigCache(): void {
+  cachedOsintConfig = null;
+  osintConfigLastFetchedAt = 0;
+}
+
+export async function loadOsintConfig(force = false): Promise<OsintConfig> {
+  if (!force && cachedOsintConfig && Date.now() - osintConfigLastFetchedAt < OSINT_CONFIG_TTL_MS) {
+    return cachedOsintConfig;
+  }
+
   // PRM-Compute (formerly PRM-face) hosts the unified OSINT service.
   // We check compute settings first, falling back to legacy settings for seamless transition.
   const [
@@ -58,11 +71,15 @@ export async function loadOsintConfig(): Promise<OsintConfig> {
   const apiUrl = rawUrl ? (normalizeOsintUrl(rawUrl) ?? rawUrl) : "";
   const enabled = (!!apiUrl && !!apiKey) || legacyEnabled === "true";
 
-  return {
+  const cfg: OsintConfig = {
     enabled,
     apiUrl,
     apiKey,
   };
+
+  cachedOsintConfig = cfg;
+  osintConfigLastFetchedAt = Date.now();
+  return cfg;
 }
 
 /** True when connectivity is turned on and both address + key are present. */

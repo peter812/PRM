@@ -69,6 +69,7 @@ import { GroupExplainerDialog, type GroupExplanation, type GroupSignals } from "
 interface MemberPreview {
   id: string;
   username: string;
+  name?: string | null;
   nickname?: string | null;
   imageUrl?: string | null;
   bioSummary?: string | null;
@@ -205,6 +206,9 @@ export default function PotentialGroupsPage() {
     },
   });
 
+  const runSettings = taskStatus?.settings;
+  const effectiveEntityType = runSettings?.entityType ?? entityType;
+
   // Mutator to trigger analysis task
   const runAnalysisMutation = useMutation({
     mutationFn: async () => {
@@ -250,12 +254,16 @@ export default function PotentialGroupsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/potential-groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      if (effectiveEntityType === "people") {
+        queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      }
       toast({
         title: "Group created",
         description: `Successfully created "${newGroupName}" with ${selectedMemberIds.size} members.`,
       });
       setSelectedResult(null);
-      navigate(`/group/${data.groupId}${entityType === "social_accounts" ? "?tab=social" : ""}`);
+      navigate(`/group/${data.groupId}${effectiveEntityType === "social_accounts" ? "?tab=social" : ""}`);
     },
     onError: (err) => {
       toast({
@@ -283,6 +291,10 @@ export default function PotentialGroupsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/subgroups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      if (effectiveEntityType === "people") {
+        queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      }
       const groupName = groups.find((g) => g.id === data.groupId)?.name ?? "group";
       toast({
         title: data.subGroupId ? "Added to sub group" : "Added to group",
@@ -292,7 +304,7 @@ export default function PotentialGroupsPage() {
       navigate(
         data.subGroupId
           ? `/group/${data.groupId}/subgroup/${data.subGroupId}`
-          : `/group/${data.groupId}${entityType === "social_accounts" ? "?tab=social" : ""}`
+          : `/group/${data.groupId}${effectiveEntityType === "social_accounts" ? "?tab=social" : ""}`
       );
     },
     onError: (err) => {
@@ -349,6 +361,13 @@ export default function PotentialGroupsPage() {
 
   const handleSubmitPromote = () => {
     const members = Array.from(selectedMemberIds);
+    if (members.length < 2) {
+      return toast({
+        title: "Cannot promote group",
+        description: "A group must have at least 2 members.",
+        variant: "destructive",
+      });
+    }
     if (promoteMode === "create") {
       if (!newGroupName.trim()) {
         return toast({ title: "Group name is required", variant: "destructive" });
@@ -357,7 +376,7 @@ export default function PotentialGroupsPage() {
         name: newGroupName.trim(),
         color: newGroupColor,
         members,
-        entityType,
+        entityType: effectiveEntityType,
       });
     }
     if (!targetGroupId) {
@@ -376,7 +395,7 @@ export default function PotentialGroupsPage() {
       subGroupId: targetSubGroupId && targetSubGroupId !== NEW_SUBGROUP ? targetSubGroupId : undefined,
       newSubGroupName: targetSubGroupId === NEW_SUBGROUP ? newSubGroupName.trim() : undefined,
       members,
-      entityType,
+      entityType: effectiveEntityType,
     });
   };
 
@@ -401,7 +420,6 @@ export default function PotentialGroupsPage() {
       pending: "Adding...",
     },
   };
-  const runSettings = taskStatus?.settings;
   const runSummary = runSettings && taskStatus?.completedAt
     ? [
         `Last run ${formatDistanceToNowStrict(new Date(taskStatus.completedAt))} ago`,
@@ -934,12 +952,14 @@ export default function PotentialGroupsPage() {
                               <Avatar className="w-6 h-6">
                                 <AvatarImage src={m.imageUrl} />
                                 <AvatarFallback className="text-[10px]">
-                                  {getInitials(m.username)}
+                                  {getInitials(effectiveEntityType === "people" ? (m.name || m.username) : m.username)}
                                 </AvatarFallback>
                               </Avatar>
                             ) : null}
                             <div>
-                              <span className="font-medium">@{m.username}</span>
+                              <span className="font-medium">
+                                {effectiveEntityType === "people" ? (m.name || m.username) : `@${m.username}`}
+                              </span>
                               {m.nickname && (
                                 <span className="text-xs text-muted-foreground ml-1.5">
                                   ({m.nickname})

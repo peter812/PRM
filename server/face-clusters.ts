@@ -8,7 +8,7 @@
  * people or social accounts. The review half below (Face review's Clusters tab)
  * names clusters through connectFaces, so the identity model is unchanged.
  */
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
 import { faceClusterRejections, faceClusters, facePairDismissals, faces, photos, socialAccountPosts, socialAccounts } from "@shared/schema";
@@ -199,58 +199,79 @@ const BANNER_MIN_SOLO_POSTS = 5;
 export type ClusterSuggestion = FaceReviewSuggestion & { photos: number; share: number; score?: number };
 /** "Is this @x?": the owner's solo posts land here, or the account's profile picture is in the cluster. */
 export type ClusterBanner = { suggestion: ClusterSuggestion; solo?: { hits: number; total: number } };
-export type ClusterFace = { id: string; cropUrl: string };
-export type ClusterCard = { id: string; size: number; faces: ClusterFace[]; suggestions: ClusterSuggestion[]; banner: ClusterBanner | null };
+export type ClusterFace = { id: string; cropUrl: string; inScope: boolean };
+/** `size` counts in-scope faces when scoped (all faces otherwise); `elsewhere` is the rest of the cluster. */
+export type ClusterCard = { id: string; size: number; elsewhere: number; faces: ClusterFace[]; suggestions: ClusterSuggestion[]; banner: ClusterBanner | null };
+
+/**
+ * A face-id subquery (e.g. one account's faces) that narrows the Clusters tab: only clusters with
+ * faces in it, sized and sorted by those faces, which come first. Suggestions stay cluster-wide.
+ */
+export type ClusterScope = SQL | undefined;
+const inScope = (scope: ClusterScope) => (scope ? sql`faces.id IN ${scope}` : sql`true`);
 
 /** A mentioned handle with no account yet is keyed "@handle". */
 export const identityKey = (s: { socialAccountId?: string; personId?: string; username?: string }) =>
   s.socialAccountId ?? s.personId ?? (s.username ? `@${s.username.toLowerCase()}` : "");
 
-export async function getClusterSummary() {
+export async function getClusterSummary(scope?: ClusterScope) {
   const [row] = (await db.execute<{ clusters: number; faces: number; last_run_at: string | null }>(sql`
     SELECT count(DISTINCT cluster_id)::int AS clusters, count(cluster_id)::int AS faces,
       (SELECT max(created_at) FROM face_clusters) AS last_run_at
-    FROM faces WHERE cluster_id IS NOT NULL`)).rows;
+    FROM faces WHERE cluster_id IS NOT NULL AND ${inScope(scope)}`)).rows;
   const noise = (await db.execute<{ reason: string; n: number }>(sql`
-    SELECT noise_reason AS reason, count(*)::int AS n FROM faces WHERE noise_reason IS NOT NULL AND ${open} GROUP BY 1`)).rows;
+    SELECT noise_reason AS reason, count(*)::int AS n FROM faces WHERE noise_reason IS NOT NULL AND ${open} AND ${inScope(scope)} GROUP BY 1`)).rows;
   return { clusters: row.clusters, faces: row.faces, noise: Object.fromEntries(noise.map((r) => [r.reason, r.n])), lastRunAt: row.last_run_at };
 }
 
 /** Largest clusters first, by live size (naming or dismissing faces shrinks a cluster until the next run). */
-export async function listClusters(offset: number, limit: number): Promise<{ clusters: ClusterCard[]; nextOffset: number | null }> {
-  const sizes = (await db.execute<{ id: string; size: number }>(sql`
-    SELECT cluster_id AS id, count(*)::int AS size FROM faces WHERE cluster_id IS NOT NULL
+export async function listClusters(offset: number, limit: number, scope?: ClusterScope): Promise<{ clusters: ClusterCard[]; nextOffset: number | null }> {
+  // Scoped: group the in-scope faces first, then total only those clusters (testing every face against the scope is slow).
+  const sizes = (await db.execute<{ id: string; size: number; total: number }>(scope ? sql`
+    WITH hit AS (SELECT cluster_id, count(*)::int AS size FROM faces WHERE cluster_id IS NOT NULL AND ${inScope(scope)} GROUP BY 1)
+    SELECT hit.cluster_id AS id, hit.size, (SELECT count(*)::int FROM faces x WHERE x.cluster_id = hit.cluster_id) AS total
+    FROM hit ORDER BY 2 DESC, 1 LIMIT ${limit + 1} OFFSET ${offset}` : sql`
+    SELECT cluster_id AS id, count(*)::int AS size, count(*)::int AS total FROM faces WHERE cluster_id IS NOT NULL
     GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT ${limit + 1} OFFSET ${offset}`)).rows;
   const page = sizes.slice(0, limit);
   const ids = page.map((c) => c.id);
-  const [montages, suggestions] = await Promise.all([facesOfClusters(ids, true), clusterSuggestions(ids)]);
+  const [montages, suggestions] = await Promise.all([facesOfClusters(ids, true, scope), clusterSuggestions(ids)]);
   return {
     clusters: page.map((c) => {
       const s = suggestions.get(c.id)!;
-      return { id: c.id, size: c.size, faces: montages.get(c.id) ?? [], suggestions: s.suggestions.slice(0, 3), banner: s.banner };
+      return { id: c.id, size: c.size, elsewhere: c.total - c.size, faces: montages.get(c.id) ?? [], suggestions: s.suggestions.slice(0, 3), banner: s.banner };
     }),
     nextOffset: sizes.length > limit ? offset + limit : null,
   };
 }
 
 /** One cluster with every face it still holds; null once it's gone (named, dismissed or reclustered). */
-export async function getCluster(id: string): Promise<ClusterCard | null> {
-  const [all, suggestions] = await Promise.all([facesOfClusters([id], false), clusterSuggestions([id])]);
+export async function getCluster(id: string, scope?: ClusterScope): Promise<ClusterCard | null> {
+  const [all, suggestions] = await Promise.all([facesOfClusters([id], false, scope), clusterSuggestions([id])]);
   const list = all.get(id);
-  return list?.length ? { id, size: list.length, faces: list, ...suggestions.get(id)! } : null;
+  if (!list?.length) return null;
+  const size = list.filter((f) => f.inScope).length;
+  return { id, size, elsewhere: list.length - size, faces: list, ...suggestions.get(id)! };
 }
 
-/** Faces still in each cluster: the montage only, or every face (montage faces first). */
-async function facesOfClusters(ids: string[], montageOnly: boolean): Promise<Map<string, ClusterFace[]>> {
+/**
+ * Faces still in each cluster: the montage only, or every face (montage faces first). Scoped,
+ * in-scope faces come first and the montage is the first MONTAGE_SIZE of them.
+ */
+async function facesOfClusters(ids: string[], montageOnly: boolean, scope?: ClusterScope): Promise<Map<string, ClusterFace[]>> {
   const out = new Map<string, ClusterFace[]>();
   if (!ids.length) return out;
-  const rows = (await db.execute<{ cluster: string; id: string; crop: string }>(sql`
-    SELECT faces.cluster_id AS cluster, faces.id, faces.s3_url AS crop
+  const rows = (await db.execute<{ cluster: string; id: string; crop: string; in_scope: boolean }>(sql`
+    SELECT faces.cluster_id AS cluster, faces.id, faces.s3_url AS crop, ${inScope(scope)} AS in_scope
     FROM faces LEFT JOIN face_clusters c ON c.id = faces.cluster_id
     LEFT JOIN LATERAL (SELECT m.ord FROM jsonb_array_elements_text(c.montage_face_ids) WITH ORDINALITY m(face, ord) WHERE m.face = faces.id) m ON true
-    WHERE ${inArray(faces.clusterId, ids)} ${montageOnly ? sql`AND m.ord IS NOT NULL` : sql``}
-    ORDER BY faces.cluster_id, m.ord NULLS LAST, faces.id`)).rows;
-  for (const r of rows) out.set(r.cluster, [...(out.get(r.cluster) ?? []), { id: r.id, cropUrl: r.crop }]);
+    WHERE ${inArray(faces.clusterId, ids)} ${montageOnly && !scope ? sql`AND m.ord IS NOT NULL` : sql``}
+    ORDER BY faces.cluster_id, in_scope DESC, m.ord NULLS LAST, faces.id`)).rows;
+  for (const r of rows) {
+    const list = out.get(r.cluster) ?? [];
+    if (montageOnly && list.length >= MONTAGE_SIZE) continue;
+    out.set(r.cluster, [...list, { id: r.id, cropUrl: r.crop, inScope: r.in_scope }]);
+  }
   return out;
 }
 

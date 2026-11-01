@@ -2,12 +2,11 @@ import { eq } from "drizzle-orm";
 import sharp from "sharp";
 import { db } from "../db";
 import { people, photos } from "@shared/schema";
-import { storage } from "../storage";
+import { getPrompt } from "../prompts";
 import { fetchImageBuffer } from "../prm-s3";
 import { syncEntityInBackground } from "../vector-universal";
 import { chat, resolveModel } from "./provider";
 
-const DEFAULT_VISION_PROMPT = "Return 2 sentences explaining what is happening in this image.";
 
 /** Provider errors that mean the image itself was too big. */
 const IMAGE_TOO_LARGE = /returned 413|too (large|big)|exceed|max(imum)?[^.]{0,40}(size|pixels|dimension)/i;
@@ -27,7 +26,7 @@ export async function describeImage(
   opts: { prompt?: string; system?: string; override?: { providerId?: string; model?: string }; think?: boolean } = {},
 ): Promise<string> {
   const resolved = await resolveModel("vision", opts.override);
-  const prompt = opts.prompt || (await storage.getAppSetting("ai_vision_prompt")) || DEFAULT_VISION_PROMPT;
+  const prompt = opts.prompt || (await getPrompt("imageDescribe"));
   const images = Array.isArray(image) ? image : [image];
   const send = async (imgs: Buffer[]) => (await chat(resolved, {
     messages: [
@@ -66,7 +65,7 @@ export async function describePhoto(photoId: string): Promise<string> {
     resolvedFaces.push(`Face ${coordStr}: ${name}`);
   }
 
-  let prompt = (await storage.getAppSetting("ai_vision_prompt")) || DEFAULT_VISION_PROMPT;
+  let prompt = await getPrompt("imageDescribe");
   if (resolvedFaces.length > 0) {
     prompt += `\n\nFor context, the following people have been recognized in the image:\n${resolvedFaces.join("\n")}`;
   }

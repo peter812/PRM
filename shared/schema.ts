@@ -124,6 +124,8 @@ export const people = pgTable("people", {
   politicalLibAuth: real("political_lib_auth"), // Libertarian (-10) to Authoritarian (+10)
   politicalUpdatedAt: timestamp("political_updated_at"), // Timestamp of political leaning last update
   isLowValue: integer("is_low_value").notNull().default(0), // 1 = bulk-imported (yearbook/playbill); hidden from people lists/search unless nothing else matches
+  // Durable facts the summary LLM pulled from the user's image fixes; fed into later summaries (image-append-plan.md).
+  aiBackendNotes: jsonb("ai_backend_notes").$type<AiBackendNote[]>().notNull().default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("people_last_name_idx").on(t.lastName),
@@ -308,7 +310,7 @@ export const subGroups = pgTable("sub_groups", {
   index("sub_groups_members_gin_idx").using("gin", t.members),
 ]);
 
-export const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
+export { INSTAGRAM_TYPE_ID } from "./constants";
 
 // Social account types table
 export const socialAccountTypes = pgTable("social_account_types", {
@@ -366,6 +368,7 @@ export const socialAccounts = pgTable("social_accounts", {
   followsCheckedAt: timestamp("follows_checked_at"),
   postsCheckedAt: timestamp("posts_checked_at"),
   highlightsCheckedAt: timestamp("highlights_checked_at"),
+  taggedCheckedAt: timestamp("tagged_checked_at"), // manual only: no due date
   joinedAt: timestamp("joined_at"), // first of the month Instagram's About dialog reports
   reportedPostsCount: integer("reported_posts_count"),
   isPrivate: boolean("is_private"),
@@ -390,9 +393,12 @@ export const socialAccounts = pgTable("social_accounts", {
   aiSummaryInvalidated: boolean("ai_summary_invalidated").notNull().default(false),
   aiSummaryInvalidatedAt: timestamp("ai_summary_invalidated_at"),
   aiSummaryModel: text("ai_summary_model"),
+  // Durable facts the summary LLM pulled from the user's image fixes (image-append-plan.md).
+  aiBackendNotes: jsonb("ai_backend_notes").$type<AiBackendNote[]>().notNull().default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("social_accounts_username_idx").on(t.username),
+  index("social_accounts_lower_username_idx").on(sql`lower(${t.username})`),
   index("social_accounts_personface_uuid_idx").on(t.personfaceUuid),
   index("social_accounts_owner_uuid_idx").on(t.ownerUuid),
   index("social_accounts_group_id_idx").on(t.groupId),
@@ -417,6 +423,13 @@ export type SocialAccountDailyStat = { day: string; total: number; checked: numb
 export interface PostImageSummary {
   imageIndex: number;
   description: string;
+  appended?: string[]; // the user's fixes, oldest first; every scene run for this image is told them
+}
+
+export interface AiBackendNote {
+  text: string;
+  source: { kind: "post_append"; postId: string; imageIndex: number } | { kind: "manual" };
+  createdAt: string; // ISO
 }
 
 // Per-image progress of a post summary job; 'final' covers the combining run.
@@ -433,18 +446,21 @@ export interface SummaryJobImageResult {
 export interface SummaryJobProgress {
   images: SummaryJobImageResult[];
   final: SummaryStepStatus;
+  notes?: SummaryStepStatus; // fix jobs only: pulling durable facts out of the fix
 }
 
 export interface PostAiSummary {
   overview: string;
   images: PostImageSummary[];
   tags?: string[];
+  appended?: string[]; // stories only: user corrections to the single story summary
 }
 
 export interface AccountAiSummary {
   profile: string;
   postCount?: number;
   storyCount?: number;
+  connectionCount?: number;
 }
 
 // Historical account summaries — archived versions when an account summary is replaced.
@@ -668,13 +684,24 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   index("social_account_posts_coauthor_account_ids_idx").using("gin", t.coauthorAccountIds),
 ]);
 
+// Who a post tags, as a tagged tracking job saw it on that account's Tagged tab
+// (tagged-posts-plan.md). The post itself stays under its poster.
+export const socialAccountPostTags = pgTable("social_account_post_tags", {
+  postId: varchar("post_id").notNull().references(() => socialAccountPosts.id, { onDelete: "cascade" }),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }), // the tagged account
+  firstSeenAt: timestamp("first_seen_at").notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+  removedSeenAt: timestamp("removed_seen_at"), // a complete run no longer saw it on the Tagged tab
+}, (t) => [
+  primaryKey({ columns: [t.postId, t.socialAccountId] }),
+  index("social_account_post_tags_account_idx").on(t.socialAccountId),
+]);
+
 // Instagram highlights (pinned story sets) a highlights tracking job read
 // (pinned-stories-plan.md). Every timestamp is when PRM learned the fact, not
 // when it happened on Instagram.
 /** Colors a new highlight set is given, in order; the user can pick any other. */
-export const HIGHLIGHT_PALETTE = ["#e11d48", "#2563eb", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#4f46e5"];
-export const nextHighlightColor = (used: string[]): string =>
-  HIGHLIGHT_PALETTE.find((c) => !used.includes(c)) ?? HIGHLIGHT_PALETTE[used.length % HIGHLIGHT_PALETTE.length];
+export { HIGHLIGHT_PALETTE, nextHighlightColor } from "./constants";
 
 export const instagramHighlights = pgTable("instagram_highlights", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -784,6 +811,7 @@ export const photos = pgTable("photos", {
   prmLocation: text("prm_location").notNull(), // e.g. "post:UUID", "interaction:UUID", "profile_image:UUID"
   metadata: jsonb("metadata"), // EXIF / image metadata extracted by analyze_img_metadata
   ogMetadata: jsonb("og_metadata"), // OpenGraph-style metadata captured when the file is added to storage (source URL, content-type, content-length, last-modified, etag, etc.)
+  s3Key: varchar("s3_key", { length: 512 }), // Read/written by PRM-Compute (database.py Photo)
   fileHash: text("file_hash"), // SHA-256 hash of the file contents for deduplication
   widthPx: integer("width_px"), // Image width in pixels
   heightPx: integer("height_px"), // Image height in pixels
@@ -793,6 +821,10 @@ export const photos = pgTable("photos", {
 }, (table) => ({
   faceUuidsGinIdx: index("photos_face_uuids_gin_idx").using("gin", table.faceUuids),
   facialIdsGinIdx: index("photos_facial_ids_gin_idx").using("gin", table.facialIds),
+  prmLocationIdx: index("photos_prm_location_idx").on(table.prmLocation), // account-faces.ts looks photos up by owner
+  uploadedAtIdx: index("photos_uploaded_at_idx").on(table.uploadedAt, table.id),
+  fileHashIdx: index("photos_file_hash_idx").on(table.fileHash),
+  locationIdx: index("photos_location_idx").on(table.location),
 }));
 
 // Daily notes tables
@@ -867,6 +899,7 @@ export const tasks = pgTable("tasks", {
   completedAt: timestamp("completed_at"),
 }, (t) => [
   index("tasks_status_idx").on(t.status),
+  index("tasks_type_created_at_idx").on(t.type, t.createdAt),
 ]);
 
 // Image task groups table - overarching groups for batch/pipeline image operations
@@ -897,6 +930,7 @@ export const imageTasks = pgTable("image_tasks", {
   status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
   payload: text("payload").notNull().default("{}"),
   result: text("result"),
+  logs: text("logs"), // PRM-Compute worker.py writes per-task log text here
   progress: integer("progress").notNull().default(0),
   progressMessage: text("progress_message"),
   parentTaskId: varchar("parent_task_id").references(() => tasks.id, { onDelete: "set null" }),
@@ -956,6 +990,7 @@ export const faces = pgTable("faces", {
   index("faces_personface_uuid_idx").on(t.personfaceUuid),
   index("faces_cluster_id_idx").on(t.clusterId).where(sql`${t.clusterId} IS NOT NULL`),
   index("faces_verify_personface_uuid_idx").on(t.verifyPersonfaceUuid).where(sql`${t.verifyPersonfaceUuid} IS NOT NULL`),
+  index("faces_review_queue_idx").on(t.createdAt).where(sql`${t.personfaceUuid} IS NULL AND ${t.dismissedAt} IS NULL`),
 ]);
 
 // References: a face crop plus what was printed next to it (yearbook / playbill import).
@@ -1260,6 +1295,22 @@ export const storyScrapeRuns = pgTable("story_scrape_runs", {
   index("story_scrape_runs_token_idx").on(t.tokenHash),
 ]);
 
+// Image summary word cloud demo: one row per counting run over every post's per-image
+// summaries; the newest finished row is what the page draws.
+export const imageSummaryWordClouds = pgTable("image_summary_word_clouds", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  status: text("status").notNull(), // running | done | failed
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  finishedAt: timestamp("finished_at"),
+  postsTotal: integer("posts_total").notNull().default(0),
+  postsProcessed: integer("posts_processed").notNull().default(0),
+  summariesProcessed: integer("summaries_processed").notNull().default(0),
+  wordsCounted: integer("words_counted").notNull().default(0),
+  words: jsonb("words").$type<{ text: string; count: number }[]>().notNull().default(sql`'[]'::jsonb`), // top words, filler words included
+  error: text("error"),
+});
+export type ImageSummaryWordCloud = typeof imageSummaryWordClouds.$inferSelect;
+
 // One account check for prm-stories to run: the queue and the log in one table.
 // Schedule rows are minted when an importer's morning run claims due accounts;
 // manual rows are minted from the account page and wait for the next run.
@@ -1467,6 +1518,18 @@ export const socialAccountPostsRelations = relations(socialAccountPosts, ({ one,
     references: [socialAccounts.id],
   }),
   comments: many(socialPostComments),
+  tags: many(socialAccountPostTags),
+}));
+
+export const socialAccountPostTagsRelations = relations(socialAccountPostTags, ({ one }) => ({
+  post: one(socialAccountPosts, {
+    fields: [socialAccountPostTags.postId],
+    references: [socialAccountPosts.id],
+  }),
+  socialAccount: one(socialAccounts, {
+    fields: [socialAccountPostTags.socialAccountId],
+    references: [socialAccounts.id],
+  }),
 }));
 
 export const socialPostCommentsRelations = relations(socialPostComments, ({ one }) => ({
@@ -1534,6 +1597,7 @@ export const insertPersonSchema = createInsertSchema(people)
   .omit({
     id: true,
     createdAt: true,
+    aiBackendNotes: true, // written only by the summary queue
   })
   .extend({
     jobs: z.array(jobExperienceZodSchema).optional(),
@@ -1858,6 +1922,7 @@ export const insertSocialAccountSchema = createInsertSchema(socialAccounts).omit
   id: true,
   createdAt: true,
   sentNotes: true, // written only by notes ingest
+  aiBackendNotes: true, // written only by the summary queue
 });
 
 export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTypes).omit({
@@ -2190,6 +2255,7 @@ export type SocialNetworkChange = typeof socialNetworkChanges.$inferSelect;
 export type InsertSocialNetworkChange = z.infer<typeof insertSocialNetworkChangeSchema>;
 
 export type SocialAccountPost = typeof socialAccountPosts.$inferSelect;
+export type SocialAccountPostTag = typeof socialAccountPostTags.$inferSelect;
 export type InstagramHighlight = typeof instagramHighlights.$inferSelect;
 export type InstagramHighlightMembership = typeof instagramHighlightMemberships.$inferSelect;
 /** GET /api/social-accounts/:id/highlights: every set, deleted ones too, with every stint and the story row it resolves to. */
@@ -2508,7 +2574,11 @@ export const conversations = pgTable("conversations", {
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("conversations_last_message_at_idx").on(t.lastMessageAt),
+  index("conversations_channel_type_idx").on(t.channelType),
+  index("conversations_social_account_id_idx").on(t.socialAccountId),
+]);
 
 export const messages = pgTable("messages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -2528,7 +2598,12 @@ export const messages = pgTable("messages", {
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("messages_conversation_sent_at_idx").on(t.conversationId, t.sentAt),
+  index("messages_external_id_idx").on(t.externalId),
+  index("messages_sender_person_idx").on(t.senderPersonId),
+  index("messages_sender_social_idx").on(t.senderSocialAccountId),
+]);
 
 export const messageRecipients = pgTable("message_recipients", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -2541,7 +2616,11 @@ export const messageRecipients = pgTable("message_recipients", {
   recipientType: text("recipient_type").notNull().default("to"),  // "to" | "cc" | "bcc"
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
-});
+}, (t) => [
+  index("message_recipients_message_idx").on(t.messageId),
+  index("message_recipients_person_idx").on(t.personId),
+  index("message_recipients_social_idx").on(t.socialAccountId),
+]);
 
 export const conversationParticipants = pgTable("conversation_participants", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -2555,7 +2634,11 @@ export const conversationParticipants = pgTable("conversation_participants", {
   joinedAt: timestamp("joined_at").notNull().defaultNow(),
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
-});
+}, (t) => [
+  index("conversation_participants_conv_idx").on(t.conversationId),
+  index("conversation_participants_person_idx").on(t.personId),
+  index("conversation_participants_social_idx").on(t.socialAccountId),
+]);
 
 // Overlapping windows of a conversation's messages, each one point in the
 // universal vector collection (the chunk id is the Qdrant point id). Rebuilt by
@@ -2676,42 +2759,11 @@ export const conversationParticipantsRelations = relations(conversationParticipa
   }),
 }));
 
-export function cleanPhoneNumberForStorage(phone: string | null | undefined): string | null {
-  if (!phone) return null;
-  const digits = phone.replace(/\D/g, "");
-  if (!digits) return null;
-  if (digits.length === 10) {
-    return `1${digits}`;
-  } else if (digits.length === 11 && digits.startsWith("1")) {
-    return digits;
-  }
-  return digits;
-}
-
-export function formatPhoneNumberForDisplay(phone: string | null | undefined): string {
-  if (!phone) return "";
-  const digits = phone.replace(/\D/g, "");
-  if (digits.length === 11 && digits.startsWith("1")) {
-    const area = digits.slice(1, 4);
-    const prefix = digits.slice(4, 7);
-    const line = digits.slice(7);
-    return `(${area}) ${prefix} ${line}`;
-  }
-  if (digits.length === 10) {
-    const area = digits.slice(0, 3);
-    const prefix = digits.slice(3, 6);
-    const line = digits.slice(6);
-    return `(${area}) ${prefix} ${line}`;
-  }
-  return phone;
-}
-
-export function getTruePeopleSearchUrl(phone: string | null | undefined): string {
-  if (!phone) return "";
-  const digits = phone.replace(/\D/g, "");
-  const searchNumber = digits.startsWith("1") ? digits.slice(1) : digits;
-  return `https://www.truepeoplesearch.com/results?name=${searchNumber}`;
-}
+export {
+  cleanPhoneNumberForStorage,
+  formatPhoneNumberForDisplay,
+  getTruePeopleSearchUrl,
+} from "./phone-utils";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Describe Me LLM Hooks & Selective Apply Schemas

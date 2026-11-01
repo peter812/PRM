@@ -3,7 +3,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { Mail, Phone, Home, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, ScanFace, GraduationCap, Briefcase, ChevronDown } from "lucide-react";
 import { useState, useRef, lazy, Suspense } from "react";
-import { MessagesTab } from "@/components/messages-tab";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -11,31 +10,37 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
-import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
+import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/phone-utils";
 import { queryClient } from "@/lib/queryClient";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { AddNoteDialog } from "@/components/add-note-dialog";
-import { InteractionDialog } from "@/components/interaction-dialog";
-import { PersonDialog } from "@/components/person-dialog";
-import { RelationshipDialog } from "@/components/relationship-dialog";
-import { RelationshipsTab } from "@/components/relationships-tab";
-import { PersonGroupsTab } from "@/components/person-groups-tab";
-import { AdditionalInfoDialog } from "@/components/additional-info-dialog";
-import { ChoosePersonImageDialog } from "@/components/choose-person-image-dialog";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
-import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosOverview, PersonPhotosTab } from "@/components/person-photos-tab";
 import { OUTDATED_TEXT, OutdatedBadge, PersonAddresses } from "@/components/person-addresses";
 import { mapHref } from "@/lib/map-shared";
-import { ReferenceMatchesDialog, type ReferenceProbe } from "@/components/reference-matches-dialog";
+import type { ReferenceProbe } from "@/components/reference-matches-dialog";
+import { AiBackendNotes } from "@/components/ai-backend-notes";
+import { ProfileSkeleton } from "@/components/profile-skeleton";
+import { withImageSize } from "@shared/image-size";
 
+// Only the Home tab renders on first paint; dialogs and the other tabs load on demand.
 const FamilyTreeTab = lazy(() =>
   import("@/components/family-tree-tab").then((module) => ({
     default: module.FamilyTreeTab,
   }))
 );
+const MessagesTab = lazy(() => import("@/components/messages-tab").then((m) => ({ default: m.MessagesTab })));
+const RelationshipsTab = lazy(() => import("@/components/relationships-tab").then((m) => ({ default: m.RelationshipsTab })));
+const PersonGroupsTab = lazy(() => import("@/components/person-groups-tab").then((m) => ({ default: m.PersonGroupsTab })));
+const PersonFlowTab = lazy(() => import("@/components/person-flow-tab").then((m) => ({ default: m.PersonFlowTab })));
+const AddNoteDialog = lazy(() => import("@/components/add-note-dialog").then((m) => ({ default: m.AddNoteDialog })));
+const InteractionDialog = lazy(() => import("@/components/interaction-dialog").then((m) => ({ default: m.InteractionDialog })));
+const PersonDialog = lazy(() => import("@/components/person-dialog").then((m) => ({ default: m.PersonDialog })));
+const RelationshipDialog = lazy(() => import("@/components/relationship-dialog").then((m) => ({ default: m.RelationshipDialog })));
+const AdditionalInfoDialog = lazy(() => import("@/components/additional-info-dialog").then((m) => ({ default: m.AdditionalInfoDialog })));
+const ChoosePersonImageDialog = lazy(() => import("@/components/choose-person-image-dialog").then((m) => ({ default: m.ChoosePersonImageDialog })));
+const ReferenceMatchesDialog = lazy(() => import("@/components/reference-matches-dialog").then((m) => ({ default: m.ReferenceMatchesDialog })));
 
 export default function MeProfile() {
   // ?tab= opens a tab directly, e.g. a message-chunk link to the Messages tab.
@@ -75,22 +80,7 @@ export default function MeProfile() {
     },
   });
 
-  if (isLoading) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="border-b px-6 py-4 animate-pulse">
-          <div className="h-8 w-32 bg-muted rounded mb-6" />
-          <div className="flex items-start gap-6">
-            <div className="w-24 h-24 rounded-full bg-muted" />
-            <div className="flex-1 space-y-3">
-              <div className="h-8 bg-muted rounded w-1/3" />
-              <div className="h-4 bg-muted rounded w-1/4" />
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (isLoading) return <ProfileSkeleton />;
 
   if (isError) {
     return (
@@ -278,6 +268,7 @@ export default function MeProfile() {
 
         {/* Selected Tab Content Pane */}
         <div className="flex-1 flex flex-col min-h-0 bg-background overflow-hidden">
+          <Suspense fallback={<Skeleton className="w-full h-[400px]" />}>
           {/* Home Tab Dashboard */}
           <TabsContent value="home" className="mt-0 flex-1 overflow-y-auto p-6 space-y-6">
             <div className="flex flex-col lg:flex-row gap-6 items-start">
@@ -410,7 +401,16 @@ export default function MeProfile() {
                 {/* Large Profile Image */}
                 <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden shadow-sm">
                   {person.imageUrl ? (
-                    <img src={person.imageUrl} alt={formatPersonName(person)} className="w-full h-full object-cover" />
+                    // LCP element. Size must match App.tsx's /me prefetch; lowercase
+                    // fetchpriority because React 18 warns on the camelCase prop.
+                    <img
+                      src={withImageSize(person.imageUrl, 480)}
+                      alt={formatPersonName(person)}
+                      width={320}
+                      height={320}
+                      {...{ fetchpriority: "high" }}
+                      className="w-full h-full object-cover"
+                    />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-4xl font-bold bg-primary/10 text-primary">
                       {personInitials(person)}
@@ -475,6 +475,10 @@ export default function MeProfile() {
                         });
                       }}
                     />
+                  </div>
+
+                  <div className="border-t pt-3 empty:hidden">
+                    <AiBackendNotes kind="people" id={person.id} />
                   </div>
                 </Card>
               </div>
@@ -637,40 +641,56 @@ export default function MeProfile() {
           <TabsContent value="photos" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <PersonPhotosTab personId={person.id} />
           </TabsContent>
+          </Suspense>
         </div>
       </Tabs>
 
-      <AddNoteDialog
-        open={isAddNoteOpen}
-        onOpenChange={setIsAddNoteOpen}
-        personId={person.id}
-      />
-      <InteractionDialog
-        open={isAddInteractionOpen}
-        onOpenChange={setIsAddInteractionOpen}
-        personId={person.id}
-      />
-      <RelationshipDialog
-        open={isAddRelationshipOpen}
-        onOpenChange={setIsAddRelationshipOpen}
-        personId={person.id}
-      />
-      <PersonDialog
-        open={isEditPersonOpen}
-        onOpenChange={setIsEditPersonOpen}
-        person={person}
-        onDelete={() => navigate("/people")}
-      />
-      <AdditionalInfoDialog
-        open={isEditAdditionalOpen}
-        onOpenChange={setIsEditAdditionalOpen}
-        person={person}
-      />
-      <ChoosePersonImageDialog
-        person={person}
-        open={isChooseImageOpen}
-        onOpenChange={setIsChooseImageOpen}
-      />
+      <Suspense fallback={null}>
+        {isAddNoteOpen && (
+          <AddNoteDialog
+            open={isAddNoteOpen}
+            onOpenChange={setIsAddNoteOpen}
+            personId={person.id}
+          />
+        )}
+        {isAddInteractionOpen && (
+          <InteractionDialog
+            open={isAddInteractionOpen}
+            onOpenChange={setIsAddInteractionOpen}
+            personId={person.id}
+          />
+        )}
+        {isAddRelationshipOpen && (
+          <RelationshipDialog
+            open={isAddRelationshipOpen}
+            onOpenChange={setIsAddRelationshipOpen}
+            personId={person.id}
+          />
+        )}
+        {isEditPersonOpen && (
+          <PersonDialog
+            open={isEditPersonOpen}
+            onOpenChange={setIsEditPersonOpen}
+            person={person}
+            onDelete={() => navigate("/people")}
+          />
+        )}
+        {isEditAdditionalOpen && (
+          <AdditionalInfoDialog
+            open={isEditAdditionalOpen}
+            onOpenChange={setIsEditAdditionalOpen}
+            person={person}
+          />
+        )}
+        {isChooseImageOpen && (
+          <ChoosePersonImageDialog
+            person={person}
+            open={isChooseImageOpen}
+            onOpenChange={setIsChooseImageOpen}
+          />
+        )}
+        {referenceProbe && <ReferenceMatchesDialog probe={referenceProbe} onClose={() => setReferenceProbe(null)} />}
+      </Suspense>
       <input
         ref={photoFileInputRef}
         type="file"
@@ -683,7 +703,6 @@ export default function MeProfile() {
           e.target.value = "";
         }}
       />
-      <ReferenceMatchesDialog probe={referenceProbe} onClose={() => setReferenceProbe(null)} />
     </div>
   );
 }

@@ -15,6 +15,7 @@ import {
   people,
   photos,
   socialAccountHistory,
+  socialAccountPostTags,
   socialAccountPosts,
   socialAccounts,
   socialPostComments,
@@ -196,6 +197,23 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
       if (!posters.includes(id)) add(`id:${id}`, `post:${p.id}:out`, { at: postAt(p), kind: postKind(p), dir: "out" });
     }
   }
+  if (myPosts.length) {
+    const myPostTags = await db
+      .select({ postId: socialAccountPostTags.postId, socialAccountId: socialAccountPostTags.socialAccountId })
+      .from(socialAccountPostTags)
+      .where(and(
+        inArray(socialAccountPostTags.postId, myPosts.map((p) => p.id)),
+        isNull(socialAccountPostTags.removedSeenAt),
+      ));
+    for (const tag of myPostTags) {
+      const p = myPostById.get(tag.postId);
+      if (!p) continue;
+      const posters = postersOf(p);
+      if (!posters.includes(tag.socialAccountId)) {
+        add(`id:${tag.socialAccountId}`, `post:${p.id}:out`, { at: postAt(p), kind: postKind(p), dir: "out" });
+      }
+    }
+  }
 
   // ── In: comments on my posts ──
   if (myPosts.length) {
@@ -241,6 +259,16 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
     const ids = showing.map((r) => r.prmLocation.slice("post:".length));
     if (ids.length) inPosts.push(...(await db.select(postCols).from(socialAccountPosts).where(inArray(socialAccountPosts.id, ids))));
   }
+  const taggedMine = await db
+    .select(postCols)
+    .from(socialAccountPostTags)
+    .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialAccountPostTags.postId))
+    .where(and(
+      eq(socialAccountPostTags.socialAccountId, me.id),
+      isNull(socialAccountPostTags.removedSeenAt),
+      eq(socialAccountPosts.isDeleted, false),
+    ));
+  inPosts.push(...taggedMine);
   for (const p of inPosts) {
     const posters = postersOf(p);
     if (posters.includes(me.id)) continue;
@@ -341,6 +369,75 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
   return { since: earliest, weights, connections };
 }
 
+const PROMPT_KIND_LABEL: Record<ConnectionKind, string> = {
+  comment: "comments",
+  story_mention: "story mentions",
+  post_mention: "post tags/faces",
+  bio: "bio mentions",
+};
+
+const day = (iso: string) => iso.slice(0, 10);
+const round = (n: number) => (n >= 10 ? Math.round(n) : Number(n.toFixed(1))).toString();
+
+/** How to read the connections block, with the live weights, so the model knows what a strength number is worth. */
+function connectionsGuide(w: ConnectionWeights): string {
+  const kindWeights = CONNECTION_KINDS.map((k) => w[k]);
+  const unit = kindWeights.reduce((a, b) => a + b, 0) / kindWeights.length;
+  return [
+    "How to read <connections_strongest_first> (the accounts this one interacts with most, strongest first):",
+    "- in = what they did toward this account (commented on its posts; tagged, captioned or showed it in their posts or stories; named it in their bio). out = what this account did toward them.",
+    "- Counts are interactions: one per post or story per direction. Many comments by one person on one post count once, and a post that both tags and shows someone counts once.",
+    `- Strength = the sum over interactions of the kind's weight (comment ${w.comment}, story mention ${w.story_mention}, post tag/face ${w.post_mention}, bio mention ${w.bio}, ×${w.heartMultiplier} with a heart beside the handle) times recency: 1.0 today, falling evenly to 0.5 at two years old and staying there. A bio mention counts in full while it's in the bio and only starts aging once removed.`,
+    `- So one interaction is worth ${round(unit / 2)}–${round(unit)}. Roughly: ${round(unit)} ≈ a single recent interaction, ${round(unit * 5)} ≈ a handful, ${round(unit * 20)}+ ≈ a steady, frequent relationship. Compare lines with each other rather than reading the number alone.`,
+    "- A connection that is high but mostly one direction is one-sided (a fan, a brand, a place they promote); one with both directions is mutual. An old last date means the connection has faded.",
+  ].join("\n");
+}
+
+/**
+ * The account summary's view of its connections: a guide to the scores and one line per
+ * strongest connection, with interaction counts rather than the tab's decayed per-kind values.
+ */
+export async function connectionsForPrompt(accountId: string, limit: number): Promise<{ guide: string; block: string; count: number }> {
+  const result = await getConnections(accountId);
+  const top = (result?.connections ?? []).slice(0, limit);
+  const weights = result?.weights ?? (await connectionWeights());
+
+  const ownerRows = top.length
+    ? await db
+        .select({ id: socialAccounts.id, firstName: people.firstName, lastName: people.lastName })
+        .from(socialAccounts)
+        .innerJoin(people, eq(people.id, socialAccounts.ownerUuid))
+        .where(inArray(socialAccounts.id, top.map((c) => c.account.id)))
+    : [];
+  const ownerName = new Map(ownerRows.map((r) => [r.id, `${r.firstName} ${r.lastName ?? ""}`.trim()]));
+
+  const lines = top.map((c) => {
+    const owner = ownerName.get(c.account.id);
+    const names = [c.account.nickname, owner && owner !== c.account.nickname ? `PRM: ${owner}` : null].filter(Boolean).join(", ");
+    const counts = Object.fromEntries(CONNECTION_KINDS.map((k) => [k, 0])) as Record<ConnectionKind, number>;
+    let inCount = 0;
+    for (const e of c.events) {
+      counts[e.kind]++;
+      if (e.dir === "in") inCount++;
+    }
+    const kinds = CONNECTION_KINDS.filter((k) => counts[k] > 0).map((k) => `${PROMPT_KIND_LABEL[k]} ${counts[k]}`).join(", ");
+    const bios = c.events.filter((e) => e.kind === "bio").map((e) => {
+      const where = e.dir === "out" ? "in this account's bio" : "names this account in their bio";
+      return `${where}${e.heart ? " with ♥" : ""} ${e.removedAt ? `until ${day(e.removedAt)}` : "now"}`;
+    });
+    return [
+      `@${c.account.username}${names ? ` (${names})` : ""}`,
+      `strength ${round(c.score)}`,
+      `${inCount} in / ${c.events.length - inCount} out`,
+      kinds,
+      `last ${day(c.lastInteractionAt)}`,
+      ...bios,
+    ].join("; ");
+  });
+
+  return { guide: connectionsGuide(weights), block: lines.join("\n"), count: lines.length };
+}
+
 /** One pair of accounts that interact, `a < b`: what a did toward b and what b did toward a, both decayed to now. */
 export type ConnectionPair = { a: string; b: string; ab: number; ba: number };
 
@@ -390,6 +487,27 @@ export async function getConnectionNetwork(): Promise<ConnectionPair[]> {
     const event = { at: postAt(p), kind: postKind(p), dir: "out" as const };
     for (const h of mentioned) {
       for (const poster of postersOf(p)) add(poster, byHandle.get(h), `post:${p.id}`, event);
+    }
+  }
+
+  // ── Tagged posts: explicit tags from the Tagged tab ──
+  const tagRows = await db
+    .select({
+      taggedAccountId: socialAccountPostTags.socialAccountId,
+      post: postCols,
+    })
+    .from(socialAccountPostTags)
+    .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialAccountPostTags.postId))
+    .where(and(
+      isNull(socialAccountPostTags.removedSeenAt),
+      eq(socialAccountPosts.isDeleted, false),
+    ));
+  for (const r of tagRows) {
+    const posters = postersOf(r.post);
+    if (posters.includes(r.taggedAccountId)) continue;
+    const event = { at: postAt(r.post), kind: postKind(r.post), dir: "out" as const };
+    for (const poster of posters) {
+      add(poster, r.taggedAccountId, `post:${r.post.id}`, event);
     }
   }
 

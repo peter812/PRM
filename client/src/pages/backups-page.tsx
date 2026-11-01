@@ -11,6 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -47,8 +55,44 @@ import {
   FileCode,
   HardDrive,
   Clock,
+  CalendarClock,
   X,
 } from "lucide-react";
+
+interface BackupSchedule {
+  enabled: boolean;
+  intervalDays: number;
+  time: string;
+  includeHistory: boolean;
+  keepLast: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+}
+
+const FREQUENCY_OPTIONS = [
+  { value: 1, label: "Daily" },
+  { value: 3, label: "Every 3 days" },
+  { value: 7, label: "Weekly" },
+  { value: 14, label: "Every 2 weeks" },
+  { value: 30, label: "Every 30 days" },
+];
+
+const KEEP_OPTIONS = [
+  { value: 3, label: "Last 3" },
+  { value: 5, label: "Last 5" },
+  { value: 10, label: "Last 10" },
+  { value: 20, label: "Last 20" },
+  { value: 0, label: "All" },
+];
+
+// 30-minute slots, "00:00" … "23:30"
+const TIME_OPTIONS = Array.from({ length: 48 }, (_, i) => {
+  const h = Math.floor(i / 2);
+  const m = i % 2 ? "30" : "00";
+  const value = `${String(h).padStart(2, "0")}:${m}`;
+  const label = `${h % 12 || 12}:${m} ${h < 12 ? "AM" : "PM"}`;
+  return { value, label };
+});
 
 interface BackupItem {
   filename: string;
@@ -118,6 +162,27 @@ export default function BackupsPage() {
     queryFn: async () => {
       const res = await apiRequest("GET", "/api/backups");
       return res.json();
+    },
+  });
+
+  const { data: schedule } = useQuery<BackupSchedule>({
+    queryKey: ["/api/backups/schedule"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/backups/schedule");
+      return res.json();
+    },
+  });
+
+  const updateScheduleMutation = useMutation({
+    mutationFn: async (patch: Partial<BackupSchedule>) => {
+      const res = await apiRequest("PUT", "/api/backups/schedule", patch);
+      return res.json();
+    },
+    onSuccess: (data: BackupSchedule) => {
+      queryClient.setQueryData(["/api/backups/schedule"], data);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Save Failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -441,6 +506,114 @@ export default function BackupsPage() {
         </div>
       )}
 
+      {/* Automatic backups card */}
+      {schedule && (
+        <Card>
+          <CardHeader className="pb-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <CalendarClock className="h-5 w-5 text-muted-foreground" />
+                  Automatic Backups
+                </CardTitle>
+                <CardDescription>
+                  {schedule.enabled && schedule.nextRunAt
+                    ? `Next backup: ${formatDate(schedule.nextRunAt)}`
+                    : "Automatic backups are off"}
+                  {schedule.lastRunAt && ` · Last: ${formatDate(schedule.lastRunAt)}`}
+                </CardDescription>
+              </div>
+              <Switch
+                checked={schedule.enabled}
+                onCheckedChange={(enabled) => updateScheduleMutation.mutate({ enabled })}
+                aria-label="Enable automatic backups"
+              />
+            </div>
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <Label>Frequency</Label>
+                <Select
+                  value={String(schedule.intervalDays)}
+                  onValueChange={(v) => updateScheduleMutation.mutate({ intervalDays: Number(v) })}
+                  disabled={!schedule.enabled}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FREQUENCY_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={String(o.value)}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Time (server time)</Label>
+                <Select
+                  value={schedule.time}
+                  onValueChange={(time) => updateScheduleMutation.mutate({ time })}
+                  disabled={!schedule.enabled}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {TIME_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Keep auto backups</Label>
+                <Select
+                  value={String(schedule.keepLast)}
+                  onValueChange={(v) => updateScheduleMutation.mutate({ keepLast: Number(v) })}
+                  disabled={!schedule.enabled}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {KEEP_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={String(o.value)}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="auto-include-history" className="text-sm font-medium">
+                  Include Social Account History
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Saved as MM-DD-YYYY-autobackup.xml; manual backups are never pruned
+                </p>
+              </div>
+              <Switch
+                id="auto-include-history"
+                checked={schedule.includeHistory}
+                onCheckedChange={(includeHistory) => updateScheduleMutation.mutate({ includeHistory })}
+                disabled={!schedule.enabled}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Past backups card */}
       <Card>
         <CardHeader className="pb-4">
@@ -510,6 +683,11 @@ export default function BackupsPage() {
                       <span className="font-medium text-sm truncate" title={item.filename}>
                         {item.filename}
                       </span>
+                      {item.filename.includes("-autobackup") && (
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
+                          Auto
+                        </Badge>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">

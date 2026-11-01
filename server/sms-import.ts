@@ -31,9 +31,18 @@ export interface ParsedSmsThread {
   messages: ParsedSmsMessage[];
 }
 
+const ATTR_REGEX_CACHE = new Map<string, RegExp>();
+
+/** Extract a single XML attribute by name. Handles both quote styles. */
 function attr(el: string, name: string): string {
-  const m = el.match(new RegExp(`\\b${name}=(?:"([^"]*)"|'([^']*)')`));
-  const v = m ? (m[1] ?? m[2]) : "";
+  let re = ATTR_REGEX_CACHE.get(name);
+  if (!re) {
+    re = new RegExp(`\\b${name}=(?:"([^"]*)"|'([^']*)')`);
+    ATTR_REGEX_CACHE.set(name, re);
+  }
+  const m = el.match(re);
+  if (!m) return "";
+  const v = m[1] ?? m[2] ?? "";
   return v === "null" ? "" : unescapeXml(v);
 }
 

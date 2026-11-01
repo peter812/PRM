@@ -1,10 +1,10 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import { useLoadOnce } from "@/hooks/use-load-once";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Loader2, Sparkles, MessagesSquare, ListChecks, MessageSquare, HelpCircle, Cpu } from "lucide-react";
 import { AiProvidersCard } from "@/components/ai-providers-card";
 import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/components/provider-model-picker";
@@ -12,10 +12,7 @@ import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/com
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
-const DEFAULT_EVENTS_PROMPT = "You extract a list of distinct events from a daily journal entry. An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations. Each event must be a short, standalone past-tense statement (one sentence, ideally under 120 characters). Do not include opinions, plans for the future, or generic reflections. Do not invent events that aren't supported by the text. Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.";
-
 type AiSettings = {
-  eventsPrompt: string;
   text: ModelSelection;
   events: ModelSelection;
   sexGuess: ModelSelection;
@@ -37,7 +34,6 @@ export default function IntelligenceSettingsPage() {
   const [selections, setSelections] = useState<Record<TaskKey, ModelSelection>>({
     text: EMPTY_SELECTION, events: EMPTY_SELECTION, sexGuess: EMPTY_SELECTION,
   });
-  const [eventsPrompt, setEventsPrompt] = useState(DEFAULT_EVENTS_PROMPT);
 
   const { data: settings, isLoading } = useQuery<AiSettings>({
     queryKey: ["/api/ai/settings"],
@@ -45,7 +41,6 @@ export default function IntelligenceSettingsPage() {
 
   useLoadOnce(settings, (s) => {
     setSelections({ text: s.text, events: s.events, sexGuess: s.sexGuess });
-    setEventsPrompt(s.eventsPrompt || DEFAULT_EVENTS_PROMPT);
   });
 
   const saveMutation = useMutation({
@@ -65,10 +60,6 @@ export default function IntelligenceSettingsPage() {
   const sameSelection = (a: ModelSelection, b: ModelSelection | undefined) =>
     a.model === (b?.model ?? "") && (!a.model || a.providerId === (b?.providerId ?? ""));
   const hasModelChanges = MODEL_TASKS.some(({ key }) => !sameSelection(selections[key], settings?.[key]));
-
-  const handleSaveEventsPrompt = () => {
-    saveMutation.mutate({ eventsPrompt });
-  };
 
   if (isLoading) {
     return (
@@ -147,41 +138,13 @@ export default function IntelligenceSettingsPage() {
               Daily Note Event Extraction System Prompt
             </CardTitle>
             <CardDescription className="text-xs">
-              The system prompt sent to the model when extracting events from a daily note's markdown body. The model is also constrained at the API level to return JSON in the shape <code className="text-xs bg-muted px-1 rounded">{"{ events: [{ text }] }"}</code>, but the prompt should reinforce this and define what counts as an event.
+              The system prompt sent to the model when extracting events from a daily note. It lives on the Prompts page with the other AI prompts.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3 pt-0">
-            <Textarea
-              value={eventsPrompt}
-              onChange={(e) => setEventsPrompt(e.target.value)}
-              rows={5}
-              className="resize-y font-mono text-xs"
-              data-testid="textarea-ai-events-prompt"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
-                  onClick={() => setEventsPrompt(DEFAULT_EVENTS_PROMPT)}
-                  data-testid="button-reset-events-prompt"
-                >
-                  Reset to default
-                </button>
-                <span className="text-xs text-muted-foreground" data-testid="text-events-prompt-char-count">
-                  {eventsPrompt.length} characters
-                </span>
-              </div>
-              <Button
-                size="sm"
-                className="h-8 px-4 text-xs"
-                onClick={handleSaveEventsPrompt}
-                disabled={!eventsPrompt.trim() || saveMutation.isPending}
-                data-testid="button-save-events-prompt"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : "Save Prompt"}
-              </Button>
-            </div>
+          <CardContent className="pt-0">
+            <Button variant="outline" size="sm" asChild data-testid="link-ai-events-prompt">
+              <Link href="/intelligence/prompts?prompt=dailyNoteEvents">Open prompt</Link>
+            </Button>
           </CardContent>
         </Card>
       </div>

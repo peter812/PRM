@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -37,10 +36,6 @@ type SummarySettingsResponse = {
   accountAutoEnabled: boolean;
   sceneModel: ModelSelection;
   textModel: ModelSelection;
-  scenePrompt: string;
-  postPrompt: string;
-  storyPrompt: string;
-  accountPrompt: string;
   postMaxWords: number;
   sceneNoThink: boolean;
   postNoThink: boolean;
@@ -48,10 +43,6 @@ type SummarySettingsResponse = {
   accountNoThink: boolean;
   hostPool: HostPoolEntry[];
   defaults: {
-    scenePrompt: string;
-    postPrompt: string;
-    storyPrompt: string;
-    accountPrompt: string;
     postMaxWords: number;
   };
 };
@@ -123,10 +114,6 @@ export default function InstagramSummariesPage() {
 
   const [sceneModel, setSceneModel] = useState<ModelSelection>({ providerId: "", model: "" });
   const [textModel, setTextModel] = useState<ModelSelection>({ providerId: "", model: "" });
-  const [scenePrompt, setScenePrompt] = useState("");
-  const [postPrompt, setPostPrompt] = useState("");
-  const [storyPrompt, setStoryPrompt] = useState("");
-  const [accountPrompt, setAccountPrompt] = useState("");
   const [postMaxWords, setPostMaxWords] = useState(400);
   const [selectedLevel, setSelectedLevel] = useState<InterestLevel>("medium");
   const [hostPool, setHostPool] = useState<HostPoolEntry[]>([]);
@@ -150,10 +137,6 @@ export default function InstagramSummariesPage() {
   useLoadOnce(settings, (s) => {
     if (s.sceneModel) setSceneModel(s.sceneModel);
     if (s.textModel) setTextModel(s.textModel);
-    setScenePrompt(s.scenePrompt || s.defaults.scenePrompt);
-    setPostPrompt(s.postPrompt || s.defaults.postPrompt);
-    setStoryPrompt(s.storyPrompt || s.defaults.storyPrompt);
-    setAccountPrompt(s.accountPrompt || s.defaults.accountPrompt);
     setPostMaxWords(s.postMaxWords);
     setHostPool(s.hostPool ?? []);
   });
@@ -620,119 +603,35 @@ export default function InstagramSummariesPage() {
             Prompts
           </CardTitle>
           <CardDescription>
-            Customize the instructions used for scene description, post, story, and account summaries.
+            The scene, post, story, account and fix-notes instructions live on the Prompts page with the other AI prompts.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="textarea-scene-prompt">Image Scene Description Prompt</Label>
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline hover:text-foreground"
-                onClick={() => setScenePrompt(settings.defaults.scenePrompt)}
-                data-testid="button-reset-scene-prompt"
-              >
-                Reset to default
-              </button>
-            </div>
-            <Textarea
-              id="textarea-scene-prompt"
-              value={scenePrompt}
-              onChange={(e) => setScenePrompt(e.target.value)}
-              rows={2}
-              data-testid="textarea-scene-prompt"
+        <CardContent className="space-y-4">
+          <Button variant="outline" size="sm" asChild data-testid="link-summary-prompts">
+            <Link href="~/settings/intelligence/prompts">Open prompts</Link>
+          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Label htmlFor="input-post-max-words" className="text-xs text-muted-foreground">
+              Max words per post &amp; story summary
+            </Label>
+            <Input
+              id="input-post-max-words"
+              type="number"
+              min={10}
+              max={2000}
+              step={10}
+              value={postMaxWords}
+              onChange={(e) => setPostMaxWords(Number(e.target.value))}
+              className="h-8 w-24"
+              data-testid="input-post-max-words"
             />
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="textarea-post-prompt">Post Summary Prompt</Label>
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline hover:text-foreground"
-                onClick={() => setPostPrompt(settings.defaults.postPrompt)}
-                data-testid="button-reset-post-prompt"
-              >
-                Reset to default
-              </button>
-            </div>
-            <Textarea
-              id="textarea-post-prompt"
-              value={postPrompt}
-              onChange={(e) => setPostPrompt(e.target.value)}
-              rows={3}
-              data-testid="textarea-post-prompt"
-            />
-            <div className="flex items-center gap-2">
-              <Label htmlFor="input-post-max-words" className="text-xs text-muted-foreground">
-                Max words per post &amp; story summary
-              </Label>
-              <Input
-                id="input-post-max-words"
-                type="number"
-                min={10}
-                max={2000}
-                step={10}
-                value={postMaxWords}
-                onChange={(e) => setPostMaxWords(Number(e.target.value))}
-                className="h-8 w-24"
-                data-testid="input-post-max-words"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="textarea-story-prompt">Story Summary Prompt</Label>
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline hover:text-foreground"
-                onClick={() => setStoryPrompt(settings.defaults.storyPrompt)}
-                data-testid="button-reset-story-prompt"
-              >
-                Reset to default
-              </button>
-            </div>
-            <Textarea
-              id="textarea-story-prompt"
-              value={storyPrompt}
-              onChange={(e) => setStoryPrompt(e.target.value)}
-              rows={3}
-              data-testid="textarea-story-prompt"
-            />
-            <p className="text-xs text-muted-foreground">Sent with every story image in one run. The max words above also applies.</p>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="textarea-account-prompt">Account Summary Prompt</Label>
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline hover:text-foreground"
-                onClick={() => setAccountPrompt(settings.defaults.accountPrompt)}
-                data-testid="button-reset-account-prompt"
-              >
-                Reset to default
-              </button>
-            </div>
-            <Textarea
-              id="textarea-account-prompt"
-              value={accountPrompt}
-              onChange={(e) => setAccountPrompt(e.target.value)}
-              rows={4}
-              data-testid="textarea-account-prompt"
-            />
-          </div>
-
-          <div className="flex justify-end">
             <Button
               size="sm"
-              onClick={() => saveMutation.mutate({ scenePrompt, postPrompt, storyPrompt, accountPrompt, postMaxWords })}
-              disabled={saveMutation.isPending}
-              data-testid="button-save-summary-prompts"
+              onClick={() => saveMutation.mutate({ postMaxWords })}
+              disabled={saveMutation.isPending || postMaxWords === settings.postMaxWords}
+              data-testid="button-save-post-max-words"
             >
-              {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Prompts"}
+              {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
             </Button>
           </div>
         </CardContent>

@@ -9,7 +9,7 @@ import { storage } from "../storage";
 import { triggerImageTaskWorker } from "../task-worker";
 import { faces, imageTasks, people, socialAccounts } from "@shared/schema";
 import {
-  autoAssignFaces, clearedSuggestions, connectFace, disassociateFace, photosContainingFaces, getComputeConnection, JOB_TASK_TYPE,
+  addDrawnFace, autoAssignFaces, clearedSuggestions, connectFace, disassociateFace, photosContainingFaces, getComputeConnection, JOB_TASK_TYPE,
   RecognitionRequestError, FaceMergeConflictError, type FacialId,
 } from "../recognition";
 import {
@@ -18,8 +18,11 @@ import {
 } from "../face-review";
 import {
   runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces, identityKey,
+  type ClusterScope,
 } from "../face-clusters";
+import { accountScopeFor } from "../account-faces";
 import { listVerifyIdentities, getVerifyGroup, confirmVerify } from "../face-verify";
+import { DRAWN_FACE_MAX_IOU, MIN_DRAWN_FACE_PX, boxIou, type FaceBox } from "@shared/face-box";
 
 const fail = (res: Response, what: string, error: unknown) => {
   if (error instanceof RecognitionRequestError) {
@@ -46,12 +49,20 @@ export async function faceInReadablePhoto(faceUuids: string | string[], photoId?
   if (!ids.length) return false;
   const candidates = photoId ? [photoId] : Array.from(new Set((await photosContainingFaces(ids)).map((r) => r.photoId)));
   const photos = await Promise.all(candidates.map((id) => getReadablePhoto(id)));
+  if (photoId) {
+    const photo = photos[0];
+    if (!photo) return false;
+    const held = new Set(((photo.facialIds ?? []) as FacialId[]).map((f) => f.faceUuid));
+    return ids.every((u) => held.has(u));
+  }
+  const allHeld = new Set<string>();
   for (const photo of photos) {
     if (!photo) continue;
-    const held = new Set(((photo.facialIds ?? []) as FacialId[]).map((f) => f.faceUuid));
-    if (ids.every((u) => held.has(u))) return true;
+    for (const f of ((photo.facialIds ?? []) as FacialId[])) {
+      if (f.faceUuid) allHeld.add(f.faceUuid);
+    }
   }
-  return false;
+  return ids.every((u) => allHeld.has(u));
 }
 
 /** `faceUuids` (Skip all) or a single `faceUuid`, as a validated non-empty list, else null. */
@@ -130,20 +141,32 @@ export function registerFaceReview(app: Express) {
   });
 
   // ── Clusters tab (face-clustering-plan.md §3.3-§3.4, §5) ──
-  app.get("/api/face-review/cluster-summary", requireAuth, async (_req, res) => {
+  // ?account=<id> scopes any of these reads to that account's faces (account-faces-plan.md §3.2).
+  // Answers 404 itself (and returns null) when the account is gone.
+  const clusterScope = async (req: { query: Record<string, unknown> }, res: Response): Promise<{ scope: ClusterScope } | null> => {
+    const account = typeof req.query.account === "string" ? req.query.account : undefined;
+    if (!account) return { scope: undefined };
+    const scope = await accountScopeFor(account);
+    if (!scope) res.status(404).json({ error: "Social account not found" });
+    return scope ? { scope } : null;
+  };
+
+  app.get("/api/face-review/cluster-summary", requireAuth, async (req, res) => {
     try {
-      res.json(await getClusterSummary());
+      const scoped = await clusterScope(req, res);
+      if (scoped) res.json(await getClusterSummary(scoped.scope));
     } catch (error) {
       fail(res, "load cluster summary", error);
     }
   });
 
-  // ?offset=&limit= — largest clusters first.
+  // ?offset=&limit=&account= — largest clusters first.
   app.get("/api/face-review/clusters", requireAuth, async (req, res) => {
     try {
       const offset = Math.max(Number(req.query.offset) || 0, 0);
       const limit = Math.min(Math.max(Number(req.query.limit) || 24, 1), 60);
-      res.json(await listClusters(offset, limit));
+      const scoped = await clusterScope(req, res);
+      if (scoped) res.json(await listClusters(offset, limit, scoped.scope));
     } catch (error) {
       fail(res, "load clusters", error);
     }
@@ -151,7 +174,9 @@ export function registerFaceReview(app: Express) {
 
   app.get("/api/face-review/clusters/:id", requireAuth, async (req, res) => {
     try {
-      const cluster = await getCluster(req.params.id);
+      const scoped = await clusterScope(req, res);
+      if (!scoped) return;
+      const cluster = await getCluster(req.params.id, scoped.scope);
       if (!cluster) return res.status(404).json({ error: "This cluster is gone; it was named, dismissed or reclustered." });
       res.json(cluster);
     } catch (error) {
@@ -280,6 +305,35 @@ export function registerFaceReview(app: Express) {
       res.json({ taskId: task.id });
     } catch (error) {
       fail(res, "queue face re-scan", error);
+    }
+  });
+
+  // { photoId, kind, box } — store a face the user drew a box around (addDrawnFace, photo-faces-plan.md §5);
+  // answers the refreshed item plus the new faceUuid. A box over an already-marked face is refused (409).
+  app.post("/api/face-review/add-face", requireAuth, async (req, res) => {
+    try {
+      const { photoId, kind, box } = req.body ?? {};
+      const k = parseKind(kind);
+      const b = box as FaceBox;
+      if (typeof photoId !== "string" || !k || !b || !(["x", "y", "w", "h"] as const).every((p) => Number.isFinite(b[p]))) {
+        return res.status(400).json({ error: "photoId, kind and box are required" });
+      }
+      const photo = await getReadablePhoto(photoId);
+      if (!photo) return res.status(404).json({ error: "Photo not found" });
+      if (!photo.faceIdAt) return res.status(409).json({ error: "Scan this photo for faces first." });
+      if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM Compute service is not configured." });
+      const outside = b.x < 0 || b.y < 0 || (photo.widthPx && b.x + b.w > photo.widthPx) || (photo.heightPx && b.y + b.h > photo.heightPx);
+      if (b.w < MIN_DRAWN_FACE_PX || b.h < MIN_DRAWN_FACE_PX || outside) {
+        return res.status(400).json({ error: "That box is too small or runs off the photo." });
+      }
+      const marked = ((photo.facialIds ?? []) as FacialId[]).some((f) => f.coordinates && boxIou(f.coordinates as FaceBox, b) > DRAWN_FACE_MAX_IOU);
+      if (marked) return res.status(409).json({ error: "That face is already marked. Click it instead." });
+      const faceUuid = await addDrawnFace(photoId, b);
+      const item = await getFaceReviewItem(photoId, k);
+      if (!item) return res.status(404).json({ error: "Photo not found" });
+      res.json({ ...item, faceUuid });
+    } catch (error) {
+      fail(res, "add face", error);
     }
   });
 

@@ -545,6 +545,42 @@ function SocialGraphContent({
       }
     : null;
 
+  // Connections view: the selected account's five strongest links, by combined
+  // interaction both ways.
+  const selectedTopConnections = useMemo(() => {
+    if (!isConnectionsView || !selectedAccountId || !graphData) return [];
+    const scored: Array<{ id: string; score: number }> = [];
+    for (const l of graphData.links) {
+      const src = linkEndId(l.source);
+      const tgt = linkEndId(l.target);
+      if (src !== selectedAccountId && tgt !== selectedAccountId) continue;
+      scored.push({ id: src === selectedAccountId ? tgt : src, score: (l.forward ?? 0) + (l.back ?? 0) });
+    }
+    return scored.sort((a, b) => b.score - a.score).slice(0, 5);
+  }, [isConnectionsView, selectedAccountId, graphData]);
+
+  // Select an account and fly the camera to its node.
+  const focusAccount = (id: string) => {
+    setSelectedAccountId(id);
+    if (!fgRef.current) return;
+    let node: { x: number; y: number; z: number } | undefined;
+    if (denseEnabled) {
+      const { indexById, positions } = denseLayoutRef.current;
+      const index = indexById.get(id);
+      if (index !== undefined && positions) node = { x: positions[index * 3], y: positions[index * 3 + 1], z: positions[index * 3 + 2] };
+    } else {
+      node = (fgRef.current.graphData().nodes as any[]).find(n => n.id === id);
+    }
+    if (!node || node.x === undefined) return;
+    const distance = 120;
+    const ratio = 1 + distance / (Math.hypot(node.x, node.y, node.z) || 1);
+    fgRef.current.cameraPosition(
+      { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
+      { x: node.x, y: node.y, z: node.z },
+      1000
+    );
+  };
+
   // Adjacency and id lookups are built once per payload. Without them the
   // colour and link passes below degrade into O(nodes x links) scans.
   const graphIndex = useMemo(() => {
@@ -1753,6 +1789,35 @@ function SocialGraphContent({
                   </div>
                 )}
               </div>
+              {selectedTopConnections.length > 0 && (
+                <div className="space-y-2 pt-2 border-t">
+                  <Label className="text-xs text-muted-foreground">Top Connections</Label>
+                  <div className="flex flex-col gap-1" data-testid="list-top-connections">
+                    {selectedTopConnections.map(({ id }) => {
+                      const account = allSocialAccounts.find(a => a.id === id);
+                      const name = account ? `@${account.username}` : (graphIndex.nodeById.get(id)?.name ?? id);
+                      const imageUrl = account?.currentProfile?.imageUrl;
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => focusAccount(id)}
+                          className="flex items-center gap-2 rounded-md border px-2 py-1 text-left hover-elevate"
+                          data-testid={`chip-top-connection-${id}`}
+                        >
+                          <Avatar className="h-6 w-6">
+                            {imageUrl && <AvatarImage src={withImageSize(imageUrl, 150)} alt={name} />}
+                            <AvatarFallback className="text-[10px]">
+                              {name.replace(/^@/, '').slice(0, 2).toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="text-sm flex-1 truncate">{name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {selectedAccountOwner && (
                 <div className="space-y-2 pt-2 border-t">
                   <Label className="text-xs text-muted-foreground">Owner</Label>

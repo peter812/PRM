@@ -6,10 +6,11 @@ import { db } from "../db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, tasks, type Task, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray, desc, gte, lte, type SQL } from "drizzle-orm";
 import { computeFamilyLabels, FAMILY_LABEL_DEPTH } from "../family-relations-helper";
 import { getPrimaryAddress } from "../person-addresses";
 import { AiConfigError, asData, chat as aiChat, DATA_TAGS_NOTE, resolveModel } from "../ai/provider";
+import { getPrompt } from "../prompts";
 import {
   insertPersonSchema,
   insertSchoolingSchema,
@@ -84,19 +85,6 @@ const GROUP_EXPLANATION_SCHEMA = {
   },
   required: ["explanation", "suggestedName", "outliers"],
 };
-
-const GROUP_EXPLAINER_SYSTEM = `You explain why a community-detection algorithm (Louvain) grouped a set of social media accounts together.
-The graph combined these signals into weighted edges between accounts:
-- mutualFollow: both accounts follow each other (strong, 3.5 per pair)
-- oneWayFollow: one follows the other (1.0 per pair)
-- coFollow: they follow many of the same accounts (shared audience/interests)
-- coMention: they were tagged together in the same posts (2.5 per post)
-- bio: their bios share uncommon keywords
-Reply as JSON:
-- explanation: 2-4 plain sentences on why these accounts form a group. Lead with the signals that carry the most weight and cite concrete evidence (shared follows, keywords, hub accounts). Don't restate raw percentages mechanically.
-- suggestedName: a short, human group name (2-5 words) describing what the group likely is (e.g. "Denver climbing crew"). No @handles.
-- outliers: for each account listed in weak_members, one short reason it fits the group weakly. Only use usernames from weak_members; return [] if there are none.
-${DATA_TAGS_NOTE}`;
 
 function buildGroupExplainerPrompt(group: any): string {
   const s = group.signals;
@@ -604,68 +592,51 @@ export function registerRoutes(app: Express) {
     app.get("/api/interactions", async (req, res) => {
       try {
         const { personId, groupId, isgroup, startDate, endDate, start_date, end_date, count_limit, date_back } = req.query;
-        
-        // Get all interactions visible to user
-        const allInteractions = await db
-          .select()
-          .from(interactions)
-          .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id));
-        
-        let filteredInteractions = allInteractions;
-        
+
+        const whereConditions: SQL[] = [];
+
         // Filter by person or group ID
         if (personId) {
-          filteredInteractions = filteredInteractions.filter(row => 
-            row.interactions.peopleIds.includes(personId as string)
-          );
+          whereConditions.push(sql`${personId as string} = ANY(${interactions.peopleIds})`);
         } else if (groupId) {
-          filteredInteractions = filteredInteractions.filter(row => 
-            row.interactions.groupIds?.includes(groupId as string)
-          );
+          whereConditions.push(sql`${groupId as string} = ANY(${interactions.groupIds})`);
         } else if (isgroup !== undefined) {
-          // If isgroup flag is provided without specific ID
           if (isgroup === 'true') {
-            filteredInteractions = filteredInteractions.filter(row => 
-              row.interactions.groupIds && row.interactions.groupIds.length > 0
-            );
+            whereConditions.push(sql`coalesce(cardinality(${interactions.groupIds}), 0) > 0`);
           } else {
-            filteredInteractions = filteredInteractions.filter(row => 
-              !row.interactions.groupIds || row.interactions.groupIds.length === 0
-            );
+            whereConditions.push(sql`coalesce(cardinality(${interactions.groupIds}), 0) = 0`);
           }
         }
-        
+
         // Apply date filters (support both formats)
         const startDateParam = startDate || start_date || date_back;
         const endDateParam = endDate || end_date;
-        
+
         if (startDateParam) {
-          const startTimestamp = new Date(startDateParam as string).getTime();
-          filteredInteractions = filteredInteractions.filter(row => 
-            new Date(row.interactions.date).getTime() >= startTimestamp
-          );
+          whereConditions.push(gte(interactions.date, new Date(startDateParam as string)));
         }
-        
+
         if (endDateParam) {
-          const endTimestamp = new Date(endDateParam as string).getTime();
-          filteredInteractions = filteredInteractions.filter(row => 
-            new Date(row.interactions.date).getTime() <= endTimestamp
-          );
+          whereConditions.push(lte(interactions.date, new Date(endDateParam as string)));
         }
-        
-        // Sort by date, newest first
-        filteredInteractions.sort((a, b) => 
-          new Date(b.interactions.date).getTime() - new Date(a.interactions.date).getTime()
-        );
-        
-        // Apply count limit if provided
+
+        const baseQuery = db
+          .select()
+          .from(interactions)
+          .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id))
+          .where(whereConditions.length > 0 ? and(...whereConditions) : undefined)
+          .orderBy(desc(interactions.date));
+
+        let limitNum: number | undefined;
         if (count_limit) {
-          const limit = parseInt(count_limit as string);
-          if (!isNaN(limit) && limit > 0) {
-            filteredInteractions = filteredInteractions.slice(0, limit);
+          const parsed = parseInt(count_limit as string, 10);
+          if (!isNaN(parsed) && parsed > 0) {
+            limitNum = parsed;
           }
         }
-        
+
+        const filteredInteractions = await (limitNum ? baseQuery.limit(limitNum) : baseQuery);
+
         // Format the response
         const result = filteredInteractions.map(row => ({
           ...row.interactions,
@@ -676,7 +647,7 @@ export function registerRoutes(app: Express) {
             value: row.interaction_types.value,
           } : null,
         }));
-        
+
         res.json(result);
       } catch (error) {
         console.error("Error fetching interactions:", error);
@@ -1432,15 +1403,34 @@ export function registerRoutes(app: Express) {
           }
 
           const memberSaIds = accounts.map(a => a.id);
-          const followingMap = new Map<string, Set<string>>();
-          const groupFollows = await db
-            .select({ followerId: socialFollows.followerId, followedId: socialFollows.followedId })
-            .from(socialFollows)
-            .where(inArray(socialFollows.followerId, memberSaIds));
-          for (const edge of groupFollows) {
-            let followed = followingMap.get(edge.followerId);
-            if (!followed) { followed = new Set(); followingMap.set(edge.followerId, followed); }
-            followed.add(edge.followedId);
+          const countMap = new Map<string, number>();
+
+          if (F_center.size > 0 && memberSaIds.length > 0) {
+            const fCenterArray = Array.from(F_center);
+            const MEMBER_CHUNK_SIZE = 100;
+            const CENTER_CHUNK_SIZE = 400;
+
+            for (let i = 0; i < memberSaIds.length; i += MEMBER_CHUNK_SIZE) {
+              const memberChunk = memberSaIds.slice(i, i + MEMBER_CHUNK_SIZE);
+              for (let j = 0; j < fCenterArray.length; j += CENTER_CHUNK_SIZE) {
+                const centerChunk = fCenterArray.slice(j, j + CENTER_CHUNK_SIZE);
+                const intersectionCounts = await db
+                  .select({
+                    followerId: socialFollows.followerId,
+                    count: sql<number>`count(*)::int`,
+                  })
+                  .from(socialFollows)
+                  .where(and(
+                    inArray(socialFollows.followerId, memberChunk),
+                    inArray(socialFollows.followedId, centerChunk)
+                  ))
+                  .groupBy(socialFollows.followerId);
+
+                for (const r of intersectionCounts) {
+                  countMap.set(r.followerId, (countMap.get(r.followerId) || 0) + Number(r.count));
+                }
+              }
+            }
           }
 
           // Fetch owner people if linked
@@ -1454,14 +1444,6 @@ export function registerRoutes(app: Express) {
           }
 
           const results = accounts.map(a => {
-            const followed = followingMap.get(a.id) || new Set<string>();
-            let intersectionCount = 0;
-            for (const f of F_center) {
-              if (followed.has(f)) {
-                intersectionCount++;
-              }
-            }
-
             const owner = a.ownerUuid ? ownerPeopleMap.get(a.ownerUuid) : null;
 
             return {
@@ -1471,7 +1453,7 @@ export function registerRoutes(app: Express) {
               platform: a.typeId || "Instagram",
               nickname: a.currentProfile?.nickname || null,
               imageUrl: a.currentProfile?.imageUrl || null,
-              connectionStrength: intersectionCount,
+              connectionStrength: countMap.get(a.id) || 0,
               ownerPersonId: owner ? owner.id : null,
               ownerPersonName: owner ? `${owner.firstName} ${owner.lastName}` : null
             };
@@ -1656,7 +1638,7 @@ export function registerRoutes(app: Express) {
           think: false,
           format: GROUP_EXPLANATION_SCHEMA,
           messages: [
-            { role: "system", content: GROUP_EXPLAINER_SYSTEM },
+            { role: "system", content: `${await getPrompt("groupExplainer")}\n${DATA_TAGS_NOTE}` },
             { role: "user", content: buildGroupExplainerPrompt(group) },
           ],
           signal: AbortSignal.timeout(120_000),

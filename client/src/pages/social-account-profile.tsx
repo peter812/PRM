@@ -1,14 +1,13 @@
 import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation, useSearch } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, MessageSquare, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe, ScanFace, Star, Ban } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, ImageIcon, Info, GitCompare, ChevronDown, MessageSquare, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe, ScanFace, Star, Ban } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { LikesHiddenBadge } from "@/components/likes-hidden-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -31,11 +30,16 @@ import {
   DEFAULT_MAX_RECORDS,
   type ExtractAction,
 } from "@/lib/extension-bridge";
-import { getInitials } from "@/lib/utils";
-import { postPosters } from "@/lib/instagram";
+import { getInitials, safeJsonParse } from "@/lib/utils";
 import { useMutation } from "@tanstack/react-query";
 import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry, TrackingJob, PrimaryAddress } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
+
+/** A row of /tagged-posts: the post, who posted it, and when this account's tab showed it. */
+type TaggedPost = SocialAccountPost & {
+  poster: { id: string; username: string; imageUrl: string | null };
+  tag: { firstSeenAt: string; removedSeenAt: string | null };
+};
 import { Link } from "wouter";
 import { OUTDATED_TEXT, OutdatedBadge } from "@/components/person-addresses";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
@@ -44,7 +48,12 @@ import { LinkFollowingAccountsDialog } from "@/components/link-following-account
 import { PersonDialog } from "@/components/person-dialog";
 import { LinkPersonDialog } from "@/components/link-person-dialog";
 import { PostDialog } from "@/components/post-dialog";
-import { PostDetailDialog } from "@/components/post-detail-dialog";
+const PostDetailDialog = lazy(() =>
+  import("@/components/post-detail-dialog").then((m) => ({
+    default: m.PostDetailDialog,
+  }))
+);
+import { SocialPostsGrid } from "@/components/social-posts-grid";
 import { ProfilePhotoDialog } from "@/components/profile-photo-dialog";
 import { SiInstagram } from "react-icons/si";
 import { SocialPlatformIcon } from "@/components/social-platform-icon";
@@ -58,6 +67,7 @@ import { AccountSummaryCard, SocialAccountSummaryTab } from "@/components/accoun
 import { ConnectionsTab } from "@/components/connections-tab";
 import { SocialAccountRow } from "@/components/social-account-row";
 import { AccountTracking } from "@/components/account-tracking";
+import { AccountFacesTab, accountFacesPending, invalidateAccountFaces, useAccountFaceCounts } from "@/components/account-faces-tab";
 import {
   Dialog,
   DialogContent,
@@ -82,7 +92,7 @@ export default function SocialAccountProfile() {
   // The path alone misses a ?postId change on this same page, e.g. from the history tab.
   const search = useSearch();
   const { toast } = useToast();
-  const VALID_TABS = ["account", "follow", "posts", "stories", "messages", "connections", "history", "insights", "summary"];
+  const VALID_TABS = ["account", "follow", "posts", "tagged", "stories", "faces", "messages", "connections", "history", "insights", "summary"];
 
   const getTabFromSearch = () => {
     if (typeof window === "undefined") return "account";
@@ -156,9 +166,11 @@ export default function SocialAccountProfile() {
     enabled: !!uuid,
   });
 
+  const accountId = account?.id ?? uuid;
+
   const [profileImgSrc, setProfileImgSrc] = useState<string | null | undefined>(undefined);
   const [profilePhotoOpen, setProfilePhotoOpen] = useState(false);
-  const noFace = useNoFaceToggle();
+  const noFace = useNoFaceToggle(invalidateAccountFaces);
   const bans = useBannedActionToggle();
 
   useEffect(() => {
@@ -183,6 +195,7 @@ export default function SocialAccountProfile() {
     queryKey: ["/api/social-account-types"],
   });
 
+  const facesPending = accountFacesPending(useAccountFaceCounts(account?.id).data);
   const { data: appSettings } = useQuery<Record<string, string | null>>({
     queryKey: ["/api/settings"],
   });
@@ -266,13 +279,13 @@ export default function SocialAccountProfile() {
 
   // Full follower/following id lists for membership checks and the link dialog
   const { data: followIds } = useQuery<{ followerIds: string[]; followingIds: string[] }>({
-    queryKey: ["/api/social-accounts", uuid, "follow-ids"],
+    queryKey: ["/api/social-accounts", accountId, "follow-ids"],
     queryFn: async () => {
-      const res = await fetch(`/api/social-accounts/${uuid}/follow-ids`);
+      const res = await fetch(`/api/social-accounts/${accountId}/follow-ids`);
       if (!res.ok) throw new Error("Failed to fetch follow ids");
       return res.json();
     },
-    enabled: !!uuid,
+    enabled: !!accountId,
   });
 
   const followers = followersData?.pages.flatMap((p) => p.items) ?? [];
@@ -334,8 +347,8 @@ export default function SocialAccountProfile() {
     });
   }, [allPosts]);
 
-  const sortedPosts = useMemo(() => {
-    return [...posts].sort((a, b) => {
+  const sortPosts = <T extends SocialAccountPost>(list: T[]) =>
+    [...list].sort((a, b) => {
       if (postSort === "oldest") {
         const diff = getPostTime(a) - getPostTime(b);
         if (diff !== 0) return diff;
@@ -351,15 +364,52 @@ export default function SocialAccountProfile() {
       if (diff !== 0) return diff;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [posts, postSort]);
+  const sortedPosts = useMemo(() => sortPosts(posts), [posts, postSort]);
+
+  // Tagged posts (tagged-posts-plan.md): other accounts' posts that tag this one, removed tags included.
+  const taggedKey = ["/api/social-accounts", uuid, "tagged-posts?includeRemoved=true&includeDeleted=true"];
+  const { data: taggedData, isLoading: isTaggedLoading } = useQuery<TaggedPost[]>({
+    queryKey: taggedKey,
+    enabled: !!uuid && activeTab === "tagged",
+  });
+  const taggedPosts = taggedData ?? [];
+  const sortedTaggedPosts = useMemo(() => sortPosts(taggedPosts), [taggedData, postSort]);
+
+  const openPost = (post: SocialAccountPost) => {
+    setSelectedPost(post);
+    setIsPostDetailOpen(true);
+  };
+
+  // The slide of a post this account is tagged in (mentionedAccounts), else the first.
+  const taggedSlide = (post: SocialAccountPost) => {
+    const username = account?.username?.toLowerCase();
+    const mentions = safeJsonParse<{ imageIndex: number; accounts?: string[] }[]>(post.mentionedAccounts, []);
+    return mentions.find((m) => m.accounts?.some((u) => u.toLowerCase() === username))?.imageIndex ?? 0;
+  };
+
+  const postSortSelect = (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-muted-foreground">Sort:</span>
+      <Select value={postSort} onValueChange={(val: PostSortOption) => handleSortChange(val)}>
+        <SelectTrigger className="h-8 w-[160px] text-xs" data-testid="select-post-sort">
+          <SelectValue placeholder="Sort by" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="newest" data-testid="select-item-sort-newest">Newest</SelectItem>
+          <SelectItem value="oldest" data-testid="select-item-sort-oldest">Oldest</SelectItem>
+          <SelectItem value="popular" data-testid="select-item-sort-popular">Most Popular</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  );
 
   const stories = storyPosts ?? [];
 
   // Tracking jobs query to detect when a posts check is queued or running
-  const jobsKey = [`/api/social-accounts/${uuid}/tracking-jobs`];
+  const jobsKey = [`/api/social-accounts/${accountId}/tracking-jobs`];
   const { data: trackingJobs } = useQuery<TrackingJob[]>({
     queryKey: jobsKey,
-    enabled: !!uuid && (activeTab === "account" || activeTab === "posts" || activeTab === "stories"),
+    enabled: !!accountId && (activeTab === "account" || activeTab === "posts" || activeTab === "stories" || activeTab === "tagged"),
     refetchInterval: (query) => {
       const data = query.state.data as TrackingJob[] | undefined;
       const hasOpen = data?.some((j) => j.status === "queued" || j.status === "running");
@@ -375,6 +425,13 @@ export default function SocialAccountProfile() {
   const isPostsWorkOpen = trackingJobs?.some(
     (j) => (j.kind === "posts" || j.kind === "scan") && (j.status === "queued" || j.status === "running")
   );
+  const isTaggedQueued = trackingJobs?.some((j) => j.kind === "tagged" && (j.status === "queued" || j.status === "running"));
+  const prevTaggedQueuedRef = useRef(false);
+  useEffect(() => {
+    if (prevTaggedQueuedRef.current && !isTaggedQueued) queryClient.invalidateQueries({ queryKey: taggedKey });
+    prevTaggedQueuedRef.current = !!isTaggedQueued;
+  }, [isTaggedQueued, uuid]);
+
   const prevPostsWorkOpenRef = useRef(false);
   useEffect(() => {
     if (prevPostsWorkOpenRef.current && !isPostsWorkOpen) {
@@ -386,7 +443,7 @@ export default function SocialAccountProfile() {
 
   const retrievePostsMutation = useMutation({
     mutationFn: () =>
-      apiRequest("POST", `/api/social-accounts/${uuid}/tracking-jobs`, { kind: "posts" }),
+      apiRequest("POST", `/api/social-accounts/${accountId}/tracking-jobs`, { kind: "posts" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: jobsKey });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"] });
@@ -403,6 +460,37 @@ export default function SocialAccountProfile() {
       });
     },
   });
+
+  const retrieveTaggedMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/social-accounts/${accountId}/tracking-jobs`, { kind: "tagged" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: jobsKey });
+      toast({ title: "Queued", description: "A tagged posts check will run on the next tracking run." });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Could not retrieve tagged posts", description: e.message, variant: "destructive" });
+    },
+  });
+  const retrieveTaggedButton = (
+    <Button
+      size="sm"
+      onClick={() => retrieveTaggedMutation.mutate()}
+      disabled={retrieveTaggedMutation.isPending || isTaggedQueued}
+      data-testid="button-retrieve-tagged"
+    >
+      {retrieveTaggedMutation.isPending || isTaggedQueued ? (
+        <>
+          <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+          {isTaggedQueued ? "Tagged Queued" : "Queuing..."}
+        </>
+      ) : (
+        <>
+          <Download className="h-4 w-4 mr-1.5" />
+          Retrieve Tagged Posts
+        </>
+      )}
+    </Button>
+  );
 
   // Recent journal entries, for the "profile image updated" line in the info dialog
   const { data: recentHistory } = useQuery<{ items: SocialAccountHistoryEntry[] }>({
@@ -461,7 +549,7 @@ export default function SocialAccountProfile() {
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      return await apiRequest("DELETE", `/api/social-accounts/${uuid}`);
+      return await apiRequest("DELETE", `/api/social-accounts/${accountId}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
@@ -489,6 +577,7 @@ export default function SocialAccountProfile() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?postType=story&includeDeleted=true"] });
+      queryClient.invalidateQueries({ queryKey: taggedKey });
       toast({
         title: "Success",
         description: "Post deleted successfully",
@@ -869,16 +958,11 @@ export default function SocialAccountProfile() {
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem 
-                onClick={() => deleteMutation.mutate()} 
-                disabled={deleteMutation.isPending} 
+                onClick={() => setIsDeleteDialogOpen(true)} 
                 className="text-destructive hover:text-destructive focus:bg-destructive/10"
                 data-testid="button-delete-account"
               >
-                {deleteMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4 mr-2" />
-                )}
+                <Trash2 className="h-4 w-4 mr-2" />
                 Delete Account
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -916,11 +1000,28 @@ export default function SocialAccountProfile() {
                 Posts
               </TabsTrigger>
               <TabsTrigger
+                value="tagged"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-tagged"
+              >
+                Tagged
+              </TabsTrigger>
+              <TabsTrigger
                 value="stories"
                 className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-stories"
               >
                 Stories
+              </TabsTrigger>
+              <TabsTrigger
+                value="faces"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0 flex items-center justify-between"
+                data-testid="tab-faces"
+              >
+                <span>Faces</span>
+                {facesPending > 0 && (
+                  <span className="text-[10px] font-medium rounded-full bg-primary/15 text-primary px-1.5 py-0.5" title="Faces waiting for a decision">{facesPending}</span>
+                )}
               </TabsTrigger>
               <TabsTrigger
                 value="messages"
@@ -1496,7 +1597,7 @@ export default function SocialAccountProfile() {
                     )}
 
                     {/* Interest level + Edit tracking (Instagram only) */}
-                    {accountType?.name?.toLowerCase() === "instagram" && <AccountTracking account={account} />}
+                    {accountType?.name?.toLowerCase() === "instagram" && <AccountTracking account={account} uuid={uuid} />}
                   </div>
 
                   {/* Linked Person Section */}
@@ -1679,19 +1780,7 @@ export default function SocialAccountProfile() {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                 <div className="flex flex-wrap items-center gap-4">
                   <h2 className="text-lg font-semibold">Posts ({posts?.length || 0})</h2>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Sort:</span>
-                    <Select value={postSort} onValueChange={(val: PostSortOption) => handleSortChange(val)}>
-                      <SelectTrigger className="h-8 w-[160px] text-xs" data-testid="select-post-sort">
-                        <SelectValue placeholder="Sort by" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="newest" data-testid="select-item-sort-newest">Newest</SelectItem>
-                        <SelectItem value="oldest" data-testid="select-item-sort-oldest">Oldest</SelectItem>
-                        <SelectItem value="popular" data-testid="select-item-sort-popular">Most Popular</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {postSortSelect}
                 </div>
                 <Button
                   size="sm"
@@ -1713,128 +1802,86 @@ export default function SocialAccountProfile() {
                 </Button>
               </div>
 
-              {isPostsLoading ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4" data-testid="posts-loading-skeleton">
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <Card key={i} className="overflow-hidden shadow-none border">
-                      <Skeleton className="aspect-square w-full rounded-none" />
-                      <div className="p-3 space-y-2">
-                        <Skeleton className="h-4 w-3/4" />
-                        <Skeleton className="h-3 w-1/2" />
-                        <div className="flex items-center gap-3 pt-1">
-                          <Skeleton className="h-3 w-8" />
-                          <Skeleton className="h-3 w-8" />
-                        </div>
-                      </div>
-                    </Card>
-                  ))}
-                </div>
-              ) : sortedPosts && sortedPosts.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                  {sortedPosts.map((post) => {
-                    let images: string[] = [];
-                    try {
-                      images = post.content ? JSON.parse(post.content) : [];
-                    } catch {
-                      images = [];
-                    }
-                    const firstImage = images[0] || null;
-                    // A collab post: the other posters, whichever of them this profile is.
-                    const collaborators = postPosters(post).filter((p) => p.id !== uuid);
-
-                    return (
-                      <Card
-                        key={post.id}
-                        className="overflow-hidden cursor-pointer hover:shadow-md transition-shadow"
-                        onClick={() => {
-                          setSelectedPost(post);
-                          setIsPostDetailOpen(true);
-                        }}
-                        data-testid={`card-post-${post.id}`}
-                      >
-                        {/* Image thumbnail */}
-                        <div className="aspect-square bg-muted relative overflow-hidden">
-                          {firstImage ? (
-                            <img
-                              src={withImageSize(firstImage, 360)}
-                              alt="Post thumbnail"
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <ImageIcon className="h-10 w-10 text-muted-foreground/40" />
-                            </div>
-                          )}
-                          {images.length > 1 && (
-                            <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">
-                              {images.length}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Post info */}
-                        <div className="p-3">
-                          {collaborators.length > 0 && (
-                            <p className="text-xs text-muted-foreground mb-1 truncate" data-testid={`text-post-collab-${post.id}`}>
-                              with {collaborators.map((c) => `@${c.username}`).join(", ")}
-                            </p>
-                          )}
-                          {post.description && (
-                            <p className="text-sm line-clamp-2 mb-2">
-                              {post.description}
-                            </p>
-                          )}
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                            <span className="flex items-center gap-1" data-testid={`text-post-likes-${post.id}`}>
-                              <Heart className="h-3 w-3" />
-                              {post.likesHidden ? <LikesHiddenBadge /> : post.likeCount}
-                            </span>
-                            <span className="flex items-center gap-1">
-                              <MessageCircle className="h-3 w-3" />
-                              {post.commentCount}
-                            </span>
-                            {(post.postedAt || post.createdAt) && (
-                              <span className="ml-auto text-[11px] text-muted-foreground/80" data-testid={`text-post-date-${post.id}`}>
-                                {new Date(post.postedAt ?? post.createdAt).toLocaleDateString()}
-                              </span>
-                            )}
-                            {post.isDeleted && (
-                              <Badge variant="destructive" className="text-[10px] px-1.5 py-0" data-testid={`badge-post-deleted-${post.id}`}>Deleted</Badge>
-                            )}
-                          </div>
-                        </div>
-                      </Card>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="rounded-full bg-muted/60 p-4 mb-4">
-                    <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
+              <SocialPostsGrid
+                posts={sortedPosts}
+                isLoading={isPostsLoading}
+                accountId={accountId}
+                onOpen={openPost}
+                empty={
+                  <div className="flex flex-col items-center justify-center py-16 text-center">
+                    <div className="rounded-full bg-muted/60 p-4 mb-4">
+                      <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
+                    </div>
+                    <h3 className="text-base font-medium text-foreground mb-1">No posts imported yet</h3>
+                    <p className="text-xs text-muted-foreground max-w-sm mb-4">
+                      Retrieve all posts in high quality from this account.
+                    </p>
+                    <Button
+                      onClick={() => retrievePostsMutation.mutate()}
+                      disabled={retrievePostsMutation.isPending || isPostsQueued}
+                      data-testid="button-import-now"
+                    >
+                      {retrievePostsMutation.isPending || isPostsQueued ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                          {isPostsQueued ? "Queued" : "Queuing..."}
+                        </>
+                      ) : (
+                        <>
+                          <Download className="h-4 w-4 mr-1.5" />
+                          Import now
+                        </>
+                      )}
+                    </Button>
                   </div>
-                  <h3 className="text-base font-medium text-foreground mb-1">No posts imported yet</h3>
-                  <p className="text-xs text-muted-foreground max-w-sm mb-4">
-                    Retrieve all posts in high quality from this account.
-                  </p>
-                  <Button
-                    onClick={() => retrievePostsMutation.mutate()}
-                    disabled={retrievePostsMutation.isPending || isPostsQueued}
-                    data-testid="button-import-now"
-                  >
-                    {retrievePostsMutation.isPending || isPostsQueued ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                        {isPostsQueued ? "Queued" : "Queuing..."}
-                      </>
-                    ) : (
-                      <>
-                        <Download className="h-4 w-4 mr-1.5" />
-                        Import now
-                      </>
-                    )}
-                  </Button>
+                }
+              />
+            </div>
+          </TabsContent>
+
+          {/* Tagged Tab: posts other accounts made that tag this one, each marked with its poster */}
+          <TabsContent value="tagged" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <div className="px-6 py-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div className="flex flex-wrap items-center gap-4">
+                  <h2 className="text-lg font-semibold">Tagged posts ({taggedPosts.length})</h2>
+                  {postSortSelect}
                 </div>
-              )}
+                {retrieveTaggedButton}
+              </div>
+              <SocialPostsGrid
+                posts={sortedTaggedPosts}
+                isLoading={isTaggedLoading}
+                accountId={accountId}
+                onOpen={openPost}
+                dimmed={(post) => Boolean(post.tag.removedSeenAt)}
+                coverIndex={taggedSlide}
+                renderByline={(post) => (
+                  <Link
+                    href={`/social-accounts/${post.poster.id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex items-center gap-1.5 mb-1.5 text-xs font-medium hover:underline min-w-0"
+                    data-testid={`link-post-poster-${post.id}`}
+                  >
+                    <Avatar className="h-5 w-5">
+                      {post.poster.imageUrl && <AvatarImage src={withImageSize(post.poster.imageUrl, 64)} alt="" />}
+                      <AvatarFallback className="text-[9px]">{post.poster.username.slice(0, 2).toUpperCase()}</AvatarFallback>
+                    </Avatar>
+                    <span className="truncate">@{post.poster.username}</span>
+                    {post.tag.removedSeenAt && <span className="ml-auto shrink-0 text-[10px] font-normal text-muted-foreground">Tag removed</span>}
+                  </Link>
+                )}
+                empty={
+                  <div className="flex flex-col items-center justify-center py-16 text-center">
+                    <div className="rounded-full bg-muted/60 p-4 mb-4">
+                      <AtSign className="h-10 w-10 text-muted-foreground/50" />
+                    </div>
+                    <h3 className="text-base font-medium text-foreground mb-1">No tagged posts imported yet</h3>
+                    <p className="text-xs text-muted-foreground max-w-sm mb-4">Retrieve the posts other accounts tagged this one in.</p>
+                    {retrieveTaggedButton}
+                  </div>
+                }
+              />
             </div>
           </TabsContent>
 
@@ -1842,6 +1889,10 @@ export default function SocialAccountProfile() {
           {/* Messages Tab */}
           <TabsContent value="stories" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <StoriesTab accountId={account.id} stories={stories} />
+          </TabsContent>
+
+          <TabsContent value="faces" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <AccountFacesTab accountId={account.id} />
           </TabsContent>
 
           <TabsContent value="messages" className="mt-0 flex-1 min-h-0">
@@ -1898,7 +1949,7 @@ export default function SocialAccountProfile() {
       <LinkFollowingAccountsDialog
         open={isLinkFollowingOpen}
         onOpenChange={setIsLinkFollowingOpen}
-        accountUuid={uuid!}
+        accountUuid={accountId}
         linkedAccountIds={followIds?.followingIds || []}
       />
 
@@ -1925,35 +1976,40 @@ export default function SocialAccountProfile() {
 
       {selectedPost && (
         <>
-          <PostDetailDialog
-            open={isPostDetailOpen}
-            onOpenChange={(open) => {
-              setIsPostDetailOpen(open);
-              if (!open && typeof window !== "undefined") {
-                const params = new URLSearchParams(window.location.search);
-                if (params.has("postId")) {
-                  params.delete("postId");
-                  const searchStr = params.toString();
-                  window.history.replaceState(null, "", `${window.location.pathname}${searchStr ? `?${searchStr}` : ""}`);
-                }
-              }
-            }}
-            post={selectedPost}
-            onEdit={() => {
-              setIsPostDetailOpen(false);
-              setIsEditPostOpen(true);
-            }}
-            onDelete={() => {
-              deletePostMutation.mutate(selectedPost.id);
-              setSelectedPost(null);
-            }}
-          />
+          {isPostDetailOpen && (
+            <Suspense fallback={null}>
+              <PostDetailDialog
+                open={isPostDetailOpen}
+                onOpenChange={(open) => {
+                  setIsPostDetailOpen(open);
+                  if (!open && typeof window !== "undefined") {
+                    const params = new URLSearchParams(window.location.search);
+                    if (params.has("postId")) {
+                      params.delete("postId");
+                      const searchStr = params.toString();
+                      window.history.replaceState(null, "", `${window.location.pathname}${searchStr ? `?${searchStr}` : ""}`);
+                    }
+                  }
+                }}
+                post={selectedPost}
+                initialImageIndex={activeTab === "tagged" ? taggedSlide(selectedPost) : 0}
+                onEdit={() => {
+                  setIsPostDetailOpen(false);
+                  setIsEditPostOpen(true);
+                }}
+                onDelete={() => {
+                  deletePostMutation.mutate(selectedPost.id);
+                  setSelectedPost(null);
+                }}
+              />
+            </Suspense>
+          )}
 
           <PostDialog
             open={isEditPostOpen}
             onOpenChange={setIsEditPostOpen}
             post={selectedPost}
-            socialAccountId={uuid!}
+            socialAccountId={accountId}
           />
         </>
       )}
@@ -2017,8 +2073,8 @@ export default function SocialAccountProfile() {
           </DialogHeader>
           <div className="space-y-5 pt-1 max-h-[60vh] overflow-y-auto pr-1">
             {(() => {
-              const followingIds = new Set(followingList.map((a) => a.id));
-              const followerIds = new Set(followers.map((a) => a.id));
+              const followingIds = new Set(followIds?.followingIds ?? []);
+              const followerIds = new Set(followIds?.followerIds ?? []);
               const followersOnly = followers.filter((a) => !followingIds.has(a.id));
               const followingOnly = followingList.filter((a) => !followerIds.has(a.id));
               return (
@@ -2074,6 +2130,29 @@ export default function SocialAccountProfile() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Account Confirmation Dialog */}
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Social Account</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {account?.username}? This will permanently remove this account and unlink it from any associated people. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteMutation.mutate()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

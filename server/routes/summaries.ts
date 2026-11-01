@@ -1,44 +1,41 @@
 import type { Express } from "express";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import { storage } from "../storage";
 import {
   historicalAccountSummaries,
+  people,
   socialAccountPosts,
   socialAccounts,
   summaryJobs,
+  type AiBackendNote,
+  type PostAiSummary,
 } from "@shared/schema";
 import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
 import {
-  DEFAULT_ACCOUNT_PROMPT,
   DEFAULT_POST_MAX_WORDS,
-  DEFAULT_POST_PROMPT,
-  DEFAULT_SCENE_PROMPT,
-  DEFAULT_STORY_PROMPT,
   SUMMARY_ACCOUNT_AUTO_ENABLED_KEY,
   SUMMARY_ACCOUNT_ENABLED_KEY,
   SUMMARY_ACCOUNT_NO_THINK_KEY,
-  SUMMARY_ACCOUNT_PROMPT_KEY,
   SUMMARY_HOST_POOL_KEY,
   SUMMARY_POST_AUTO_ENABLED_KEY,
   SUMMARY_POST_ENABLED_KEY,
   SUMMARY_POST_MAX_WORDS_KEY,
   SUMMARY_POST_NO_THINK_KEY,
-  SUMMARY_POST_PROMPT_KEY,
   SUMMARY_SCENE_MODEL_KEY,
   SUMMARY_SCENE_NO_THINK_KEY,
-  SUMMARY_SCENE_PROMPT_KEY,
   SUMMARY_SCENE_PROVIDER_KEY,
   SUMMARY_STORY_NO_THINK_KEY,
-  SUMMARY_STORY_PROMPT_KEY,
   SUMMARY_TEXT_MODEL_KEY,
   SUMMARY_TEXT_PROVIDER_KEY,
   enqueueAccountSummariesForLevel,
   enqueueAccountSummary,
   enqueueAllHistoricalPosts,
   enqueueSummaryJob,
+  invalidateSummarySettingsCache,
   loadSummarySettings,
+  refreshHostPool,
   wakeSummaryRunner,
 } from "../summary-queue";
 import { listProviders } from "../ai/provider";
@@ -56,11 +53,7 @@ const settingsPatchSchema = z.object({
   accountAutoEnabled: z.boolean().optional(),
   sceneModel: modelSelectionSchema.optional(),
   textModel: modelSelectionSchema.optional(),
-  scenePrompt: z.string().max(20_000).optional(),
-  postPrompt: z.string().max(20_000).optional(),
   postMaxWords: z.number().int().min(10).max(2_000).optional(),
-  storyPrompt: z.string().max(20_000).optional(),
-  accountPrompt: z.string().max(20_000).optional(),
   sceneNoThink: z.boolean().optional(),
   postNoThink: z.boolean().optional(),
   storyNoThink: z.boolean().optional(),
@@ -82,11 +75,7 @@ export function registerSummaryRoutes(app: Express) {
       res.json({
         ...settings,
         defaults: {
-          scenePrompt: DEFAULT_SCENE_PROMPT,
-          postPrompt: DEFAULT_POST_PROMPT,
           postMaxWords: DEFAULT_POST_MAX_WORDS,
-          storyPrompt: DEFAULT_STORY_PROMPT,
-          accountPrompt: DEFAULT_ACCOUNT_PROMPT,
         },
       });
     } catch (error) {
@@ -120,12 +109,6 @@ export function registerSummaryRoutes(app: Express) {
         ops.push(storage.setAppSetting(SUMMARY_TEXT_PROVIDER_KEY, p.textModel.providerId));
         ops.push(storage.setAppSetting(SUMMARY_TEXT_MODEL_KEY, p.textModel.model.trim()));
       }
-      // A prompt left at its default is stored empty, so later changes to the default still apply.
-      const promptValue = (prompt: string, fallback: string) => (prompt.trim() === fallback ? "" : prompt);
-      if (p.scenePrompt !== undefined) ops.push(storage.setAppSetting(SUMMARY_SCENE_PROMPT_KEY, promptValue(p.scenePrompt, DEFAULT_SCENE_PROMPT)));
-      if (p.postPrompt !== undefined) ops.push(storage.setAppSetting(SUMMARY_POST_PROMPT_KEY, promptValue(p.postPrompt, DEFAULT_POST_PROMPT)));
-      if (p.storyPrompt !== undefined) ops.push(storage.setAppSetting(SUMMARY_STORY_PROMPT_KEY, promptValue(p.storyPrompt, DEFAULT_STORY_PROMPT)));
-      if (p.accountPrompt !== undefined) ops.push(storage.setAppSetting(SUMMARY_ACCOUNT_PROMPT_KEY, promptValue(p.accountPrompt, DEFAULT_ACCOUNT_PROMPT)));
       if (p.postMaxWords !== undefined) ops.push(storage.setAppSetting(SUMMARY_POST_MAX_WORDS_KEY, String(p.postMaxWords)));
       if (p.sceneNoThink !== undefined) ops.push(storage.setAppSetting(SUMMARY_SCENE_NO_THINK_KEY, String(p.sceneNoThink)));
       if (p.postNoThink !== undefined) ops.push(storage.setAppSetting(SUMMARY_POST_NO_THINK_KEY, String(p.postNoThink)));
@@ -134,8 +117,11 @@ export function registerSummaryRoutes(app: Express) {
       if (p.hostPool !== undefined) ops.push(storage.setAppSetting(SUMMARY_HOST_POOL_KEY, JSON.stringify(p.hostPool)));
 
       await Promise.all(ops);
-      // The runner reloads the pool on each pass; wake it so new hosts start taking work now.
-      if (p.hostPool !== undefined) wakeSummaryRunner();
+      invalidateSummarySettingsCache();
+      if (p.hostPool !== undefined) {
+        await refreshHostPool();
+        wakeSummaryRunner();
+      }
       res.json(await loadSummarySettings());
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to save summary settings" });
@@ -344,6 +330,101 @@ export function registerSummaryRoutes(app: Express) {
       res.status(500).json({ error: "Failed to queue post summary" });
     }
   });
+
+  // Fix: the user's correction to one image. Re-runs vision on that image with the correction, rebuilds the
+  // post summary (which invalidates the account summary), then pulls durable facts into ai_backend_notes.
+  app.post("/api/social-posts/:id/images/:imageIndex/append", async (req, res) => {
+    try {
+      const imageIndex = Number(req.params.imageIndex);
+      const parsed = z.object({ text: z.string().trim().min(1).max(1_000) }).safeParse(req.body);
+      if (!Number.isInteger(imageIndex) || !parsed.success) return res.status(400).json({ error: "A fix needs an image index and 1-1000 characters of text" });
+      const text = parsed.data.text;
+
+      const [post] = await db
+        .select({
+          id: socialAccountPosts.id,
+          socialAccountId: socialAccountPosts.socialAccountId,
+          postType: socialAccountPosts.postType,
+          aiSummary: socialAccountPosts.aiSummary,
+        })
+        .from(socialAccountPosts)
+        .where(eq(socialAccountPosts.id, req.params.id));
+      if (!post) return res.status(404).json({ error: "Post not found" });
+
+      const disabled = await summaryDisabled("post");
+      if (disabled) return res.status(409).json({ error: disabled });
+      // A second live job would be dropped by summary_jobs_live_uniq, and the fix's notes step with it.
+      const [live] = await db
+        .select({ id: summaryJobs.id })
+        .from(summaryJobs)
+        .where(and(eq(summaryJobs.kind, "post"), eq(summaryJobs.targetId, post.id), inArray(summaryJobs.status, ["pending", "running"])));
+      if (live) return res.status(409).json({ error: "This post is already being summarized" });
+
+      // Stories are summarized in one run with no per-image descriptions, so their fixes sit on the summary itself.
+      const summary = post.aiSummary as PostAiSummary | null;
+      let path = "{appended}";
+      if (post.postType === "story") {
+        if (!summary) return res.status(409).json({ error: "This story has no summary to fix yet" });
+      } else {
+        const position = (summary?.images ?? []).findIndex((img) => img.imageIndex === imageIndex);
+        if (position < 0) return res.status(409).json({ error: "This image has no description to fix yet" });
+        path = `{images,${position},appended}`;
+      }
+      await db
+        .update(socialAccountPosts)
+        .set({
+          aiSummary: sql`jsonb_set(${socialAccountPosts.aiSummary}, ${path}::text[],
+            coalesce(${socialAccountPosts.aiSummary} #> ${path}::text[], '[]'::jsonb) || to_jsonb(${text}::text))`,
+        })
+        .where(eq(socialAccountPosts.id, post.id));
+
+      const queued = await enqueueSummaryJob("post", post.id, post.socialAccountId, { append: { imageIndex, text } });
+      res.json({ queued });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to queue image fix" });
+    }
+  });
+
+  // ai_backend_notes: durable facts from fixes, shown on person and account pages. Deleting one marks the
+  // account summaries it fed as out of date.
+  const notesTables = {
+    people: { table: people, accountFilter: (id: string) => eq(socialAccounts.ownerUuid, id) },
+    "social-accounts": { table: socialAccounts, accountFilter: (id: string) => eq(socialAccounts.id, id) },
+  } as const;
+  for (const [route, { table, accountFilter }] of Object.entries(notesTables)) {
+    app.get(`/api/${route}/:id/ai-backend-notes`, async (req, res) => {
+      try {
+        const [row] = await db.select({ notes: table.aiBackendNotes }).from(table).where(eq(table.id, req.params.id));
+        if (!row) return res.status(404).json({ error: "Not found" });
+        res.json(row.notes as AiBackendNote[]);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to fetch notes" });
+      }
+    });
+
+    app.delete(`/api/${route}/:id/ai-backend-notes/:index`, async (req, res) => {
+      try {
+        const index = Number(req.params.index);
+        if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: "Invalid note index" });
+        const [row] = await db
+          .update(table)
+          .set({ aiBackendNotes: sql`${table.aiBackendNotes} - ${index}::int` })
+          .where(eq(table.id, req.params.id))
+          .returning({ notes: table.aiBackendNotes });
+        if (!row) return res.status(404).json({ error: "Not found" });
+        await db
+          .update(socialAccounts)
+          .set({
+            aiSummaryInvalidated: true,
+            aiSummaryInvalidatedAt: sql`COALESCE(${socialAccounts.aiSummaryInvalidatedAt}, now())`,
+          })
+          .where(and(accountFilter(req.params.id), isNotNull(socialAccounts.aiSummary)));
+        res.json(row.notes as AiBackendNote[]);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to delete note" });
+      }
+    });
+  }
 
   // History content is only sent with ?history=1 (the Summary tab); the overview card just shows the count.
   app.get("/api/social-accounts/:id/summary", async (req, res) => {

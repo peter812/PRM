@@ -3,10 +3,10 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { postedBy, storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialFollows, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccountPostTags, socialAccounts, socialFollows, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray, desc, or } from "drizzle-orm";
+import { eq, sql, isNotNull, isNull, and, inArray, desc, or } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -29,7 +29,8 @@ import {
   type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
-import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats, listPrmS3Backups, startPrmS3Backup } from "../prm-s3";
+import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats, listPrmS3Backups, startPrmS3Backup, normalizeEndpointUrl } from "../prm-s3";
+import { S3Client, HeadBucketCommand, CreateBucketCommand, ListBucketsCommand } from "@aws-sdk/client-s3";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, resolveScrapedAccounts, trackPrmS3BackupTask } from "../task-worker";
 import { extractHandles } from "@shared/connection-strength";
@@ -1058,13 +1059,56 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    async function resolvePostCursorDate(cursor: unknown): Promise<Date | undefined> {
+      if (typeof cursor !== "string" || !cursor.trim()) return undefined;
+      const trimmed = cursor.trim();
+      const parsed = new Date(trimmed);
+      // If it's a valid date and not a UUID, treat it directly as timestamp
+      if (!isNaN(parsed.getTime()) && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
+        return parsed;
+      }
+      // Otherwise try finding the post by ID
+      const [cursorPost] = await db
+        .select({ postedAt: socialAccountPosts.postedAt, createdAt: socialAccountPosts.createdAt })
+        .from(socialAccountPosts)
+        .where(eq(socialAccountPosts.id, trimmed))
+        .limit(1);
+      if (cursorPost) {
+        return cursorPost.postedAt ?? cursorPost.createdAt;
+      }
+      if (!isNaN(parsed.getTime())) {
+        return parsed;
+      }
+      return undefined;
+    }
+
     // Social account post endpoints
     app.get("/api/social-accounts/:id/posts", async (req, res) => {
       try {
         if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
         const includeDeleted = req.query.includeDeleted === "true";
         const postType = typeof req.query.postType === "string" ? req.query.postType : undefined;
-        const posts = await storage.getPostsBySocialAccountId(req.params.id, includeDeleted, postType);
+        const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 50, 1), 200);
+        const cursorDate = await resolvePostCursorDate(req.query.cursor);
+
+        const conditions = [postedBy(req.params.id)];
+        if (!includeDeleted) {
+          conditions.push(eq(socialAccountPosts.isDeleted, false));
+        }
+        if (postType) {
+          conditions.push(eq(socialAccountPosts.postType, postType));
+        }
+        if (cursorDate) {
+          conditions.push(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt}) < ${cursorDate}`);
+        }
+
+        const posts = await db
+          .select()
+          .from(socialAccountPosts)
+          .where(and(...conditions))
+          .orderBy(desc(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt})`))
+          .limit(limit);
+
         res.json(posts);
       } catch (error) {
         console.error("Error fetching posts:", error);
@@ -1072,6 +1116,41 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    // Posts other accounts made that tag this one (tagged-posts-plan.md), each
+    // with its poster. Untagged ones (a complete scan stopped seeing them) are
+    // left out unless includeRemoved; deleted posts unless includeDeleted.
+    app.get("/api/social-accounts/:id/tagged-posts", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+        const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 50, 1), 200);
+        const cursorDate = await resolvePostCursorDate(req.query.cursor);
+
+        const conditions = [eq(socialAccountPostTags.socialAccountId, req.params.id)];
+        if (req.query.includeRemoved !== "true") conditions.push(isNull(socialAccountPostTags.removedSeenAt));
+        if (req.query.includeDeleted !== "true") conditions.push(eq(socialAccountPosts.isDeleted, false));
+        if (cursorDate) {
+          conditions.push(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt}) < ${cursorDate}`);
+        }
+
+        const rows = await db
+          .select({
+            post: socialAccountPosts,
+            poster: { id: socialAccounts.id, username: socialAccounts.username, imageUrl: socialAccounts.imageUrl },
+            tag: { firstSeenAt: socialAccountPostTags.firstSeenAt, removedSeenAt: socialAccountPostTags.removedSeenAt },
+          })
+          .from(socialAccountPostTags)
+          .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialAccountPostTags.postId))
+          .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountPosts.socialAccountId))
+          .where(and(...conditions))
+          .orderBy(desc(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt})`))
+          .limit(limit);
+        res.json(rows.map(({ post, poster, tag }) => ({ ...post, poster, tag })));
+      } catch (error) {
+        console.error("Error fetching tagged posts:", error);
+        res.status(500).json({ error: "Failed to fetch tagged posts" });
+      }
+    });
+
     app.get("/api/social-account-posts/:id", async (req, res) => {
       try {
         if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -2156,10 +2235,73 @@ export function registerRoutes(app: Express) {
 
     app.post("/api/image-storage/prm-s3/test", requireAuth, async (req, res) => {
       try {
-        const result = await testPrmS3Connection();
-        res.json(result);
+        const body = req.body;
+        const hasPayload = body && typeof body === "object" && Object.keys(body).length > 0;
+        if (!hasPayload) {
+          const result = await testPrmS3Connection();
+          return res.json(result);
+        }
+
+        const savedConfig = await getPrmS3Config();
+        const endpoint = (typeof body.endpoint === "string" && body.endpoint.trim())
+          ? body.endpoint.trim()
+          : savedConfig.endpoint;
+        const region = (typeof body.region === "string" && body.region.trim())
+          ? body.region.trim()
+          : (savedConfig.region || "us-east-1");
+        const bucket = (typeof body.bucket === "string" && body.bucket.trim())
+          ? body.bucket.trim()
+          : savedConfig.bucket;
+        const accessKeyId = (typeof body.accessKeyId === "string" && body.accessKeyId.trim())
+          ? body.accessKeyId.trim()
+          : savedConfig.accessKeyId;
+        const secretAccessKey = (typeof body.secretAccessKey === "string" && body.secretAccessKey.trim() && !body.secretAccessKey.includes("••"))
+          ? body.secretAccessKey.trim()
+          : savedConfig.secretAccessKey;
+
+        if (!accessKeyId || !secretAccessKey) {
+          return res.json({ ok: false, message: "PRM-S3 credentials (access key and secret key) are not configured." });
+        }
+        if (!endpoint || !isValidEndpointUrl(endpoint, "http")) {
+          return res.json({ ok: false, message: "PRM-S3 endpoint must be a valid http(s) URL." });
+        }
+        if (!bucket) {
+          return res.json({ ok: false, message: "PRM-S3 bucket name is required." });
+        }
+
+        const endpointUrl = normalizeEndpointUrl(endpoint, "http");
+        const client = new S3Client({
+          endpoint: endpointUrl,
+          region: region || "us-east-1",
+          credentials: {
+            accessKeyId,
+            secretAccessKey,
+          },
+          forcePathStyle: true,
+        });
+
+        try {
+          try {
+            await client.send(new HeadBucketCommand({ Bucket: bucket }));
+            return res.json({ ok: true, message: `Successfully connected to PRM-S3 bucket '${bucket}'.` });
+          } catch (headErr: any) {
+            try {
+              await client.send(new CreateBucketCommand({ Bucket: bucket }));
+              return res.json({ ok: true, message: `Successfully connected to PRM-S3 and initialized bucket '${bucket}'.` });
+            } catch {
+              const listRes = await client.send(new ListBucketsCommand({}));
+              const bucketExists = listRes.Buckets?.some(b => b.Name === bucket);
+              if (bucketExists) {
+                return res.json({ ok: true, message: `Successfully connected to PRM-S3. Bucket '${bucket}' exists.` });
+              }
+              return res.json({ ok: true, message: `Connected to PRM-S3 server, but bucket '${bucket}' was not found.` });
+            }
+          }
+        } finally {
+          client.destroy();
+        }
       } catch (error: any) {
-        res.json({ ok: false, message: error.message });
+        res.json({ ok: false, message: `Failed to connect to PRM-S3: ${error.message}` });
       }
     });
 
@@ -2663,16 +2805,15 @@ export function registerRoutes(app: Express) {
         const searchQuery = req.query.search as string | undefined;
         const typeId = req.query.typeId as string | undefined;
   
-        const accounts = await storage.getSocialAccountsPaginated({
-          offset,
-          limit: perPage,
-          searchQuery: searchQuery || undefined,
-          typeId: typeId || undefined,
-        });
-  
-        // Get total count for pagination metadata
-        const allAccounts = await storage.getAllSocialAccounts(searchQuery, typeId);
-        const total = allAccounts.length;
+        const [accounts, total] = await Promise.all([
+          storage.getSocialAccountsPaginated({
+            offset,
+            limit: perPage,
+            searchQuery: searchQuery || undefined,
+            typeId: typeId || undefined,
+          }),
+          storage.getSocialAccountsCount(searchQuery || undefined, typeId || undefined),
+        ]);
   
         res.json({
           results: accounts,

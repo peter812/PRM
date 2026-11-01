@@ -48,6 +48,16 @@ type SearchTypeFilter = 'all' | SearchCategory;
 
 export function GlobalSearch() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setDebouncedQuery("");
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedQuery(trimmed), 250);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
   const [isOpen, setIsOpen] = useState(false);
   const [preferences, setPreferences] = useState<SearchPreferences>(loadPreferences);
   const [history, setHistory] = useState<SearchHistoryItem[]>(loadSearchHistory);
@@ -84,7 +94,7 @@ export function GlobalSearch() {
   const isUuidQuery = UUID_REGEX.test(searchQuery.trim());
 
   const queryParams = new URLSearchParams();
-  queryParams.set('q', searchQuery);
+  queryParams.set('q', debouncedQuery);
   Object.entries(effectiveEnabled).forEach(([key, value]) => {
     const paramName = key === 'people' ? 'includePeople' :
       key === 'groups' ? 'includeGroups' :
@@ -97,8 +107,8 @@ export function GlobalSearch() {
   });
 
   const { data: results } = useQuery<MegaSearchResult>({
-    queryKey: searchQuery.length > 0 && !isUuidQuery ? [`/api/mega-search?${queryParams.toString()}`] : ["/api/mega-search"],
-    enabled: searchQuery.length > 0 && !isUuidQuery,
+    queryKey: debouncedQuery.length > 0 && !isUuidQuery ? [`/api/mega-search?${queryParams.toString()}`] : ["/api/mega-search"],
+    enabled: debouncedQuery.length > 0 && !isUuidQuery,
   });
 
   // UUID lookup query

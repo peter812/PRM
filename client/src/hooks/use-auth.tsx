@@ -1,4 +1,4 @@
-import { createContext, ReactNode, useContext } from "react";
+import { createContext, ReactNode, useContext, useMemo } from "react";
 import {
   useQuery,
   useMutation,
@@ -68,16 +68,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  const contextValue = useMemo(
+    () => ({
+      user: user ?? null,
+      isLoading,
+      error,
+      loginMutation,
+      logoutMutation,
+    }),
+    [user, isLoading, error, loginMutation, logoutMutation],
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        user: user ?? null,
-        isLoading,
-        error,
-        loginMutation,
-        logoutMutation,
-      }}
-    >
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

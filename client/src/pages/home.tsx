@@ -18,6 +18,7 @@ import {
   Scan,
   Sparkles,
   Hash,
+  Video,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -441,7 +442,7 @@ function ThingsToDoContent() {
         className="justify-start whitespace-normal h-auto py-2 text-left"
         data-testid="home-action-link-accounts"
       >
-        <Link href="/account-matching">
+        <Link href="/demos/account-matching">
           <Link2 className="mr-2 h-4 w-4" />
           Link social accounts
         </Link>
@@ -568,6 +569,18 @@ type FeedPost = SocialAccountPost & { username: string; accountImageUrl: string 
 // Feed posts are stored as post, video or carousel (server/routes/tracking.ts); stories are excluded
 const RECENT_POSTS_URL = "/api/social-account-posts?postType=post,video,carousel&limit=5&withAccount=true";
 
+function isVideoUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const cleanUrl = url.split("?")[0].toLowerCase();
+  return (
+    cleanUrl.endsWith(".mp4") ||
+    cleanUrl.endsWith(".webm") ||
+    cleanUrl.endsWith(".mov") ||
+    url.startsWith("/api/prm-s3/media/") ||
+    cleanUrl.includes("/api/prm-s3/media/")
+  );
+}
+
 /** Full-width strip of the five newest Instagram feed posts; a card opens the post modal. */
 function RecentInstagramPosts() {
   const [, navigate] = useLocation();
@@ -609,6 +622,8 @@ function RecentInstagramPosts() {
               ))
             : posts.map((post) => {
                 const firstImage = safeJsonParse<string[]>(post.content, [])[0];
+                const isVideo = isVideoUrl(firstImage);
+                const showVideoBadge = isVideo || post.postType === "video";
                 return (
                   <Card
                     key={post.id}
@@ -629,9 +644,29 @@ function RecentInstagramPosts() {
                       </Avatar>
                       <span className="truncate text-sm font-medium">@{post.username}</span>
                     </Link>
-                    <div className="aspect-square bg-muted">
+                    <div className="relative aspect-square bg-muted">
                       {firstImage ? (
-                        <img src={withImageSize(firstImage, 360)} alt="" className="h-full w-full object-cover" loading="lazy" />
+                        isVideo ? (
+                          <>
+                            <video
+                              src={firstImage}
+                              className="h-full w-full object-cover pointer-events-none"
+                              preload="metadata"
+                              muted
+                              playsInline
+                            />
+                            {showVideoBadge && (
+                              <Video className="absolute top-2 right-2 h-4 w-4 text-white drop-shadow pointer-events-none" />
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <img src={withImageSize(firstImage, 360)} alt="" className="h-full w-full object-cover" loading="lazy" />
+                            {showVideoBadge && (
+                              <Video className="absolute top-2 right-2 h-4 w-4 text-white drop-shadow pointer-events-none" />
+                            )}
+                          </>
+                        )
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-muted-foreground">
                           <ImageIcon className="h-6 w-6" />
@@ -660,7 +695,7 @@ function RecentInstagramPosts() {
 }
 
 export default function HomePage() {
-  const { data: mePerson } = useQuery<PersonWithRelations>({
+  const { data: mePerson, isLoading: meLoading } = useQuery<PersonWithRelations>({
     queryKey: ["/api/me"],
     retry: false,
   });
@@ -776,12 +811,16 @@ export default function HomePage() {
         </div>
 
         <div className="mb-6">
-          <h1
-            className="text-2xl font-semibold md:text-3xl"
-            data-testid="home-greeting"
-          >
-            {greeting}
-          </h1>
+          {meLoading ? (
+            <Skeleton className="h-8 w-64 md:h-9" />
+          ) : (
+            <h1
+              className="text-2xl font-semibold md:text-3xl"
+              data-testid="home-greeting"
+            >
+              {greeting}
+            </h1>
+          )}
           <p
             className="mt-1 text-sm text-muted-foreground"
             data-testid="home-subtitle"

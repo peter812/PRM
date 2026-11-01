@@ -1,6 +1,8 @@
 // Face review's Clusters tab (face-clustering-plan.md §5): likely-same-person clusters of open
 // faces, largest first, each named, rejected or dismissed in one go. Cluster ids change on every
 // run, so the server answers 409 when a cluster changed under you and the tab reloads.
+// With `accountId` it's scoped to one account's faces (account-faces-plan.md §3.2): only clusters
+// with faces there, sized by those faces, and actions apply to them unless widened to the cluster.
 import { useEffect, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Check, Loader2, RefreshCw, Search, UserX, X } from "lucide-react";
@@ -13,11 +15,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
 import { IdentitySearch, type IdentityTarget } from "@/components/identity-search";
-import { SUGGESTION_COPY, type FaceReviewSuggestion } from "@/pages/face-review";
+import { SUGGESTION_COPY, type FaceReviewSuggestion } from "@/components/face-identify-chips";
 
 type ClusterSuggestion = FaceReviewSuggestion & { photos: number; share: number; score?: number };
 type ClusterBanner = { suggestion: ClusterSuggestion; solo?: { hits: number; total: number } };
-type ClusterCard = { id: string; size: number; faces: { id: string; cropUrl: string }[]; suggestions: ClusterSuggestion[]; banner: ClusterBanner | null };
+type ClusterCard = { id: string; size: number; elsewhere: number; faces: { id: string; cropUrl: string; inScope: boolean }[]; suggestions: ClusterSuggestion[]; banner: ClusterBanner | null };
 type ClusterPage = { clusters: ClusterCard[]; nextOffset: number | null };
 type ClusterSummary = { clusters: number; faces: number; noise: Record<string, number>; lastRunAt: string | null };
 
@@ -37,8 +39,13 @@ function bannerText(b: ClusterBanner): string {
   return b.solo ? `${b.solo.hits} of their ${b.solo.total} solo posts` : "their profile picture is in this cluster";
 }
 
-/** Every Face review query (queues, counts, clusters, summary) after faces change. */
-const invalidateFaceReview = () => queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/face-review") });
+/** Every Face review query (queues, counts, clusters, summary), and accounts' Faces tabs, after faces change. */
+const invalidateFaceReview = () => queryClient.invalidateQueries({
+  predicate: (q) => {
+    const k = String(q.queryKey[0]);
+    return k.startsWith("/api/face-review") || (k.startsWith("/api/social-accounts/") && k.includes("/faces"));
+  },
+});
 
 /** Cluster actions, shared by the cards and the detail dialog. A 409 (the cluster changed) reloads. */
 function useClusterActions(onDone?: () => void) {
@@ -81,13 +88,14 @@ function useClusterActions(onDone?: () => void) {
 
 const identityId = (s: IdentityTarget) => s.socialAccountId ?? s.personId ?? (s.username ? `@${s.username}` : "");
 
-export function FaceClustersTab({ clusterId, onOpenCluster }: { clusterId: string | null; onOpenCluster: (id: string | null) => void }) {
+export function FaceClustersTab({ clusterId, onOpenCluster, accountId }: { clusterId: string | null; onOpenCluster: (id: string | null) => void; accountId?: string }) {
   const { toast } = useToast();
-  const { data: summary } = useQuery<ClusterSummary>({ queryKey: ["/api/face-review/cluster-summary"] });
+  const scope = { account: accountId };
+  const { data: summary } = useQuery<ClusterSummary>({ queryKey: ["/api/face-review/cluster-summary", scope] });
   const clustersQuery = useInfiniteQuery<ClusterPage>({
-    queryKey: ["/api/face-review/clusters"],
+    queryKey: ["/api/face-review/clusters", scope],
     queryFn: async ({ pageParam }) => {
-      const res = await fetch(`/api/face-review/clusters?offset=${pageParam}&limit=${PAGE}`, { credentials: "include" });
+      const res = await fetch(`/api/face-review/clusters?offset=${pageParam}&limit=${PAGE}${accountId ? `&account=${encodeURIComponent(accountId)}` : ""}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load clusters");
       return res.json();
     },
@@ -96,6 +104,8 @@ export function FaceClustersTab({ clusterId, onOpenCluster }: { clusterId: strin
   });
   const clusters = clustersQuery.data?.pages.flatMap((p) => p.clusters) ?? [];
   const actions = useClusterActions();
+  // Scoped, a card's "Yes" can't see all its in-scope faces, so it opens the dialog ready to confirm.
+  const [preset, setPreset] = useState<ClusterSuggestion | null>(null);
 
   const recluster = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/face-review/cluster")).json() as Promise<{ clusters: number; clustered: number }>,
@@ -119,10 +129,10 @@ export function FaceClustersTab({ clusterId, onOpenCluster }: { clusterId: strin
             {summary.lastRunAt && <span className="text-muted-foreground">Last run {new Date(summary.lastRunAt).toLocaleString()}</span>}
           </>
         )}
-        <Button variant="outline" size="sm" className="ml-auto" disabled={recluster.isPending} onClick={() => recluster.mutate()} data-testid="button-recluster">
+        {!accountId && <Button variant="outline" size="sm" className="ml-auto" disabled={recluster.isPending} onClick={() => recluster.mutate()} data-testid="button-recluster">
           {recluster.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
           {recluster.isPending ? "Clustering…" : "Recluster"}
-        </Button>
+        </Button>}
       </div>
 
       {clustersQuery.isLoading ? (
@@ -130,7 +140,7 @@ export function FaceClustersTab({ clusterId, onOpenCluster }: { clusterId: strin
       ) : clustersQuery.isError ? (
         <div className="text-center py-16 text-sm text-destructive">Couldn't load clusters. Please refresh.</div>
       ) : !clusters.length ? (
-        <div className="text-center py-16 text-muted-foreground">No clusters to review. Recluster after new faces come in.</div>
+        <div className="text-center py-16 text-muted-foreground">{accountId ? "No unnamed clusters in this account." : "No clusters to review. Recluster after new faces come in."}</div>
       ) : (
         <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
           {clusters.map((c) => (
@@ -141,14 +151,21 @@ export function FaceClustersTab({ clusterId, onOpenCluster }: { clusterId: strin
                 ))}
               </button>
               <div className="flex items-center justify-between">
-                <Badge variant="secondary">{c.size} faces</Badge>
+                <span className="flex items-center gap-1.5">
+                  <Badge variant="secondary">{c.size} faces</Badge>
+                  {accountId && c.elsewhere > 0 && <span className="text-xs text-muted-foreground">+{c.elsewhere} elsewhere</span>}
+                </span>
                 <button type="button" className="text-xs underline text-muted-foreground" onClick={() => onOpenCluster(c.id)}>Review</button>
               </div>
               {c.banner && (
                 <div className="rounded-md bg-accent p-2 space-y-1.5 text-sm">
                   <p>Is this <strong>{c.banner.suggestion.label}</strong>? <span className="text-muted-foreground">({bannerText(c.banner)})</span></p>
                   <div className="flex gap-1.5">
-                    <Button size="sm" className="h-7" disabled={actions.busy} onClick={() => actions.name.mutate({ id: c.id, to: c.banner!.suggestion, label: c.banner!.suggestion.label })}>
+                    <Button size="sm" className="h-7" disabled={actions.busy} onClick={() => {
+                        if (!accountId) return actions.name.mutate({ id: c.id, to: c.banner!.suggestion, label: c.banner!.suggestion.label });
+                        setPreset(c.banner!.suggestion);
+                        onOpenCluster(c.id);
+                      }}>
                       <Check className="h-3.5 w-3.5 mr-1" /> Yes
                     </Button>
                     <Button size="sm" variant="outline" className="h-7" disabled={actions.busy} onClick={() => actions.reject.mutate({ id: c.id, to: c.banner!.suggestion })}>
@@ -174,23 +191,40 @@ export function FaceClustersTab({ clusterId, onOpenCluster }: { clusterId: strin
         </div>
       )}
 
-      {clusterId && <ClusterDialog id={clusterId} onClose={() => onOpenCluster(null)} />}
+      {clusterId && (
+        <ClusterDialog
+          id={clusterId}
+          accountId={accountId}
+          preset={preset}
+          onClose={() => {
+            setPreset(null);
+            onOpenCluster(null);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-/** One cluster's full face grid: click faces to leave them out, then name the rest or skip them as strangers. */
-function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
-  const { data: cluster, isLoading, isError } = useQuery<ClusterCard>({ queryKey: ["/api/face-review/clusters", id], retry: false });
+/**
+ * One cluster's full face grid: click faces to leave them out, then name the rest or skip them as
+ * strangers. Scoped to an account, only its faces show until "Apply to whole cluster" is on.
+ */
+function ClusterDialog({ id, accountId, preset, onClose }: { id: string; accountId?: string; preset?: ClusterSuggestion | null; onClose: () => void }) {
+  const { data: cluster, isLoading, isError } = useQuery<ClusterCard>({ queryKey: ["/api/face-review/clusters", id, { account: accountId }], retry: false });
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [searching, setSearching] = useState(false);
-  const [pending, setPending] = useState<{ to: IdentityTarget; label: string } | null>(null);
+  const [whole, setWhole] = useState(false);
+  const presetPending = preset ? { to: preset, label: preset.label } : null;
+  const [pending, setPending] = useState<{ to: IdentityTarget; label: string } | null>(presetPending);
   useEffect(() => {
     setExcluded(new Set());
-    setPending(null);
+    setWhole(false);
+    setPending(presetPending);
   }, [id]);
   const actions = useClusterActions(onClose);
-  const included = cluster?.faces.filter((f) => !excluded.has(f.id)).map((f) => f.id) ?? [];
+  const shown = cluster?.faces.filter((f) => !accountId || whole || f.inScope) ?? [];
+  const included = shown.filter((f) => !excluded.has(f.id)).map((f) => f.id);
   const nameAs = (to: IdentityTarget, label: string) => {
     setPending({ to, label });
     setSearching(false);
@@ -207,7 +241,7 @@ function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{cluster ? `Cluster of ${cluster.size} faces` : "Cluster"}</DialogTitle>
+          <DialogTitle>{!cluster ? "Cluster" : accountId ? `${cluster.size} faces here · ${cluster.size + cluster.elsewhere} in the cluster` : `Cluster of ${cluster.size} faces`}</DialogTitle>
           <DialogDescription>Click a face to leave it out, then name the rest or skip them.</DialogDescription>
         </DialogHeader>
         {isLoading ? (
@@ -282,11 +316,17 @@ function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
                 </div>
               </div>
             )}
-            <p className="text-xs text-muted-foreground">
-              {included.length} of {cluster.faces.length} faces selected{excluded.size ? ` · ${excluded.size} left out` : ""}
-            </p>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>{included.length} of {shown.length} faces selected{excluded.size ? ` · ${excluded.size} left out` : ""}</span>
+              {accountId && cluster.elsewhere > 0 && (
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={whole} onChange={(e) => setWhole(e.target.checked)} data-testid="checkbox-cluster-whole" />
+                  Apply to whole cluster ({cluster.size + cluster.elsewhere})
+                </label>
+              )}
+            </div>
             <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1">
-              {cluster.faces.map((f) => (
+              {shown.map((f) => (
                 <button key={f.id} type="button" onClick={() => toggle(f.id)} className="relative" data-testid={`cluster-face-${f.id}`}>
                   <img src={withImageSize(f.cropUrl, 128)} alt="" loading="lazy" className={cn("aspect-square w-full object-cover rounded bg-muted", excluded.has(f.id) && "opacity-25 grayscale")} />
                   {excluded.has(f.id) && <X className="absolute inset-0 m-auto h-6 w-6 text-destructive" />}

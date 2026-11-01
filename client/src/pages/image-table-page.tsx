@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Link } from "wouter";
 import { Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -77,6 +78,7 @@ function TruncCell({ value, maxW = 180 }: { value: string | null | undefined; ma
 
 export default function ImageTablePage() {
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const {
     data,
@@ -103,6 +105,32 @@ export default function ImageTablePage() {
   const total = data?.pages[0]?.total ?? 0;
   const rows = data?.pages.flatMap((p) => p.items) ?? [];
 
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: () => 52,
+    overscan: 10,
+  });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
+  const paddingTop = virtualItems.length > 0 ? virtualItems[0].start : 0;
+  const paddingBottom =
+    virtualItems.length > 0 ? totalSize - virtualItems[virtualItems.length - 1].end : 0;
+
+  useEffect(() => {
+    const lastItem = virtualItems[virtualItems.length - 1];
+    if (!lastItem) return;
+
+    if (
+      lastItem.index >= rows.length - 1 &&
+      hasNextPage &&
+      !isFetchingNextPage
+    ) {
+      fetchNextPage();
+    }
+  }, [virtualItems, rows.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
+
   const handleObserver = useCallback(
     (entries: IntersectionObserverEntry[]) => {
       if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
@@ -115,16 +143,19 @@ export default function ImageTablePage() {
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
-    const observer = new IntersectionObserver(handleObserver, { threshold: 0.1 });
+    const observer = new IntersectionObserver(handleObserver, {
+      root: tableContainerRef.current,
+      threshold: 0.1,
+    });
     observer.observe(el);
     return () => observer.disconnect();
   }, [handleObserver]);
 
   return (
     <TooltipProvider>
-      <div className="flex flex-col min-h-full">
+      <div className="flex flex-col h-full min-h-full">
         <div
-          className="flex items-center gap-3 px-4 py-3 border-b sticky top-0 bg-background z-20"
+          className="flex items-center gap-3 px-4 py-3 border-b shrink-0 bg-background z-20"
           data-testid="header-image-table"
         >
           <div>
@@ -145,9 +176,9 @@ export default function ImageTablePage() {
         )}
 
         {!isError && (
-          <div className="overflow-x-auto">
+          <div ref={tableContainerRef} className="flex-1 min-h-0 overflow-auto">
             <table className="text-xs border-collapse" style={{ minWidth: 1700 }} data-testid="table-images">
-              <thead>
+              <thead className="sticky top-0 bg-muted border-b z-10">
                 <tr className="bg-muted/60 border-b">
                   <Th w={210}>Image UUID</Th>
                   <Th w={220}>Image URL</Th>
@@ -180,55 +211,72 @@ export default function ImageTablePage() {
                     </tr>
                   ))
                 ) : (
-                  rows.map((photo, i) => (
-                  <tr
-                    key={photo.id}
-                    className={i % 2 === 0 ? "bg-background" : "bg-muted/20"}
-                    data-testid={`row-photo-${photo.id}`}
-                  >
-                    <Td w={210}>
-                      <Link
-                        href={`~${imageDetailHref(photo.id, "/settings/image-storage/table")}`}
-                        className="font-mono text-[10px] text-primary hover:underline truncate block"
-                        style={{ maxWidth: 195 }}
-                        title={photo.id}
-                        data-testid={`link-photo-${photo.id}`}
-                      >
-                        {photo.id}
-                      </Link>
-                    </Td>
-                    <Td w={220}>
-                      <TruncCell value={photo.location} maxW={205} />
-                    </Td>
-                    <Td w={140}>
-                      <span className="text-muted-foreground">{fmtDate(photo.uploadedAt)}</span>
-                    </Td>
-                    <Td w={180}>
-                      <TruncCell value={photo.imageDescription} maxW={165} />
-                    </Td>
-                    <Td w={82}>
-                      <BoolBadge value={photo.isSubImage} />
-                    </Td>
-                    <Td w={82}>
-                      <BoolBadge value={photo.faceIdAt !== null} />
-                    </Td>
-                    <Td w={140}>
-                      <span className="text-muted-foreground">{fmtDate(photo.faceIdAt)}</span>
-                    </Td>
-                    <Td w={72}>
-                      <BoolBadge value={photo.imageDescriptionAt !== null} />
-                    </Td>
-                    <Td w={200}>
-                      <TruncCell value={photo.imageDescription} maxW={185} />
-                    </Td>
-                    <Td w={105}>
-                      <span className="tabular-nums">{faceCount(photo.faceUuids)}</span>
-                    </Td>
-                    <Td w={200}>
-                      <TruncCell value={photo.prmLocation} maxW={185} />
-                    </Td>
-                  </tr>
-                )))}
+                  <>
+                    {paddingTop > 0 && (
+                      <tr style={{ height: `${paddingTop}px` }}>
+                        <td colSpan={11} style={{ height: `${paddingTop}px`, padding: 0, border: 0 }} />
+                      </tr>
+                    )}
+                    {virtualItems.map((virtualRow) => {
+                      const photo = rows[virtualRow.index];
+                      if (!photo) return null;
+                      return (
+                        <tr
+                          key={photo.id}
+                          className={virtualRow.index % 2 === 0 ? "bg-background" : "bg-muted/20"}
+                          data-testid={`row-photo-${photo.id}`}
+                        >
+                          <Td w={210}>
+                            <Link
+                              href={`~${imageDetailHref(photo.id, "/settings/image-storage/table")}`}
+                              className="font-mono text-[10px] text-primary hover:underline truncate block"
+                              style={{ maxWidth: 195 }}
+                              title={photo.id}
+                              data-testid={`link-photo-${photo.id}`}
+                            >
+                              {photo.id}
+                            </Link>
+                          </Td>
+                          <Td w={220}>
+                            <TruncCell value={photo.location} maxW={205} />
+                          </Td>
+                          <Td w={140}>
+                            <span className="text-muted-foreground">{fmtDate(photo.uploadedAt)}</span>
+                          </Td>
+                          <Td w={180}>
+                            <TruncCell value={photo.imageDescription} maxW={165} />
+                          </Td>
+                          <Td w={82}>
+                            <BoolBadge value={photo.isSubImage} />
+                          </Td>
+                          <Td w={82}>
+                            <BoolBadge value={photo.faceIdAt !== null} />
+                          </Td>
+                          <Td w={140}>
+                            <span className="text-muted-foreground">{fmtDate(photo.faceIdAt)}</span>
+                          </Td>
+                          <Td w={72}>
+                            <BoolBadge value={photo.imageDescriptionAt !== null} />
+                          </Td>
+                          <Td w={200}>
+                            <TruncCell value={photo.imageDescription} maxW={185} />
+                          </Td>
+                          <Td w={105}>
+                            <span className="tabular-nums">{faceCount(photo.faceUuids)}</span>
+                          </Td>
+                          <Td w={200}>
+                            <TruncCell value={photo.prmLocation} maxW={185} />
+                          </Td>
+                        </tr>
+                      );
+                    })}
+                    {paddingBottom > 0 && (
+                      <tr style={{ height: `${paddingBottom}px` }}>
+                        <td colSpan={11} style={{ height: `${paddingBottom}px`, padding: 0, border: 0 }} />
+                      </tr>
+                    )}
+                  </>
+                )}
               </tbody>
             </table>
 

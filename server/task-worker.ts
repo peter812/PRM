@@ -1,4 +1,5 @@
 import { storage } from "./storage";
+import { pruneAutoBackups } from "./backup-scheduler";
 import { db, pool } from "./db";
 import { legacyHqImageUrls, legacyProfileImagesPending } from "./db-init";
 import { syncEntityInBackground } from "./vector-universal";
@@ -104,6 +105,9 @@ import {
   personAddresses,
   type SocialAccountHistoryDelta,
   type ImageTask,
+  type InsertImageTask,
+  type InsertMessage,
+  type AiBackendNote,
   cleanPhoneNumberForStorage,
   formatPhoneNumberForDisplay,
 } from "@shared/schema";
@@ -702,6 +706,7 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     chunks.push(`      ${xmlTag("political_left_right", person.politicalLeftRight)}\n`);
     chunks.push(`      ${xmlTag("political_lib_auth", person.politicalLibAuth)}\n`);
     chunks.push(`      ${xmlTag("political_updated_at", person.politicalUpdatedAt)}\n`);
+    chunks.push(`      ${xmlJsonTag("ai_backend_notes", person.aiBackendNotes)}\n`);
     chunks.push(`      ${xmlTag("created_at", person.createdAt)}\n`);
     chunks.push("    </person>\n");
   }
@@ -880,6 +885,7 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     chunks.push(`      ${xmlTag("follows_checked_at", account.followsCheckedAt)}\n`);
     chunks.push(`      ${xmlTag("posts_checked_at", account.postsCheckedAt)}\n`);
     chunks.push(`      ${xmlTag("highlights_checked_at", account.highlightsCheckedAt)}\n`);
+    chunks.push(`      ${xmlTag("tagged_checked_at", account.taggedCheckedAt)}\n`);
     chunks.push(`      ${xmlTag("joined_at", account.joinedAt)}\n`);
     chunks.push(`      ${xmlTag("reported_posts_count", account.reportedPostsCount)}\n`);
     chunks.push(`      ${xmlTag("is_private", account.isPrivate)}\n`);
@@ -893,6 +899,7 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     chunks.push(`      ${xmlTag("ai_summary_invalidated", account.aiSummaryInvalidated)}\n`);
     chunks.push(`      ${xmlTag("ai_summary_invalidated_at", account.aiSummaryInvalidatedAt)}\n`);
     chunks.push(`      ${xmlTag("ai_summary_model", account.aiSummaryModel || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("ai_backend_notes", account.aiBackendNotes)}\n`);
     chunks.push("      <notes></notes>\n");
     chunks.push(`      <following>${arrayToXml(followingMap.get(account.id) || [], "account_id")}</following>\n`);
     chunks.push(`      <followers>${arrayToXml(followersMap.get(account.id) || [], "account_id")}</followers>\n`);
@@ -1604,6 +1611,7 @@ async function processExportXmlTask(taskId: string, payload: {
   includeHistory?: boolean;
   includePostHistory?: boolean;
   filename?: string;
+  auto?: boolean;
 }): Promise<string> {
   const backupsDir = path.join(process.cwd(), "backups");
   const nowStr = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1625,6 +1633,7 @@ async function processExportXmlTask(taskId: string, payload: {
     includePostHistory: payload.includePostHistory ?? true,
     onProgress: (progress, message) => storage.updateTaskProgress(taskId, progress, message),
   });
+  if (payload.auto) await pruneAutoBackups();
 
   return `backups/${fileName}`;
 }
@@ -2010,6 +2019,7 @@ export async function executeImportXml(
       politicalLeftRight: parseOptFloat(block, "political_left_right"),
       politicalLibAuth: parseOptFloat(block, "political_lib_auth"),
       politicalUpdatedAt: parseOptDate(block, "political_updated_at"),
+      aiBackendNotes: parseOptJson<AiBackendNote[]>(block, "ai_backend_notes", []),
       createdAt: parseOptDate(block, "created_at") ?? new Date(),
     });
     const legacyAddress = parseOptStr(block, "address")?.trim();
@@ -2159,6 +2169,7 @@ export async function executeImportXml(
       infoCheckedAt: parseOptDate(block, "info_checked_at"),
       followsCheckedAt: parseOptDate(block, "follows_checked_at"),
       postsCheckedAt: parseOptDate(block, "posts_checked_at"),
+      taggedCheckedAt: parseOptDate(block, "tagged_checked_at"),
       highlightsCheckedAt: parseOptDate(block, "highlights_checked_at"),
       joinedAt: parseOptDate(block, "joined_at"),
       reportedPostsCount: parseOptInt(block, "reported_posts_count"),
@@ -2173,6 +2184,7 @@ export async function executeImportXml(
       aiSummaryInvalidated: parseOptBool(block, "ai_summary_invalidated", false),
       aiSummaryInvalidatedAt: parseOptDate(block, "ai_summary_invalidated_at"),
       aiSummaryModel: parseOptStr(block, "ai_summary_model"),
+      aiBackendNotes: parseOptJson<AiBackendNote[]>(block, "ai_backend_notes", []),
       createdAt: parseOptDate(block, "created_at") ?? new Date(),
     });
 
@@ -3713,13 +3725,17 @@ async function processImportInstagram(taskId: string, payload: {
   const instagramType = await storage.getSocialAccountTypeByName("instagram");
   const instagramTypeId = instagramType?.id || null;
 
-  const allAccounts = await storage.getAllSocialAccounts();
-  const accountsByUsername = new Map(allAccounts.map(a => [a.username.toLowerCase(), a]));
+  const rawUsernames = rows
+    .map((r: any) => (r.username || "").toString().trim().replace(/"/g, ""))
+    .filter(Boolean);
+  const existingAccounts = await storage.getSocialAccountsByUsernames(rawUsernames);
+  const accountsByUsername = new Map(existingAccounts.map((a) => [a.username.toLowerCase(), a]));
 
   let importedCount = 0;
   let updatedCount = 0;
   const processedAccountIds: string[] = [];
   const mutualFollowIds: string[] = [];
+  const imageTasksToCreate: InsertImageTask[] = [];
 
   const imageTaskGroup = await storage.createImageTaskGroup({
     title: `Instagram Import - @${targetAccountUsername} (${importType})`,
@@ -3731,6 +3747,9 @@ async function processImportInstagram(taskId: string, payload: {
 
   for (const row of rows) {
     if (await isTaskCancelled(taskId)) {
+      if (imageTasksToCreate.length > 0) {
+        await storage.createImageTasksBatch(imageTasksToCreate);
+      }
       return JSON.stringify({ cancelled: true, imported: importedCount, updated: updatedCount });
     }
 
@@ -3750,7 +3769,7 @@ async function processImportInstagram(taskId: string, payload: {
       }
 
       if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
-        await storage.createImageTask({
+        imageTasksToCreate.push({
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
@@ -3774,7 +3793,7 @@ async function processImportInstagram(taskId: string, payload: {
       });
 
       if (profilePicUrl) {
-        await storage.createImageTask({
+        imageTasksToCreate.push({
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
@@ -3795,6 +3814,10 @@ async function processImportInstagram(taskId: string, payload: {
       const acct = accountsByUsername.get(username.toLowerCase());
       if (acct) mutualFollowIds.push(acct.id);
     }
+  }
+
+  if (imageTasksToCreate.length > 0) {
+    await storage.createImageTasksBatch(imageTasksToCreate);
   }
 
   // Record each relationship as a single directed edge; both directions of
@@ -3975,10 +3998,7 @@ async function importOneDmThread(
   let counterpartId: string | null = null;
   if (!isSelfThread && !isGroup) {
     const instagramType = await storage.getSocialAccountTypeByName("instagram");
-    const allAccounts = await storage.getAllSocialAccounts();
-    const existing = allAccounts.find(
-      (a) => a.username.toLowerCase() === parsed.username.toLowerCase()
-    );
+    const existing = await storage.getSocialAccountByUsername(parsed.username);
     if (existing) {
       counterpartId = existing.id;
     } else {
@@ -4240,7 +4260,7 @@ async function importOneDmThread(
   return summary;
 }
 
-async function queueSocialProfileImage(
+export async function queueSocialProfileImage(
   socialAccountId: string,
   imageUrl: string | null | undefined,
   parentTaskId?: string,
@@ -4704,15 +4724,20 @@ export async function processImportSms(
       summary.threads++;
 
       const existingExternalIds = await storage.getMessageExternalIds(conversation.id);
+      const batchToInsert: Array<{
+        data: InsertMessage;
+        recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>;
+      }> = [];
+
       for (const msg of kept) {
         if (existingExternalIds.has(msg.externalId)) {
           summary.skippedDuplicates++;
           continue;
         }
+        existingExternalIds.add(msg.externalId);
         const senderPersonId = msg.isOwner
           ? ownerSenderPersonId
           : (msg.senderAddress && personByPhone.get(msg.senderAddress)) || null;
-        // Group contact_name lists everyone, so only a 1:1 thread's name identifies the sender
         const senderName = !msg.isOwner && !senderPersonId
           ? (thread.addresses.length === 1 && thread.contactName) || formatPhoneNumberForDisplay(msg.senderAddress)
           : undefined;
@@ -4720,8 +4745,8 @@ export async function processImportSms(
           ? counterparts.filter((c) => c.personId).map((c) => ({ personId: c.personId, recipientType: "to" }))
           : [{ personId: rootPersonId, recipientType: "to" }];
 
-        const message = await storage.createMessage(
-          {
+        batchToInsert.push({
+          data: {
             conversationId: conversation.id,
             senderPersonId,
             senderSocialAccountId: null,
@@ -4735,9 +4760,13 @@ export async function processImportSms(
             importDate,
             importUuid,
           },
-          recipients
-        );
-        summary.inserted++;
+          recipients,
+        });
+      }
+
+      if (batchToInsert.length > 0) {
+        await storage.bulkCreateMessages(batchToInsert);
+        summary.inserted += batchToInsert.length;
       }
     }
 
@@ -5815,11 +5844,10 @@ async function processFindPotentialGroups(taskId: string, payload: {
 }
 
 async function processNextTask(): Promise<boolean> {
-  const task = await storage.getNextPendingTask();
+  const task = await storage.claimNextPendingTask();
   if (!task) return false;
 
   log(`[TaskWorker] Processing task ${task.id} (type: ${task.type})`);
-  await storage.updateTaskStatus(task.id, "in_progress");
 
   try {
     let result: string;
@@ -5944,6 +5972,7 @@ function schedulePoll() {
 // keeps getNextPendingTask from ever picking it up.
 
 const PRM_S3_BACKUP_POLL_MS = 2000;
+const MAX_PRM_S3_BACKUP_CONSECUTIVE_FAILURES = 15;
 
 function formatGb(bytes: number): string {
   return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
@@ -5953,46 +5982,68 @@ function formatGb(bytes: number): string {
 export async function trackPrmS3BackupTask(taskId: string, backupname: string): Promise<void> {
   let lastProgress = "";
   let lastPct = 0;
-  for (;;) {
-    if (await isTaskCancelled(taskId)) {
-      await cancelPrmS3Backup().catch((err) => log(`[PrmS3Backup] cancel ${backupname}: ${err.message}`));
-      log(`[PrmS3Backup] ${backupname} cancelled by user`);
-      return;
+  let consecutiveFailures = 0;
+
+  try {
+    for (;;) {
+      if (await isTaskCancelled(taskId)) {
+        try {
+          const job = await getPrmS3BackupStatus();
+          if (job && job.backupname === backupname && job.state === "running") {
+            await cancelPrmS3Backup();
+            log(`[PrmS3Backup] ${backupname} cancelled on PRM-S3`);
+          }
+        } catch (err: any) {
+          log(`[PrmS3Backup] cancel ${backupname}: ${err.message}`);
+        }
+        log(`[PrmS3Backup] ${backupname} cancelled by user`);
+        return;
+      }
+      let job;
+      try {
+        job = await getPrmS3BackupStatus();
+        consecutiveFailures = 0;
+      } catch (err: any) {
+        consecutiveFailures++;
+        if (consecutiveFailures >= MAX_PRM_S3_BACKUP_CONSECUTIVE_FAILURES) {
+          await storage.updateTaskStatus(taskId, "failed", "PRM-S3 backup service unreachable");
+          log(`[PrmS3Backup] ${backupname} failed: PRM-S3 unreachable after ${consecutiveFailures} attempts`);
+          return;
+        }
+        // Transient: PRM-S3 may be briefly unreachable. Keep polling.
+        await storage.updateTaskProgress(taskId, lastPct, `PRM-S3 unreachable: ${err.message}`);
+        lastProgress = "";
+        await new Promise((r) => setTimeout(r, PRM_S3_BACKUP_POLL_MS * 5));
+        continue;
+      }
+      if (!job || job.backupname !== backupname) {
+        await storage.updateTaskStatus(taskId, "failed", "PRM-S3 is no longer tracking this backup (was it restarted?)");
+        return;
+      }
+      if (job.state === "completed") {
+        await storage.updateTaskStatus(taskId, "completed", JSON.stringify({ backupname, zipBytes: job.info?.zipBytes ?? job.doneBytes, files: job.doneFiles }));
+        log(`[PrmS3Backup] ${backupname} completed`);
+        return;
+      }
+      if (job.state !== "running") {
+        // Cancelled on the PRM-S3 side (e.g. via its API) or failed.
+        await storage.updateTaskStatus(taskId, job.state === "cancelled" ? "cancelled" : "failed", job.error || `Backup ${job.state}`);
+        return;
+      }
+      const progress = job.totalBytes ? Math.min(99, Math.floor((job.doneBytes / job.totalBytes) * 100)) : 0;
+      const message = job.totalFiles
+        ? `${job.doneFiles.toLocaleString()} / ${job.totalFiles.toLocaleString()} files · ${formatGb(job.doneBytes)} / ${formatGb(job.totalBytes)}`
+        : "Counting files...";
+      if (`${progress}|${message}` !== lastProgress) {
+        await storage.updateTaskProgress(taskId, progress, message);
+        lastProgress = `${progress}|${message}`;
+        lastPct = progress;
+      }
+      await new Promise((r) => setTimeout(r, PRM_S3_BACKUP_POLL_MS));
     }
-    let job;
-    try {
-      job = await getPrmS3BackupStatus();
-    } catch (err: any) {
-      // Transient: PRM-S3 may be briefly unreachable. Keep polling.
-      await storage.updateTaskProgress(taskId, lastPct, `PRM-S3 unreachable: ${err.message}`);
-      lastProgress = "";
-      await new Promise((r) => setTimeout(r, PRM_S3_BACKUP_POLL_MS * 5));
-      continue;
-    }
-    if (!job || job.backupname !== backupname) {
-      await storage.updateTaskStatus(taskId, "failed", "PRM-S3 is no longer tracking this backup (was it restarted?)");
-      return;
-    }
-    if (job.state === "completed") {
-      await storage.updateTaskStatus(taskId, "completed", JSON.stringify({ backupname, zipBytes: job.info?.zipBytes ?? job.doneBytes, files: job.doneFiles }));
-      log(`[PrmS3Backup] ${backupname} completed`);
-      return;
-    }
-    if (job.state !== "running") {
-      // Cancelled on the PRM-S3 side (e.g. via its API) or failed.
-      await storage.updateTaskStatus(taskId, job.state === "cancelled" ? "cancelled" : "failed", job.error || `Backup ${job.state}`);
-      return;
-    }
-    const progress = job.totalBytes ? Math.min(99, Math.floor((job.doneBytes / job.totalBytes) * 100)) : 0;
-    const message = job.totalFiles
-      ? `${job.doneFiles.toLocaleString()} / ${job.totalFiles.toLocaleString()} files · ${formatGb(job.doneBytes)} / ${formatGb(job.totalBytes)}`
-      : "Counting files...";
-    if (`${progress}|${message}` !== lastProgress) {
-      await storage.updateTaskProgress(taskId, progress, message);
-      lastProgress = `${progress}|${message}`;
-      lastPct = progress;
-    }
-    await new Promise((r) => setTimeout(r, PRM_S3_BACKUP_POLL_MS));
+  } catch (err: any) {
+    log(`[PrmS3Backup] ${backupname} tracking error: ${err.message}`);
+    await storage.updateTaskStatus(taskId, "failed", err.message || "Backup tracking failed").catch(() => {});
   }
 }
 
@@ -6001,19 +6052,47 @@ async function recoverStaleTasksOnStartup(): Promise<void> {
     await db.update(tasks)
       .set({ status: "failed", result: "Interrupted by server restart" })
       .where(and(eq(tasks.status, "in_progress"), ne(tasks.type, "prm_s3_backup")));
-    // Backups run on PRM-S3, so a PRM restart doesn't stop them: pick the
-    // tracking back up (it fails the task if PRM-S3 has moved on).
+  } catch (err) {
+    log(`[TaskWorker] Stale task recovery error: ${err}`);
+  }
+
+  // Backups run on PRM-S3, so a PRM restart doesn't stop them: pick the
+  // tracking back up (it fails the task if PRM-S3 has moved on).
+  try {
     const backups = await db.select().from(tasks)
       .where(and(eq(tasks.status, "in_progress"), eq(tasks.type, "prm_s3_backup")));
     for (const t of backups) {
-      trackPrmS3BackupTask(t.id, JSON.parse(t.payload).backupname)
-        .catch((err) => log(`[PrmS3Backup] tracking ${t.id} failed: ${err.message}`));
+      try {
+        let backupname: string | undefined;
+        try {
+          const parsed = t.payload ? JSON.parse(t.payload) : null;
+          backupname = parsed?.backupname;
+        } catch {
+          // malformed JSON payload
+        }
+        if (!backupname) {
+          await storage.updateTaskStatus(t.id, "failed", "Invalid or missing backupname in payload");
+          continue;
+        }
+        trackPrmS3BackupTask(t.id, backupname).catch(async (err) => {
+          log(`[PrmS3Backup] tracking ${t.id} failed: ${err.message}`);
+          await storage.updateTaskStatus(t.id, "failed", err.message || "Backup tracking failed").catch(() => {});
+        });
+      } catch (err: any) {
+        log(`[TaskWorker] Stale backup recovery failed for task ${t.id}: ${err.message}`);
+        await storage.updateTaskStatus(t.id, "failed", err.message || "Failed during stale task recovery").catch(() => {});
+      }
     }
+  } catch (err) {
+    log(`[TaskWorker] Stale backup recovery query error: ${err}`);
+  }
+
+  try {
     await db.update(imageTasks)
       .set({ status: "failed", result: "Interrupted by server restart" })
       .where(eq(imageTasks.status, "in_progress"));
   } catch (err) {
-    log(`[TaskWorker] Stale task recovery error: ${err}`);
+    log(`[TaskWorker] Stale image task recovery error: ${err}`);
   }
 }
 

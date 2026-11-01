@@ -78,7 +78,7 @@ export default function Graph() {
   const nodesRef = useRef<Map<string, Node>>(new Map());
   const edgesRef = useRef<Edge[]>([]);
   const containerRef = useRef<Container | null>(null);
-  const animationRef = useRef<number>(0);
+  const animationRef = useRef<number | null>(null);
   const isDraggingRef = useRef<string | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const wheelHandlerRef = useRef<((e: WheelEvent) => void) | null>(null);
@@ -163,7 +163,7 @@ export default function Graph() {
     isMountedRef.current = false;
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
-      animationRef.current = 0;
+      animationRef.current = null;
     }
 
     // Mark as mounted after cleanup
@@ -177,7 +177,7 @@ export default function Graph() {
         // Stop any existing animation
         if (animationRef.current) {
           cancelAnimationFrame(animationRef.current);
-          animationRef.current = 0;
+          animationRef.current = null;
         }
 
         // Clean up existing app
@@ -253,6 +253,9 @@ export default function Graph() {
         const nodes = new Map<string, Node>();
         const radius = Math.min(app.screen.width, app.screen.height) / 3;
 
+        // Helper to wake simulation on user interaction
+        let wakeSimulation = () => {};
+
         // Add person nodes
         people.forEach((person, i) => {
           const angle = (i / people.length) * Math.PI * 2;
@@ -292,6 +295,7 @@ export default function Graph() {
             isDraggingRef.current = person.id;
             dragStartRef.current = { x: e.global.x, y: e.global.y };
             graphics.cursor = 'grabbing';
+            wakeSimulation();
             e.stopPropagation();
           });
 
@@ -379,6 +383,7 @@ export default function Graph() {
               isDraggingRef.current = `group-${group.id}`;
               dragStartRef.current = { x: e.global.x, y: e.global.y };
               graphics.cursor = 'grabbing';
+              wakeSimulation();
               e.stopPropagation();
             });
 
@@ -553,7 +558,7 @@ export default function Graph() {
             // Cancel animation frame to stop the loop
             if (animationRef.current) {
               cancelAnimationFrame(animationRef.current);
-              animationRef.current = 0;
+              animationRef.current = null;
             }
             return;
           }
@@ -623,6 +628,7 @@ export default function Graph() {
           });
 
           // Update positions (skip if dragging)
+          let maxVelocity = 0;
           nodes.forEach((node) => {
             if (!node.graphics || !node.text) return; // Skip if graphics destroyed
             if (node.graphics.destroyed || node.text.destroyed) return; // Skip if destroyed by Pixi
@@ -635,6 +641,8 @@ export default function Graph() {
               node.graphics.y = node.y;
               node.text.x = node.x;
               node.text.y = node.y;
+              const speed = Math.abs(node.vx) + Math.abs(node.vy);
+              if (speed > maxVelocity) maxVelocity = speed;
             }
           });
 
@@ -692,8 +700,17 @@ export default function Graph() {
             }
           }
 
-          // Final check before scheduling next frame
-          if (active && isMountedRef.current && appRef.current) {
+          // Final check before scheduling next frame: sleep once kinetic energy settles
+          const isStillMoving = maxVelocity >= 0.03 || isDraggingRef.current !== null;
+          if (active && isMountedRef.current && appRef.current && isStillMoving) {
+            animationRef.current = requestAnimationFrame(simulate);
+          } else {
+            animationRef.current = null;
+          }
+        };
+
+        wakeSimulation = () => {
+          if (active && isMountedRef.current && appRef.current && animationRef.current === null) {
             animationRef.current = requestAnimationFrame(simulate);
           }
         };
@@ -704,6 +721,7 @@ export default function Graph() {
         app.stage.eventMode = 'static';
         app.stage.on('pointermove', (e) => {
           if (isDraggingRef.current) {
+            wakeSimulation();
             const node = nodesRef.current.get(isDraggingRef.current);
             if (node && containerRef.current && node.graphics && node.text &&
               !node.graphics.destroyed && !node.text.destroyed) {
@@ -804,7 +822,7 @@ export default function Graph() {
       // Cancel animation frame immediately to stop rendering loop
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
-        animationRef.current = 0;
+        animationRef.current = null;
       }
 
       // Remove wheel event listener immediately

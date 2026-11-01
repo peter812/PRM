@@ -185,7 +185,9 @@ chrome. Clicking a face opens its photo.
 7. Other faces: loose faces.
 8. When `tagged-posts-plan.md` ships: switch the tagged branch of `accountFaceScope` to its link table.
 
-No schema changes. Everything reads existing columns, and the only writes are the existing linking
+Schema: one index, `photos_prm_location_idx` (added in step 1; without it every scope lookup
+seq-scanned photos, ~750 ms → ~250 ms). The rest of the cost is the `mentioned_accounts` text scan,
+which step 8 removes. Otherwise everything reads existing columns, and the only writes are the existing linking
 functions plus `face_pair_dismissals`.
 
 ## 6. Open questions

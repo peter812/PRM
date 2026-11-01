@@ -18,6 +18,7 @@ import { BAN_FOR_JOB, accountBans, bannedActions } from "./banned-actions";
 // Only referenced inside functions, so the profile-image -> recognition import
 // cycle never reads it before it's initialised.
 import { HQ_MIN_WIDTH, getImageDimensions } from "./profile-image";
+import type { FaceBox } from "@shared/face-box";
 import {
   markFaceIdentitiesDirty, getLookalikeMinScore, setLookalikeMinScore, lookAlikesFor,
   getAutoAssignMinScore, setAutoAssignMinScore, AUTO_ASSIGN_MIN_MARGIN, getVerifyMinScore, setVerifyMinScore,
@@ -212,6 +213,42 @@ export async function rescanPhotoFaces(photoId: string): Promise<FaceRecognition
 }
 
 /**
+ * Store a face the user drew a box around (compute img/add-region) and append it
+ * to the facial_ids of the photo and of every photo sharing its faces. A box
+ * compute couldn't align a face in comes back at confidence 0, which clustering
+ * marks low_conf noise; it's marked now so auto-assign never runs on its weak
+ * embedding. Returns the new face's id.
+ */
+export async function addDrawnFace(photoId: string, box: FaceBox): Promise<string> {
+  const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
+  if (!photo) throw new Error("Photo not found.");
+
+  const fetched = await fetchImageBuffer(photo.location);
+  const form = new FormData();
+  form.append("image", new Blob([fetched.buffer], { type: fetched.mimeType }), path.basename(photo.location) || "image.jpg");
+  form.append("photo_id", photo.id);
+  for (const k of ["x", "y", "w", "h"] as const) form.append(k, String(Math.round(box[k])));
+
+  const response = await computeFetch("/api/img/add-region", form, 45000);
+  if (response.status === 404) throw new Error("PRM-Compute update required: it has no /api/img/add-region endpoint.");
+  if (!response.ok) throw new Error(`PRM Compute error: ${await response.text()}`);
+  const detected: DetectedFace & { aligned: boolean } = await response.json();
+  const faceUuid = detected.face_uuid!;
+  if (!detected.aligned) await db.update(faces).set({ noiseReason: "low_conf" }).where(eq(faces.id, faceUuid));
+
+  const [entry] = await resolveFaceIdentities([detected]);
+  const oldIds = ((photo.facialIds ?? []) as FacialId[]).map((f) => f.faceUuid).filter((id): id is string => !!id);
+  const sharing = Array.from(new Set([photoId, ...(await photosContainingFaces(oldIds)).map((r) => r.photoId)]));
+  await db.update(photos)
+    .set({ facialIds: sql`coalesce(${photos.facialIds}, '[]'::jsonb) || ${JSON.stringify([entry])}::jsonb` })
+    .where(inArray(photos.id, sharing));
+  markFaceIdentitiesDirty();
+
+  await autoAssignFaces([faceUuid]).catch((err) => log(`[FaceAutoAssign] drawn face ${faceUuid}: ${err?.message ?? err}`));
+  return faceUuid;
+}
+
+/**
  * The facial_ids entries for a detection: whatever compute matched, plus the
  * account whose profile picture shares the face's group (social_accounts.
  * personface_uuid), and that account's owner when it has one.
@@ -268,7 +305,7 @@ async function resolveFaceIdentities(detected: DetectedFace[]): Promise<FacialId
 }
 
 /** `db` or a transaction handle, so group changes and their facial_ids refresh commit together. */
-type DbExec = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type DbExec = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
  * (photo, face) pairs for every photo whose facial_ids lists one of `faceIds`.
@@ -276,21 +313,34 @@ type DbExec = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
  * file hash), so one face can sit in several photos; faces.photo_id only names
  * the first of them.
  *
- * Up to PHOTO_LOOKUP_INDEXED_MAX faces, a containment test per face narrows the
- * photos through photos_facial_ids_gin_idx (~2ms a face); past that, one scan of
- * every photo (a few hundred ms) is cheaper.
+ * Chunks `faceIds` into slices of at most PHOTO_LOOKUP_INDEXED_MAX (100) and
+ * combines them with OR so PostgreSQL always uses the photos_facial_ids_gin_idx
+ * GIN index rather than falling back to a full table sequential scan.
  */
 const PHOTO_LOOKUP_INDEXED_MAX = 100;
 
 export async function photosContainingFaces(faceIds: string[], exec: DbExec = db): Promise<{ photoId: string; faceUuid: string }[]> {
-  if (!faceIds.length) return [];
-  const indexed = faceIds.length <= PHOTO_LOOKUP_INDEXED_MAX
-    ? sql`p.facial_ids @> ANY(ARRAY[${sql.join(faceIds.map((id) => sql`${JSON.stringify([{ faceUuid: id }])}::jsonb`), sql`, `)}]) AND`
-    : sql``;
+  const uniqueFaceIds = Array.from(new Set(faceIds.filter(Boolean)));
+  if (!uniqueFaceIds.length) return [];
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniqueFaceIds.length; i += PHOTO_LOOKUP_INDEXED_MAX) {
+    chunks.push(uniqueFaceIds.slice(i, i + PHOTO_LOOKUP_INDEXED_MAX));
+  }
+
+  const orClauses = chunks.map(
+    (chunk) =>
+      sql`p.facial_ids @> ANY(ARRAY[${sql.join(
+        chunk.map((id) => sql`${JSON.stringify([{ faceUuid: id }])}::jsonb`),
+        sql`, `,
+      )}])`,
+  );
+
   const result = await exec.execute(sql`
     SELECT DISTINCT p.id AS "photoId", e->>'faceUuid' AS "faceUuid"
     FROM photos p, jsonb_array_elements(coalesce(p.facial_ids, '[]'::jsonb)) e
-    WHERE ${indexed} e->>'faceUuid' IN (${sql.join(faceIds.map((id) => sql`${id}`), sql`, `)})
+    WHERE (${sql.join(orClauses, sql` OR `)})
+      AND e->>'faceUuid' IN (${sql.join(uniqueFaceIds.map((id) => sql`${id}`), sql`, `)})
   `);
   return (result as unknown as { rows: { photoId: string; faceUuid: string }[] }).rows;
 }
@@ -378,9 +428,13 @@ export async function resyncFaceIndex(): Promise<void> {
 }
 
 async function moveGroup(exec: DbExec, keep: string, merge: string): Promise<void> {
+  if (keep === merge) return;
   await exec.update(faces).set({ personfaceUuid: keep, ...clearedSuggestions }).where(eq(faces.personfaceUuid, merge));
   await exec.update(people).set({ personfaceUuid: keep }).where(eq(people.personfaceUuid, merge));
   await exec.update(socialAccounts).set({ personfaceUuid: keep }).where(eq(socialAccounts.personfaceUuid, merge));
+  await exec.delete(facePairDismissals).where(
+    or(eq(facePairDismissals.groupAUuid, merge), eq(facePairDismissals.groupBUuid, merge))
+  );
 }
 
 /**
@@ -389,19 +443,35 @@ async function moveGroup(exec: DbExec, keep: string, merge: string): Promise<voi
  * the faces table and reads groups fresh, so it needs no separate notice.
  * Supports multiple people and social accounts sharing the same face group.
  */
-export async function mergeFaceGroups(keep: string, merge: string): Promise<void> {
+export async function mergeFaceGroups(keep: string, merge: string, exec?: DbExec): Promise<void> {
   if (keep === merge) return;
+  if (exec) {
+    await moveGroup(exec, keep, merge);
+    await refreshFacialIdsForGroups([keep], exec);
+  } else {
+    await db.transaction(async (tx) => {
+      await moveGroup(tx, keep, merge);
+      await refreshFacialIdsForGroups([keep], tx);
+    });
+  }
+  markFaceIdentitiesDirty();
+}
+
+/**
+ * Point one person or account at `group` outright: no faces move, and the group it leaves keeps
+ * its faces (unnamed, if nobody else names it). For "that face was wrong, use this one".
+ */
+export async function relinkIdentity(target: { personId: string } | { socialAccountId: string }, group: string): Promise<void> {
   await db.transaction(async (tx) => {
-    await moveGroup(tx, keep, merge);
-    await tx.delete(facePairDismissals).where(
-      or(
-        and(eq(facePairDismissals.groupAUuid, keep), eq(facePairDismissals.groupBUuid, merge)),
-        and(eq(facePairDismissals.groupAUuid, merge), eq(facePairDismissals.groupBUuid, keep)),
-        eq(facePairDismissals.groupAUuid, merge),
-        eq(facePairDismissals.groupBUuid, merge)
-      )
-    );
-    await refreshFacialIdsForGroups([keep], tx);
+    const [row] = "personId" in target
+      ? await tx.select({ old: people.personfaceUuid }).from(people).where(eq(people.id, target.personId))
+      : await tx.select({ old: socialAccounts.personfaceUuid }).from(socialAccounts).where(eq(socialAccounts.id, target.socialAccountId));
+    if (!row) throw new RecognitionRequestError(404, "personId" in target ? "Person not found." : "Social account not found.");
+    if ("personId" in target) await tx.update(people).set({ personfaceUuid: group }).where(eq(people.id, target.personId));
+    else await tx.update(socialAccounts).set({ personfaceUuid: group }).where(eq(socialAccounts.id, target.socialAccountId));
+    // Both groups: the joined one gains the name, the left one's photos lose it.
+    await refreshFacialIdsForGroups(row.old ? [group, row.old] : [group], tx);
+    if (row.old && row.old !== group) await clearEmptyGroups(tx, [row.old]);
   });
   markFaceIdentitiesDirty();
 }
@@ -547,31 +617,87 @@ export async function clearEmptyGroups(exec: DbExec = db, groups?: string[]): Pr
   return cleared;
 }
 
-export async function disassociateFace(faceUuid: string): Promise<DisassociateFaceResult> {
-  const [faceRow] = await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(eq(faces.id, faceUuid));
-  if (!faceRow) throw new RecognitionRequestError(404, "Face not found.");
-  const newGroupUuid = crypto.randomUUID();
-  const oldGroup = faceRow.personfaceUuid;
-  const wasNamed = oldGroup ? await groupIsNamed(oldGroup) : false;
+export async function disassociateFaces(faceUuids: string[]): Promise<{ count: number; newGroupUuids: string[] }> {
+  if (!faceUuids.length) return { count: 0, newGroupUuids: [] };
+  const rows = await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(inArray(faces.id, faceUuids));
+  if (!rows.length) throw new RecognitionRequestError(404, "Face not found.");
+
+  const oldGroups = Array.from(new Set(rows.map((r) => r.personfaceUuid).filter((g): g is string => !!g)));
+  const namedGroups = new Set<string>();
+  for (const g of oldGroups) {
+    if (await groupIsNamed(g)) namedGroups.add(g);
+  }
+
+  const moves = rows.map((r) => ({
+    id: r.id,
+    oldGroup: r.personfaceUuid,
+    group: crypto.randomUUID(),
+  }));
+
   await db.transaction(async (tx) => {
-    await tx.update(faces).set({ personfaceUuid: newGroupUuid, autoMatchScore: null, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
-    if (oldGroup && wasNamed) {
-      const [a, b] = oldGroup < newGroupUuid ? [oldGroup, newGroupUuid] : [newGroupUuid, oldGroup];
-      await tx.insert(facePairDismissals).values({ groupAUuid: a, groupBUuid: b }).onConflictDoNothing();
+    await tx.execute(sql`
+      UPDATE faces
+      SET personface_uuid = v."group",
+          auto_match_score = NULL,
+          cluster_id = NULL,
+          verify_personface_uuid = NULL,
+          verify_score = NULL
+      FROM jsonb_to_recordset(${JSON.stringify(moves.map((m) => ({ id: m.id, group: m.group })))}::jsonb) AS v(id varchar, "group" varchar)
+      WHERE faces.id = v.id
+    `);
+
+    const dismissals: { groupAUuid: string; groupBUuid: string }[] = [];
+    for (const m of moves) {
+      if (m.oldGroup && namedGroups.has(m.oldGroup)) {
+        const [a, b] = m.oldGroup < m.group ? [m.oldGroup, m.group] : [m.group, m.oldGroup];
+        dismissals.push({ groupAUuid: a, groupBUuid: b });
+      }
     }
-    await refreshFacialIdsForGroups([newGroupUuid], tx);
-    if (oldGroup) await clearEmptyGroups(tx, [oldGroup]);
+    if (dismissals.length) {
+      await tx.insert(facePairDismissals).values(dismissals).onConflictDoNothing();
+    }
+    await refreshFacialIdsForGroups(moves.map((m) => m.group), tx, moves.map((m) => m.id));
+    if (oldGroups.length) await clearEmptyGroups(tx, oldGroups);
   });
+
   markFaceIdentitiesDirty();
-  return { newGroupUuid };
+  return { count: moves.length, newGroupUuids: moves.map((m) => m.group) };
+}
+
+export async function disassociateFace(faceUuid: string): Promise<DisassociateFaceResult> {
+  const result = await disassociateFaces([faceUuid]);
+  return { newGroupUuid: result.newGroupUuids[0] };
 }
 
 /** Split every face out of a group into its own new group (bulk "not them"). */
 export async function disassociateGroup(personfaceUuid: string): Promise<{ count: number }> {
   const rows = await db.select({ id: faces.id }).from(faces).where(eq(faces.personfaceUuid, personfaceUuid));
-  for (const { id } of rows) await disassociateFace(id);
-  // A group that was already empty has no face to trigger the cleanup in disassociateFace.
-  await clearEmptyGroups(db, [personfaceUuid]);
+  const wasNamed = rows.length > 0 ? await groupIsNamed(personfaceUuid) : false;
+  const moves = rows.map(({ id }) => ({ id, group: crypto.randomUUID() }));
+  await db.transaction(async (tx) => {
+    if (moves.length) {
+      await tx.execute(sql`
+        UPDATE faces
+        SET personface_uuid = v."group",
+            auto_match_score = NULL,
+            cluster_id = NULL,
+            verify_personface_uuid = NULL,
+            verify_score = NULL
+        FROM jsonb_to_recordset(${JSON.stringify(moves)}::jsonb) AS v(id varchar, "group" varchar)
+        WHERE faces.id = v.id
+      `);
+      if (wasNamed) {
+        const dismissals = moves.map(({ group }) =>
+          personfaceUuid < group
+            ? { groupAUuid: personfaceUuid, groupBUuid: group }
+            : { groupAUuid: group, groupBUuid: personfaceUuid },
+        );
+        await tx.insert(facePairDismissals).values(dismissals).onConflictDoNothing();
+      }
+      await refreshFacialIdsForGroups([], tx, moves.map((m) => m.id));
+    }
+    await clearEmptyGroups(tx, [personfaceUuid]);
+  });
   markFaceIdentitiesDirty();
   return { count: rows.length };
 }
@@ -650,14 +776,28 @@ async function runAutoAssign(faceIds?: string[]): Promise<AutoAssignResult> {
         WHERE faces.id = v.id`);
     }
     // The same identity may take several faces in one photo: a post image is often a collage of one person.
-    for (const a of picks) {
+    if (picks.length) {
+      const pickRecords = picks.map((a) => ({
+        id: a.faceId,
+        old_group: a.oldGroup,
+        group: a.group,
+        score: a.score,
+      }));
       // Guarded on the group read above, so a face a person assigned meanwhile is left alone.
-      await tx
-        .update(faces)
-        .set({ personfaceUuid: a.group, autoMatchScore: a.score, ...clearedSuggestions })
-        .where(and(eq(faces.id, a.faceId), isNull(faces.dismissedAt), a.oldGroup ? eq(faces.personfaceUuid, a.oldGroup) : isNull(faces.personfaceUuid)));
+      await tx.execute(sql`
+        UPDATE faces
+        SET personface_uuid = v."group",
+            auto_match_score = v.score,
+            cluster_id = NULL,
+            verify_personface_uuid = NULL,
+            verify_score = NULL
+        FROM jsonb_to_recordset(${JSON.stringify(pickRecords)}::jsonb) AS v(id varchar, old_group varchar, "group" varchar, score real)
+        WHERE faces.id = v.id
+          AND faces.dismissed_at IS NULL
+          AND faces.personface_uuid IS NOT DISTINCT FROM v.old_group
+      `);
+      await refreshFacialIdsForGroups([], tx, picks.map((a) => a.faceId));
     }
-    if (picks.length) await refreshFacialIdsForGroups([], tx, picks.map((a) => a.faceId));
   });
 
   log(`[FaceAutoAssign] ${picks.length} of ${candidates.length} open faces assigned (min ${minScore}), ${verify.length} to verify (min ${verifyMin})`);
@@ -758,11 +898,14 @@ async function linkProfileFace(photo: Photo, detected: DetectedFace[], getBuffer
   if (!check.ok) return { linked: false, reason: check.reason };
   const { accountId, faceRow, account, owner, target, facePct } = check;
 
-  const alreadyLinked = account.personfaceUuid === target && faceRow.personfaceUuid === target;
-  if (faceRow.personfaceUuid !== target) await db.update(faces).set({ personfaceUuid: target, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
-  if (account.personfaceUuid !== target) await db.update(socialAccounts).set({ personfaceUuid: target }).where(eq(socialAccounts.id, accountId));
-  if (owner && !owner.personfaceUuid) await db.update(people).set({ personfaceUuid: target }).where(eq(people.id, owner.id));
+  const alreadyLinked = account.personfaceUuid === target && faceRow.personfaceUuid === target && (!owner || !!owner.personfaceUuid);
   if (!alreadyLinked) {
+    await db.transaction(async (tx) => {
+      if (faceRow.personfaceUuid !== target) await tx.update(faces).set({ personfaceUuid: target, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
+      if (account.personfaceUuid !== target) await tx.update(socialAccounts).set({ personfaceUuid: target }).where(eq(socialAccounts.id, accountId));
+      if (owner && !owner.personfaceUuid) await tx.update(people).set({ personfaceUuid: target }).where(eq(people.id, owner.id));
+      await refreshFacialIdsForGroups([target], tx);
+    });
     log(`[ProfileLink] account ${accountId} <- face ${faceRow.id} (${facePct.toFixed(0)}% of image)`);
     markFaceIdentitiesDirty();
   }

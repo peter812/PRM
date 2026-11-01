@@ -114,6 +114,8 @@ export default function ImageStorageSettingsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/image-storage/prm-s3/settings"] });
       queryClient.invalidateQueries({ queryKey: ["/api/prm-s3/health"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/prm-s3/backups"] });
       toast({ title: "PRM-S3 settings saved" });
     },
     onError: (error: Error) => {
@@ -122,8 +124,8 @@ export default function ImageStorageSettingsPage() {
   });
 
   const testPrmS3Mutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/image-storage/prm-s3/test");
+    mutationFn: async (payload?: typeof form) => {
+      const res = await apiRequest("POST", "/api/image-storage/prm-s3/test", payload ?? form);
       return res.json() as Promise<{ ok: boolean; message?: string }>;
     },
     onSuccess: (data) => {
@@ -358,7 +360,21 @@ export default function ImageStorageSettingsPage() {
                 id="prm-secret-key"
                 type="password"
                 value={form.secretAccessKey}
-                onChange={(e) => setForm((prev) => ({ ...prev, secretAccessKey: e.target.value }))}
+                onFocus={() => {
+                  if (form.secretAccessKey === "••••••••" || form.secretAccessKey.includes("••")) {
+                    setForm((prev) => ({ ...prev, secretAccessKey: "" }));
+                  }
+                }}
+                onBlur={() => {
+                  if (!form.secretAccessKey && prmS3Config?.hasSecretKey) {
+                    setForm((prev) => ({ ...prev, secretAccessKey: "••••••••" }));
+                  }
+                }}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const cleaned = val.includes("••") && val !== "••••••••" ? val.replace(/•/g, "") : val;
+                  setForm((prev) => ({ ...prev, secretAccessKey: cleaned }));
+                }}
                 placeholder="••••••••"
               />
             </div>
@@ -388,7 +404,7 @@ export default function ImageStorageSettingsPage() {
             </Button>
             <Button
               variant="outline"
-              onClick={() => testPrmS3Mutation.mutate()}
+              onClick={() => testPrmS3Mutation.mutate(form)}
               disabled={testPrmS3Mutation.isPending}
             >
               {testPrmS3Mutation.isPending ? (

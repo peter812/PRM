@@ -210,8 +210,6 @@ export function registerRoutes(app: Express): void {
       const computeConnected = !!(await get("prm_face_api_url")) && !!(await get("prm_face_api_key"));
       res.json({
         autoDescribeImages: (await get("ai_auto_describe_images")) === "true",
-        visionPrompt: await get("ai_vision_prompt"),
-        eventsPrompt: await get("ai_events_prompt"),
         ...selections,
         whisperApiUrl,
         whisperModel,
@@ -226,8 +224,6 @@ export function registerRoutes(app: Express): void {
     try {
       const body = z.object({
         autoDescribeImages: z.boolean().optional(),
-        visionPrompt: z.string().optional(),
-        eventsPrompt: z.string().optional(),
         whisperApiUrl: z.string().optional(),
         whisperModel: z.string().optional(),
         vision: selectionSchema.optional(),
@@ -236,8 +232,6 @@ export function registerRoutes(app: Express): void {
         sexGuess: selectionSchema.optional(),
       }).parse(req.body ?? {});
       if (body.autoDescribeImages !== undefined) await storage.setAppSetting("ai_auto_describe_images", String(body.autoDescribeImages));
-      if (body.visionPrompt !== undefined) await storage.setAppSetting("ai_vision_prompt", body.visionPrompt);
-      if (body.eventsPrompt !== undefined) await storage.setAppSetting("ai_events_prompt", body.eventsPrompt);
       if (body.whisperApiUrl !== undefined) await storage.setAppSetting("whisper_api_url", body.whisperApiUrl.trim());
       if (body.whisperModel !== undefined) await storage.setAppSetting("whisper_model", body.whisperModel.trim());
       for (const task of SETTINGS_TASKS) {

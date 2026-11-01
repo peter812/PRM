@@ -1,4 +1,5 @@
 import { formatPersonName } from "@shared/person-name";
+import { withImageSize } from "@shared/image-size";
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -594,7 +595,7 @@ export function ConversationThreadPane({
             <div className="flex flex-wrap gap-2 p-2 border rounded-xl bg-muted/20">
               {uploadedPhotos.map((photo) => (
                 <div key={photo.id} className="relative h-16 w-16 group rounded border overflow-hidden">
-                  <img src={photo.location} alt="Thumbnail" className="h-full w-full object-cover" />
+                  <img src={withImageSize(photo.location, 160)} alt="Thumbnail" loading="lazy" className="w-full h-full object-cover" />
                   <button
                     type="button"
                     onClick={() => setUploadedPhotos((prev) => prev.filter((p) => p.id !== photo.id))}

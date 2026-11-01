@@ -4,7 +4,8 @@ import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, photos, appKnowledge, imageQuestions, faces, messages, messageChunks, conversations, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChat, type AiChatContextEntity, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
-import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
+import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildToolsArray } from "../ai-tools";
+import { getPrompt } from "../prompts";
 import { describePhoto } from "../ai/describe";
 import { asData, DATA_TAGS_NOTE, resolveModel, chat as aiChat, adapterFor, AiConfigError, type ResolvedModel, type AiMessage, type AiToolCall } from "../ai/provider";
 import crypto from "crypto";
@@ -1223,48 +1224,8 @@ export function registerRoutes(app: Express) {
   
     // ── AI Chat ────────────────────────────────────────────
   
-    const AGENTIC_SYSTEM_INSTRUCTIONS =
-      "\n\n[AGENTIC MODE ACTIVE: HIGH AUTONOMY & MULTI-STEP REASONING REQUIRED]\n" +
-      "You are running in AGENTIC mode. Your primary objective is to solve the user's request thoroughly, even if it requires a complex, multi-step process. " +
-      "Follow these guidelines strictly:\n" +
-      "1. BE PROACTIVE WITH TOOLS: Do not hesitate to call multiple tools in sequence. If you need more information to answer a question or perform an action, run the tools necessary to get it. Do not ask the user for permission to search or query if you have tools available to find the answer yourself.\n" +
-      "2. THINK STEP-BY-STEP: Before calling tools or answering, analyze what you need to solve the request. Write down a clear plan or mental model, and execute it step-by-step. If one tool call doesn't yield the result, try a different tool or strategy.\n" +
-      "3. MULTI-STEP INVESTIGATION: If the user's request is broad or ambiguous, use search tools (like person_search, super_search, social_account_search, etc.) to discover clues, and then pull full details (using person_pull, etc.) for any relevant entities. Don't stop at the first result; verify facts, explore relationships, and cross-reference details across different entities.\n" +
-      "4. GENERATE PLANS: When dealing with complex questions (e.g., finding connections, compiling summaries, or solving data discrepancies), outline your steps and explain your reasoning clearly to the user. Do not give up easily or return partial answers when further tool execution could provide the complete picture.";
-    const DEFAULT_PRM_SYSTEM_MESSAGE =
-      "You are an intelligent assistant integrated with a Personal Relationship Manager (PRM). " +
-      "You have access to tools that allow you to read live data from the PRM — including people, " +
-      "social accounts, notes, interactions, and daily notes. When the user asks about a person, " +
-      "their notes, relationships, social accounts, or any stored data, always call the appropriate " +
-      "tool to look up the current information rather than guessing. Use person_search to find " +
-      "someone by name, person_pull to get their full details (which returns up to 10 relationships/notes/interactions as a brief overview), " +
-      "person_pull_relationships to get up to 20 relationships (ideal when specifically asked about siblings, friends, family, or colleagues), and the other available tools as " +
-      "needed. Combine tool results with your own reasoning to give accurate, helpful answers. " +
-      "Important note: You also have a super_search tool which performs a semantic search across the entire PRM. " +
-      "You should only use this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) yield no results or yield bad/unhelpful results. " +
-      "You can send clickable links that will appear as buttons at the bottom of the chat bubble. " +
-      "You must use this capability to link the user to relevant data profiles (people, social accounts, images, etc.) or to pages where they can manage settings, data types, or make changes. " +
-      "To include a link, format it exactly as: \"URL\"{title} (for example, \"/person/some-uuid\"{John Doe} or \"https://instagram.com/jdoe\"{Instagram Profile}). " +
-      "You can place these links inline in your text or at the end of your response. The system will automatically parse them, convert them to standard markdown links in your text, and display them as clickable buttons at the bottom of the chat bubble. " +
-      "Always use the exact \"URL\"{title} format. Never write links as plain text or standard markdown. " +
-      "Examples of internal links you can use: " +
-      "- People: \"/person/UUID\"{Person Name} (or \"/person\"{Person Name} to resolve by name lookup) " +
-      "- Social accounts: \"/social-accounts/UUID\"{Username} (or \"/social-accounts\"{Username} to resolve by username lookup) " +
-      "- Images: \"/image/UUID\"{Image Description} " +
-      "- Groups: \"/group/UUID\"{Group Name} " +
-      "- Daily Notes: \"/daily-notes/UUID\"{Date} " +
-      "- Settings: \"/settings/user\"{User Settings}, \"/settings/data-types\"{Data Types}, \"/settings/app\"{App Options}, \"/settings/import-export/application\"{Import/Export Application}. " +
-      "Examples of external links you can use: \"https://example.com\"{Example website}. " +
-      "Always include these links when discussing specific people, social accounts, images, or configuration pages so that the user can navigate to them directly.";
     const MAX_CHAT_TITLE_LENGTH = 60;
     const MAX_CONTEXT_ENTITIES = 10;
-    const DEFAULT_EVENTS_SYSTEM_PROMPT = [
-      "You extract a list of distinct events from a daily journal entry.",
-      "An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations.",
-      "Each event must be a short, standalone past-tense statement (one sentence, ideally under 120 characters).",
-      "Do not include opinions, plans for the future, or generic reflections. Do not invent events that aren't supported by the text.",
-      "Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.",
-    ].join(" ");
   
     /** The chat's own (provider, model) when set, else the text model. */
     function resolveChatModel(chat: AiChat): Promise<ResolvedModel> {
@@ -1299,9 +1260,9 @@ export function registerRoutes(app: Express) {
       return out;
     }
 
-    function buildChatMessages(chat: AiChat, history: any[], userMessage: AiChatMessage): AiMessage[] {
-      const baseSysMsg = (chat.systemMessage?.trim() || DEFAULT_PRM_SYSTEM_MESSAGE) + renderContextEntities(chat.contextEntities ?? []);
-      const out: AiMessage[] = [{ role: "system", content: chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg }];
+    async function buildChatMessages(chat: AiChat, history: any[], userMessage: AiChatMessage): Promise<AiMessage[]> {
+      const baseSysMsg = (chat.systemMessage?.trim() || await getPrompt("chatSystem")) + renderContextEntities(chat.contextEntities ?? []);
+      const out: AiMessage[] = [{ role: "system", content: chat.agentMode ? `${baseSysMsg}\n\n${await getPrompt("chatAgentic")}` : baseSysMsg }];
       for (const m of history) {
         if (m.role === "tool") {
           out.push({ role: "tool", name: m.tool_name || m.name, tool_call_id: m.tool_call_id, content: m.content });
@@ -1635,7 +1596,7 @@ export function registerRoutes(app: Express) {
   
       // Teach the model when/how to use ask_user, but only when it's offered.
       if (toolNames.has("ask_user") && messages[0]?.role === "system") {
-        messages[0] = { ...messages[0], content: `${messages[0].content}${ASK_USER_SYSTEM_INSTRUCTIONS}` };
+        messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${await getPrompt("chatAskUser")}` };
       }
   
       const writeLine = (obj: unknown) => {
@@ -2000,7 +1961,7 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const aiMessages = buildChatMessages(chat, history, userMessage);
+        const aiMessages = await buildChatMessages(chat, history, userMessage);
         let assistantContent = "";
         try {
           const resolved = await resolveChatModel(chat);
@@ -2066,7 +2027,7 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const aiMessages = buildChatMessages(chat, trimmed, userMessage);
+        const aiMessages = await buildChatMessages(chat, trimmed, userMessage);
         let assistantContent = "";
         try {
           const resolved = await resolveChatModel(chat);
@@ -2123,7 +2084,7 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const aiMessages = buildChatMessages(chat, history, userMessage);
+        const aiMessages = await buildChatMessages(chat, history, userMessage);
 
         const run = claimChatRun(chat.id, res);
         if (!run) return;
@@ -2204,7 +2165,7 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const aiMessages = buildChatMessages(chat, trimmed, userMessage);
+        const aiMessages = await buildChatMessages(chat, trimmed, userMessage);
 
         const run = claimChatRun(chat.id, res);
         if (!run) return;
@@ -2301,8 +2262,7 @@ export function registerRoutes(app: Express) {
           return sendAiError(res, err);
         }
 
-        const customPrompt = ((await storage.getAppSetting("ai_events_prompt")) ?? "").trim();
-        const systemPrompt = customPrompt || DEFAULT_EVENTS_SYSTEM_PROMPT;
+        const systemPrompt = await getPrompt("dailyNoteEvents");
   
         // JSON schema constrains the model to return { events: [{ text: string }, ...] }
         const responseFormat = {

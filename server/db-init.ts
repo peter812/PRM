@@ -361,9 +361,9 @@ async function ensureSocialAccountHistorySchema(): Promise<void> {
   await addColumnIfNotExists("social_accounts", "is_hq_image", "BOOLEAN NOT NULL DEFAULT FALSE");
   await addColumnIfNotExists("social_account_history", "image_change", "TEXT");
 
-  // Username is UNIQUE (shared/schema.ts): the bulk import inserts by handle, so without
-  // it two runs naming the same new account would create two rows.
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS social_accounts_username_idx ON social_accounts (username)`);
+  // Non-unique index matching shared/schema.ts: multiple platforms (or pre-merge duplicates)
+  // can share a username, while bulk imports and lookups still rely on an index over username.
+  await pool.query(`CREATE INDEX IF NOT EXISTS social_accounts_username_idx ON social_accounts (username)`);
 }
 
 /**
@@ -392,6 +392,7 @@ async function validateAndSyncSchema(): Promise<void> {
         political_left_right: "REAL",
         political_lib_auth: "REAL",
         political_updated_at: "TIMESTAMP",
+        ai_backend_notes: "JSONB NOT NULL DEFAULT '[]'::jsonb",
       },
       schooling: {
         high_school: "TEXT",
@@ -450,6 +451,7 @@ async function validateAndSyncSchema(): Promise<void> {
         follows_checked_at: "TIMESTAMP",
         posts_checked_at: "TIMESTAMP",
         highlights_checked_at: "TIMESTAMP",
+        tagged_checked_at: "TIMESTAMP",
         joined_at: "TIMESTAMP",
         reported_posts_count: "INTEGER",
         is_private: "BOOLEAN",
@@ -464,6 +466,7 @@ async function validateAndSyncSchema(): Promise<void> {
         ai_summary_invalidated: "BOOLEAN NOT NULL DEFAULT FALSE",
         ai_summary_invalidated_at: "TIMESTAMP",
         ai_summary_model: "TEXT",
+        ai_backend_notes: "JSONB NOT NULL DEFAULT '[]'::jsonb",
       },
       ai_chats: {
         vector_id: "TEXT",
@@ -483,6 +486,8 @@ async function validateAndSyncSchema(): Promise<void> {
       },
       tasks: {
         title: "TEXT",
+        progress: "INTEGER NOT NULL DEFAULT 0",
+        progress_message: "TEXT",
       },
       conversations: {
         chunked_at: "TIMESTAMP",
@@ -664,6 +669,18 @@ async function validateAndSyncSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS story_scrape_runs_started_idx ON story_scrape_runs (started_at);
       CREATE INDEX IF NOT EXISTS story_scrape_runs_token_idx ON story_scrape_runs (token_hash);
+      CREATE TABLE IF NOT EXISTS image_summary_word_clouds (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        status TEXT NOT NULL,
+        started_at TIMESTAMP NOT NULL DEFAULT now(),
+        finished_at TIMESTAMP,
+        posts_total INTEGER NOT NULL DEFAULT 0,
+        posts_processed INTEGER NOT NULL DEFAULT 0,
+        summaries_processed INTEGER NOT NULL DEFAULT 0,
+        words_counted INTEGER NOT NULL DEFAULT 0,
+        words JSONB NOT NULL DEFAULT '[]'::jsonb,
+        error TEXT
+      );
       CREATE TABLE IF NOT EXISTS story_importers (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         label TEXT NOT NULL,
@@ -791,6 +808,7 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_account_posts_instagram_pk_idx ON social_account_posts (instagram_pk);
       CREATE INDEX IF NOT EXISTS social_account_posts_coauthor_account_ids_idx ON social_account_posts USING gin (coauthor_account_ids);
       CREATE INDEX IF NOT EXISTS tracking_jobs_batch_idx ON tracking_jobs (batch_id);
+      CREATE INDEX IF NOT EXISTS photos_prm_location_idx ON photos (prm_location);
     `);
 
     // Tracking: the due-date index needs the column the loop above just added, and
@@ -868,6 +886,8 @@ async function validateAndSyncSchema(): Promise<void> {
           title TEXT,
           payload TEXT NOT NULL,
           result TEXT,
+          progress INTEGER NOT NULL DEFAULT 0,
+          progress_message TEXT,
           created_at TIMESTAMP NOT NULL DEFAULT NOW(),
           started_at TIMESTAMP,
           completed_at TIMESTAMP
@@ -1202,6 +1222,8 @@ async function validateAndSyncSchema(): Promise<void> {
     await pool.query(`CREATE INDEX IF NOT EXISTS face_pair_dismissals_group_a_idx ON face_pair_dismissals (group_a_uuid)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS face_pair_dismissals_group_b_idx ON face_pair_dismissals (group_b_uuid)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS image_tasks_pending_idx ON image_tasks (type, created_at) WHERE status = 'pending'`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS tasks_status_idx ON tasks (status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS tasks_type_created_at_idx ON tasks (type, created_at DESC)`);
 
     // Ensure image_questions table exists
     const imageQuestionsExists = await tableExists("image_questions");
@@ -1405,6 +1427,19 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE UNIQUE INDEX IF NOT EXISTS instagram_highlight_memberships_open_idx ON instagram_highlight_memberships(highlight_id, story_pk) WHERE left_seen_at IS NULL;
     `);
 
+    // Tagged posts (tagged-posts-plan.md); same as socialAccountPostTags in shared/schema.ts
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS social_account_post_tags (
+        post_id VARCHAR NOT NULL REFERENCES social_account_posts(id) ON DELETE CASCADE,
+        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        first_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        removed_seen_at TIMESTAMP,
+        PRIMARY KEY (post_id, social_account_id)
+      );
+      CREATE INDEX IF NOT EXISTS social_account_post_tags_account_idx ON social_account_post_tags(social_account_id);
+    `);
+
     log("Schema validation completed");
   } catch (error) {
     log(`Schema validation error: ${error}`);
@@ -1479,6 +1514,9 @@ export async function resetDatabase(
     
     // Create new tables from schema
     await runMigrations();
+
+    // Ensure PRM-Compute tables, columns, and custom SQL indexes exist
+    await validateAndSyncSchema();
     
     // Recreate the session table (connect-pg-simple will do this automatically on next access)
     // But we'll force it now to avoid errors
@@ -1554,6 +1592,9 @@ export async function initializeDatabase(): Promise<void> {
       
       // Create new tables from schema
       await runMigrations();
+
+      // Ensure PRM-Compute tables, columns, and custom SQL indexes exist
+      await validateAndSyncSchema();
       
       // Seed default data
       await seedRelationshipTypes();

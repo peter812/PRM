@@ -29,7 +29,7 @@ export const INTEREST_LEVEL_COLOR: Record<InterestLevel, string> = {
  * creates; the single sections and follows run when a person queues them
  * (account-scan-plan.md §1).
  */
-export const TRACKING_KINDS = ["scan", "info", "posts", "highlights", "follows"] as const;
+export const TRACKING_KINDS = ["scan", "info", "posts", "tagged", "highlights", "follows"] as const;
 export type TrackingKind = (typeof TRACKING_KINDS)[number];
 
 /** A lite scan reads the profile; a full one posts too, and comments and highlights at a deep level. */
@@ -101,6 +101,7 @@ export const TRACKING_KIND_LABEL: Record<TrackingKind, string> = {
   info: "Profile info",
   follows: "Followers & following",
   posts: "Posts",
+  tagged: "Tagged posts",
   highlights: "Highlights",
 };
 
