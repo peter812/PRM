@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useNoFaceToggle } from "@/components/no-face-account";
 import { useBannedActionToggle } from "@/components/banned-action-toggle";
 import { BANNED_ACTION_LABELS, type BannedAction } from "@shared/banned-actions";
+import { TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -234,6 +235,16 @@ export default function SocialAccountProfile() {
       if (unavailable) navigate("/settings/chrome-extension");
     }
   };
+
+  /** Queue a PRM Stories check; it runs on the importer's next tracking run. */
+  const queueTracking = useMutation({
+    mutationFn: (kind: TrackingKind) => apiRequest("POST", `/api/social-accounts/${account!.id}/tracking-jobs`, { kind }),
+    onSuccess: (_r, kind) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/social-accounts/${account!.id}/tracking-jobs`] });
+      toast({ title: "Queued", description: `${TRACKING_KIND_LABEL[kind]} was sent to PRM Stories.` });
+    },
+    onError: (e: Error) => toast({ title: "Not queued", description: e.message, variant: "destructive" }),
+  });
 
   type PaginatedAccounts = { items: SocialAccountWithCurrentProfile[]; total: number; page: number; limit: number };
 
@@ -939,18 +950,22 @@ export default function SocialAccountProfile() {
               </DropdownMenuSub>
               {accountType?.name?.toLowerCase() === "instagram" && (
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger data-testid="button-extract-menu">
+                  <DropdownMenuSubTrigger data-testid="button-update-menu">
                     <RefreshCw className="h-4 w-4 mr-2" />
-                    Extract
+                    Update
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-52">
-                    <DropdownMenuItem onClick={() => handleExtract("graph")} data-testid="button-extract-graph">
-                      <Users className="h-4 w-4 mr-2" />
-                      Followers &amp; Following
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleExtract("account")} data-testid="button-extract-account">
+                    <DropdownMenuItem disabled={queueTracking.isPending} onClick={() => queueTracking.mutate("scan")} data-testid="button-update-general">
                       <Info className="h-4 w-4 mr-2" />
-                      Account Info
+                      General
+                    </DropdownMenuItem>
+                    <DropdownMenuItem disabled={queueTracking.isPending} onClick={() => queueTracking.mutate("highlights")} data-testid="button-update-stories">
+                      <Layers className="h-4 w-4 mr-2" />
+                      Stories
+                    </DropdownMenuItem>
+                    <DropdownMenuItem disabled={queueTracking.isPending} onClick={() => queueTracking.mutate("follows")} data-testid="button-update-follow">
+                      <Users className="h-4 w-4 mr-2" />
+                      Follow
                     </DropdownMenuItem>
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
@@ -1779,7 +1794,7 @@ export default function SocialAccountProfile() {
           {/* Messages Tab */}
           {/* Messages Tab */}
           <TabsContent value="stories" className="mt-0 flex-1 min-h-0 overflow-y-auto">
-            <StoriesTab accountId={account.id} stories={stories} />
+            <StoriesTab accountId={account.id} stories={stories} skipStories={account.skipStories} />
           </TabsContent>
 
           <TabsContent value="faces" className="mt-0 flex-1 min-h-0 overflow-y-auto">
@@ -1810,7 +1825,6 @@ export default function SocialAccountProfile() {
                 joinedAt: account.joinedAt,
               }}
               canTrack={accountType?.name?.toLowerCase() === "instagram"}
-              skipStories={account.skipStories}
             />
           </TabsContent>
 

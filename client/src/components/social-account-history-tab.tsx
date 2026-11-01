@@ -141,15 +141,12 @@ export function SocialAccountHistoryTab({
   socialAccountId,
   current,
   canTrack = false,
-  skipStories = false,
 }: {
   socialAccountId: string;
   /** The account as it stands today — the "after" side of every profile change. */
   current?: CurrentProfileValues;
   /** Instagram accounts can be refreshed through PRM Stories; others get no menu. */
   canTrack?: boolean;
-  /** PRM Stories ignores this account's stories. */
-  skipStories?: boolean;
 }) {
   const [kind, setKind] = useState<SocialAccountHistoryKind>("all");
   const [openEntryId, setOpenEntryId] = useState<string | null>(null);
@@ -199,16 +196,6 @@ export function SocialAccountHistoryTab({
       toast({ title: "Queued", description: `${TRACKING_KIND_LABEL[jobKind]} was sent to PRM Stories.` });
     },
     onError: (e: Error) => toast({ title: "Not queued", description: e.message, variant: "destructive" }),
-  });
-
-  const toggleStories = useMutation({
-    mutationFn: (skip: boolean) =>
-      apiRequest("PATCH", `/api/social-accounts/${socialAccountId}`, { skipStories: skip }),
-    onSuccess: (_r, skip) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", socialAccountId] });
-      toast({ title: skip ? "Story collection disabled" : "Story collection enabled" });
-    },
-    onError: (e: Error) => toast({ title: "Not saved", description: e.message, variant: "destructive" }),
   });
 
   const cancelJob = useMutation({
@@ -307,19 +294,6 @@ export function SocialAccountHistoryTab({
         </div>
 
         {canTrack && (
-          <div className="flex items-center gap-2 flex-wrap">
-          {skipStories && (
-            <span className="text-xs text-muted-foreground" data-testid="text-stories-skipped">Stories skipped</span>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={toggleStories.isPending}
-            onClick={() => toggleStories.mutate(!skipStories)}
-            data-testid="button-toggle-story-collection"
-          >
-            {skipStories ? "Enable story collection" : "Disable story collection"}
-          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" data-testid="button-update-from-stories">
@@ -352,7 +326,6 @@ export function SocialAccountHistoryTab({
               })}
             </DropdownMenuContent>
           </DropdownMenu>
-          </div>
         )}
       </div>
 

@@ -1,35 +1,16 @@
 // Events route module - events.ts
 //
 // Read access plus seen/acknowledged marking for the events table, and the
-// Event Log demo's generate/clear endpoints. Producers live in ../events.ts;
+// Event Log demo's clear endpoint. Producers live in ../events.ts;
 // the AI-agent side is future work.
 import type { Express } from "express";
 import { desc, eq, sql } from "drizzle-orm";
-import { events, type InsertEvent } from "@shared/schema";
+import { events } from "@shared/schema";
 import { db } from "../db";
 import { requireAuth } from "../auth";
-import { logEntry, nextStepsXml } from "../events";
+import { logEntry } from "../events";
 
 const MARKS = { seen: "seenAt", acknowledged: "acknowledgedAt" } as const;
-
-// Generic demo events: [type, title, subTitle, data, sub-events, nextSteps]
-const DEMO_EVENTS: [string, string, string, unknown, [string, string, string][], string?][] = [
-  ["instagram_post_deleted", "Instagram post deleted", "@jane.doe removed a post from 3 days ago",
-    { postId: "demo-post-1", caption: "Sunset at the lake", postedAt: "3 days ago" }, [],
-    nextStepsXml("Check whether the post was archived or deleted", "Keep the saved copy in post history")],
-  ["unfollow", "3 unfollows", "@sam_k unfollowed 3 accounts you track", { username: "sam_k" }, [
-    ["unfollow", "Unfollowed @alex.r", "No longer following"],
-    ["unfollow", "Unfollowed @mia_lee", "No longer following"],
-    ["unfollow", "Unfollowed @chris.b", "No longer following"],
-  ], nextStepsXml("Review connection strength between @sam_k and each account")],
-  ["bio_changed", "Bio changed", "@taylor.m updated their bio",
-    { before: "Coffee & code", after: "Moved to Denver ☀️" }, []],
-  ["profile_pic_changed", "Profile picture changed", "@jordan_p has a new profile picture", {}, []],
-  ["follow", "New follows", "@jane.doe followed 2 new accounts", { username: "jane.doe" }, [
-    ["follow", "Followed @river.k", "New follow"],
-    ["follow", "Followed @dana.s", "New follow"],
-  ]],
-];
 
 export function registerRoutes(app: Express) {
   // GET /api/events — every event, newest first; the client nests sub-events under parentEventId
@@ -64,32 +45,6 @@ export function registerRoutes(app: Express) {
     } catch (error) {
       console.error("Error marking event:", error);
       res.status(500).json({ error: "Failed to mark event" });
-    }
-  });
-
-  // POST /api/demos/events/generate — insert the generic demo events (some with sub-events)
-  app.post("/api/demos/events/generate", requireAuth, async (_req, res) => {
-    try {
-      let count = 0;
-      await db.transaction(async (tx) => {
-        for (const [type, title, subTitle, data, subs, nextSteps] of DEMO_EVENTS) {
-          const [parent] = await tx
-            .insert(events)
-            .values({ type, title, subTitle, nextSteps, log: [logEntry("created", { data })] })
-            .returning({ id: events.id });
-          count++;
-          if (subs.length === 0) continue;
-          const children: InsertEvent[] = subs.map(([t, ti, st]) => ({
-            type: t, title: ti, subTitle: st, parentEventId: parent.id, log: [logEntry("created")],
-          }));
-          await tx.insert(events).values(children);
-          count += children.length;
-        }
-      });
-      res.json({ created: count });
-    } catch (error) {
-      console.error("Error generating demo events:", error);
-      res.status(500).json({ error: "Failed to generate events" });
     }
   });
 

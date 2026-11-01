@@ -322,7 +322,16 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
 // Filter value for stories that aren't currently in any highlight set.
 const NO_SET = "__none__";
 
-export function StoriesTab({ accountId, stories }: { accountId: string; stories: SocialAccountPost[] }) {
+export function StoriesTab({
+  accountId,
+  stories,
+  skipStories = false,
+}: {
+  accountId: string;
+  stories: SocialAccountPost[];
+  /** PRM Stories ignores this account's stories. */
+  skipStories?: boolean;
+}) {
   const [newestFirst, setNewestFirst] = useState(true);
   const [combineDaily, setCombineDaily] = useState(false);
   const [selected, setSelected] = useState<SocialAccountPost[] | null>(null);
@@ -347,6 +356,14 @@ export function StoriesTab({ accountId, stories }: { accountId: string; stories:
       toast({ title: "Queued", description: "A highlights check will run on the next tracking run." });
     },
     onError: (e: Error) => toast({ title: "Could not get highlights", description: e.message, variant: "destructive" }),
+  });
+  const toggleStories = useMutation({
+    mutationFn: (skip: boolean) => apiRequest("PATCH", `/api/social-accounts/${accountId}`, { skipStories: skip }),
+    onSuccess: (_r, skip) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", accountId] });
+      toast({ title: skip ? "Story collection disabled" : "Story collection enabled" });
+    },
+    onError: (e: Error) => toast({ title: "Not saved", description: e.message, variant: "destructive" }),
   });
   // When the job finishes, pull in the sets and any stories it downloaded.
   const wasQueued = useRef(false);
@@ -407,7 +424,13 @@ export function StoriesTab({ accountId, stories }: { accountId: string; stories:
     <div className="px-6 py-6">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
         <h2 className="text-lg font-semibold">Stories ({stories.length})</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {skipStories && (
+            <span className="text-xs text-muted-foreground" data-testid="text-stories-skipped">Stories skipped</span>
+          )}
+          <Button variant="outline" size="sm" onClick={() => toggleStories.mutate(!skipStories)} disabled={toggleStories.isPending} data-testid="button-toggle-story-collection">
+            {skipStories ? "Enable story collection" : "Disable story collection"}
+          </Button>
           <Button variant="outline" size="sm" onClick={() => getHighlights.mutate()} disabled={getHighlights.isPending || highlightsQueued} data-testid="button-get-highlights">
             {getHighlights.isPending || highlightsQueued ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
             {highlightsQueued ? "Getting highlights…" : "Get highlights"}

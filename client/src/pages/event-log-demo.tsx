@@ -1,11 +1,22 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
-import { Bot, Check, CheckCheck, ChevronDown, ChevronRight, Eye, Loader2, Plus, Trash2 } from "lucide-react";
+import { Bot, Check, CheckCheck, ChevronDown, ChevronRight, Eye, Loader2, Trash2 } from "lucide-react";
 import type { Event } from "@shared/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -114,11 +125,6 @@ export default function EventLogDemoPage() {
   const { data: allEvents = [], isLoading } = useQuery<Event[]>({ queryKey: EVENTS_KEY });
 
   const onError = (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" });
-  const generate = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/demos/events/generate"),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: EVENTS_KEY }),
-    onError,
-  });
   const clear = useMutation({
     mutationFn: () => apiRequest("DELETE", "/api/demos/events"),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: EVENTS_KEY }),
@@ -134,8 +140,7 @@ export default function EventLogDemoPage() {
         <div>
           <h1 className="text-3xl font-bold mb-2">Event Log</h1>
           <p className="text-muted-foreground">
-            Changes an external agent should know about, such as deleted posts and unfollows. Generate some
-            generic events to try marking them seen and acknowledged.
+            Changes an external agent should know about, such as deleted posts and unfollows.
           </p>
         </div>
 
@@ -145,17 +150,30 @@ export default function EventLogDemoPage() {
               Events {topLevel.length > 0 && <span className="text-muted-foreground font-normal">({unseen} unseen)</span>}
             </CardTitle>
             <div className="flex gap-2">
-              <Button onClick={() => generate.mutate()} disabled={generate.isPending}>
-                {generate.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
-                Generate events
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => clear.mutate()}
-                disabled={clear.isPending || allEvents.length === 0}
-              >
-                <Trash2 className="h-4 w-4 mr-1" /> Clear
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" disabled={clear.isPending || allEvents.length === 0}>
+                    <Trash2 className="h-4 w-4 mr-1" /> Clear
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Clear all events?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently delete all {allEvents.length} events, including sub-events. This cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => clear.mutate()}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Clear
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </CardHeader>
           <CardContent className="space-y-2">
