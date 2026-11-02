@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Loader2, ImageIcon, ImageOff } from "lucide-react";
+import { Loader2, ImageIcon, ImageOff, Video } from "lucide-react";
 import { imageDetailHref } from "@/lib/image-link";
 import { Skeleton } from "@/components/ui/skeleton";
 import { withImageSize } from "@shared/image-size";
@@ -17,6 +17,7 @@ type PhotoListItem = {
   location: string;
   uploadedAt: string;
   isSubImage: boolean;
+  isVideo: boolean;
 };
 
 type PhotosPage = {
@@ -136,6 +137,12 @@ export default function ImagesListPage() {
                   <div className="flex h-full w-full items-center justify-center text-muted-foreground">
                     <ImageIcon className="h-5 w-5" />
                   </div>
+                )}
+                {photo.isVideo && (
+                  <Video
+                    className="absolute bottom-1.5 right-1.5 h-4 w-4 text-white drop-shadow pointer-events-none"
+                    data-testid={`icon-video-${photo.id}`}
+                  />
                 )}
               </Link>
             ))}

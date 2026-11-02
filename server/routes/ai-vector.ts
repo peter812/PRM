@@ -732,24 +732,14 @@ export function registerRoutes(app: Express) {
     app.post("/api/photos/:id/run-face-recog", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const { id } = req.params;
-      const { background } = req.body;
 
       try {
-        const [photo] = await db.select({ id: photos.id, location: photos.location }).from(photos).where(eq(photos.id, id));
+        const [photo] = await db.select({ id: photos.id }).from(photos).where(eq(photos.id, id));
         if (!photo) return res.status(404).json({ error: "Photo not found." });
         if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM Compute service is not configured." });
 
-        const { facesDetected, faces } = await runFaceRecognition(id);
-
-        if (background) {
-          return res.json({ success: true, background: true, facesDetected });
-        }
-        // Foreground: return detection results in the shape expected by client
-        res.json({
-          imageUrl: photo.location,
-          photoId: photo.id,
-          faceDetection: { faces_detected: facesDetected, results: faces },
-        });
+        const { facesDetected } = await runFaceRecognition(id);
+        res.json({ success: true, facesDetected });
       } catch (error: any) {
         if (error instanceof ComputeUnreachableError) {
           return res.status(503).json({ error: `${error.message}. Please check that the microservice is online and running.` });

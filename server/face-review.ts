@@ -270,7 +270,8 @@ async function photoReadable(photo: Photo): Promise<boolean> {
       .where(eq(messages.id, messageId));
     return Boolean(row);
   }
-  return false;
+  // Any other photo (a person's picture, an upload) has no parent to check.
+  return true;
 }
 
 /** Refreshed single item, for after an assign/dismiss/undismiss (§3.3-§3.4). 404 (null) when unreadable. */
@@ -754,4 +755,24 @@ export async function getPostSlideAnalysis(post: { id: string; postType: string 
       suggestions: item.suggestions,
       ocrData: ocrById.get(item.photoId) ?? null,
     }));
+}
+
+/**
+ * One photo's faces for the image page, as a one-slide list so its face panel reads it like a
+ * post's slides. Built under the kind Face review files the photo as; a photo it doesn't show
+ * (a person's picture, an upload) is built as a post with no post behind it: no suggestions.
+ */
+export async function getPhotoFaceAnalysis(photoId: string): Promise<PostSlideAnalysis[] | null> {
+  const photo = await getReadablePhoto(photoId);
+  if (!photo) return null;
+  let kind = photoKind(photo) ?? "post";
+  if (kind === "post" && photo.prmLocation.startsWith("post:")) {
+    const [post] = await db
+      .select({ postType: socialAccountPosts.postType })
+      .from(socialAccountPosts)
+      .where(eq(socialAccountPosts.id, photo.prmLocation.slice("post:".length).trim()));
+    if (post?.postType === "story") kind = "story";
+  }
+  const [item] = await buildItems([photo], kind);
+  return [{ slide: 0, photoId, kind, width: item.width, height: item.height, faces: item.faces, suggestions: item.suggestions, ocrData: photo.ocrData }];
 }

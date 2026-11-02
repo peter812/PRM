@@ -265,6 +265,27 @@ docker-compose -f docker-compose.dev.yml down -v
 
 **Note:** The Docker app runs on port 5001 to avoid conflicts with native development on port 5000.
 
+## Dev Tester: Nightly Updates
+
+To run PRM-dev that pulls a branch and restarts itself every night, use a **separate clone** with
+its own `.env`, its own `PORT` (e.g. `5050`) and its own dev database. On boot the app runs
+`db:push --force` against the branch that's checked out, so don't point it at real data.
+
+```powershell
+git clone https://github.com/peter812/PRM.git C:\Repos\PRM-dev
+cd C:\Repos\PRM-dev
+copy .env.example .env   # set DATABASE_URL (dev DB) and PORT
+npm install
+.\scripts\prm-dev-nightly.ps1 -Install -Branch Version-3   # add -Time 03:00 to change from midnight
+```
+
+`-Install` saves the branch and time, registers two scheduled tasks (a nightly update and a start
+at logon) and runs the first update right away. Each night the script pulls the branch
+(fast-forward only; a clone with local edits is left alone), runs `npm install` if
+`package-lock.json` changed, restarts the app and checks it answers. Other commands: `-Update`
+(run it now), `-Start`, `-Stop`, `-Uninstall`; rerun `-Install -Branch <name>` to switch branches.
+Logs go to `.prm-dev\logs\` (`update-*.log` for the script, `app-*.log` for the server).
+
 ## Production Deployment
 
 For production deployment with Docker, see [DOCKER.md](DOCKER.md) which uses `docker-compose.yml` with an external database.

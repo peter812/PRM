@@ -33,7 +33,8 @@ export function StageCompletion({ onFinish }: { onFinish?: () => void }) {
     queryKey: ["/api/setup/services/health"],
   });
 
-  const onlineServicesCount = Object.values(health || {}).filter((s) => s.ok).length;
+  const services = Object.values(health || {});
+  const onlineServicesCount = services.filter((s) => s.ok).length;
 
   return (
     <div className="space-y-6">
@@ -51,7 +52,7 @@ export function StageCompletion({ onFinish }: { onFinish?: () => void }) {
       {/* Summary Scorecard */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Card className="p-3 text-center border">
-          <div className="text-2xl font-bold">{onlineServicesCount}/5</div>
+          <div className="text-2xl font-bold">{onlineServicesCount}/{services.length || 4}</div>
           <p className="text-[11px] text-muted-foreground mt-0.5 flex items-center justify-center gap-1">
             <HardDrive className="h-3 w-3" /> Services Online
           </p>

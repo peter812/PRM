@@ -196,7 +196,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete, i
             {images.length > 0 ? (
               <div className="relative max-w-full max-h-[60vh] md:max-h-[80vh] flex items-center justify-center w-fit h-fit">
                 <PhotoFaces
-                  postId={post.id}
+                  slidesKey={postSlidesKey(post.id)}
                   slide={safeImageIndex}
                   src={currentIsVideo ? undefined : withImageSize(images[safeImageIndex], "max")}
                   imgClassName="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain"

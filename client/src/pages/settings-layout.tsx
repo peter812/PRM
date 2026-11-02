@@ -8,7 +8,6 @@ const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
 const UnifiedSetupPage = lazy(() => import("@/pages/unified-setup-page"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
-const LooksSettingsPage = lazy(() => import("@/pages/looks-settings"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
 const DataTypesPage = lazy(() => import("@/pages/data-types"));
 const ApiSettingsPage = lazy(() => import("@/pages/api-settings"));
@@ -57,7 +56,6 @@ export default function SettingsLayout() {
           <Route path="/setup" component={UnifiedSetupPage} />
           <Route path="/user" component={UserOptionsPage} />
           <Route path="/app" component={AppOptionsPage} />
-          <Route path="/looks" component={LooksSettingsPage} />
           <Route path="/search" component={SearchSettingsPage} />
           <Route path="/maps" component={MapsSettingsPage} />
           <Route path="/data-types" component={DataTypesPage} />

@@ -13,3 +13,4 @@ vite.config.ts.*
 /graphify-out/
 .agents/rules/graphify.md
 .agents/workflows/graphify.md
+/.prm-dev/

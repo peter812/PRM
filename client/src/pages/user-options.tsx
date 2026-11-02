@@ -20,7 +20,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect, useRef } from "react";
-import { Eye, EyeOff, Copy, Check } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Eye, EyeOff, Copy, Check, ChevronDown } from "lucide-react";
 
 const updateUserSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -424,9 +425,18 @@ export default function UserOptionsPage() {
                 )}
               />
 
-              <div className="space-y-4">
-                <h3 className="text-sm font-medium">OAuth2 Provider Settings</h3>
-                
+              <Collapsible className="rounded-md border">
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="group flex w-full items-center justify-between p-4 text-left"
+                    data-testid="toggle-oauth2-settings"
+                  >
+                    <span className="text-base font-medium">OAuth2 Provider Settings</span>
+                    <ChevronDown className="h-4 w-4 transition-transform group-data-[state=open]:rotate-180" />
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-4 px-4 pb-4">
                 <FormField
                   control={ssoForm.control}
                   name="clientId"
@@ -624,7 +634,8 @@ export default function UserOptionsPage() {
                     </FormItem>
                   )}
                 />
-              </div>
+                </CollapsibleContent>
+              </Collapsible>
 
               <Button
                 type="submit"

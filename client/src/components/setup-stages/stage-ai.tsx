@@ -3,16 +3,16 @@ import { useLoadOnce } from "@/hooks/use-load-once";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AiProvidersCard } from "@/components/ai-providers-card";
 import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/components/provider-model-picker";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { HEALTH_KEY, ServiceStatusBadge, type HealthResult } from "./service-status";
 import {
   Brain,
-  Database,
-  Mic,
+  BrainCircuit,
+  RefreshCw,
   Save,
   Loader2,
 } from "lucide-react";
@@ -21,7 +21,6 @@ type AiSettings = {
   vision: ModelSelection;
   text: ModelSelection;
   events: ModelSelection;
-  whisperModel: string;
 };
 
 const EMPTY: ModelSelection = { providerId: "", model: "" };
@@ -30,29 +29,23 @@ export function StageAi() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: aiSettings } = useQuery<AiSettings>({
-    queryKey: ["/api/ai/settings"],
+  // Same health query as the Sub-Services step; this stage shows only its AI providers entry
+  const { data: health, refetch: refetchHealth, isFetching: isHealthFetching } = useQuery<Record<string, HealthResult>>({
+    queryKey: HEALTH_KEY,
   });
 
-  const { data: vectorSettings } = useQuery<{ embeddingModel: string; embeddingProviderId: string }>({
-    queryKey: ["/api/vector/settings"],
+  const { data: aiSettings } = useQuery<AiSettings>({
+    queryKey: ["/api/ai/settings"],
   });
 
   const [text, setText] = useState<ModelSelection>(EMPTY);
   const [vision, setVision] = useState<ModelSelection>(EMPTY);
   const [events, setEvents] = useState<ModelSelection>(EMPTY);
-  const [embedding, setEmbedding] = useState<ModelSelection>(EMPTY);
-  const [whisperModel, setWhisperModel] = useState("");
 
   useLoadOnce(aiSettings, (s) => {
     setText(s.text);
     setVision(s.vision);
     setEvents(s.events);
-    setWhisperModel(s.whisperModel || "Systran/faster-distil-whisper-small.en");
-  });
-
-  useLoadOnce(vectorSettings, (s) => {
-    setEmbedding({ providerId: s.embeddingProviderId ?? "", model: s.embeddingModel || "" });
   });
 
   const saveAiMutation = useMutation({
@@ -61,19 +54,11 @@ export function StageAi() {
         text,
         vision,
         events,
-        whisperModel: whisperModel.trim(),
       });
 
-      if (embedding.model) {
-        await apiRequest("POST", "/api/vector/settings", {
-          embeddingModel: embedding.model,
-          embeddingProviderId: embedding.providerId,
-        });
-      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai/settings"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/vector/settings"] });
       toast({ title: "AI & Intelligence configuration saved" });
     },
     onError: (err: Error) => {
@@ -86,11 +71,38 @@ export function StageAi() {
       <div className="p-4 rounded-lg bg-muted/40 border">
         <h3 className="font-semibold text-base">AI & Intelligence Capabilities</h3>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Add AI providers, then pick models for chat, photo descriptions, journal event extraction, and search.
+          Add AI providers, then pick models for chat, photo descriptions, and journal event extraction.
         </p>
       </div>
 
       <div className="grid grid-cols-1 gap-4">
+        {/* Live status of every provider */}
+        <div className="rounded-lg border p-3 space-y-2 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 font-semibold text-sm">
+              <BrainCircuit className="h-4 w-4 text-amber-500" /> Provider Status
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <ServiceStatusBadge result={health?.ai} />
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7"
+                title="Test providers"
+                onClick={() => refetchHealth()}
+                disabled={isHealthFetching}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isHealthFetching ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+          </div>
+          {health?.ai?.message && (
+            <p className="text-muted-foreground bg-muted/50 p-2 rounded text-[11px] whitespace-pre-line">
+              {health.ai.message}
+            </p>
+          )}
+        </div>
+
         <AiProvidersCard />
 
         {/* 1. Language & Vision Models */}
@@ -119,48 +131,6 @@ export function StageAi() {
           </CardContent>
         </Card>
 
-        {/* 2. Semantic Search & Vector Embeddings */}
-        <Card className="border-border">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Database className="h-4 w-4 text-emerald-500" /> Vector Embeddings & Search
-            </CardTitle>
-            <CardDescription className="text-xs">
-              Powers semantic similarity search across all notes, daily logs, and people.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-1.5 pt-0 text-xs">
-            <Label className="text-xs">Embedding Model</Label>
-            <ProviderModelPicker value={embedding} onChange={setEmbedding} testId="setup-picker-embedding" />
-            <p className="text-[11px] text-muted-foreground">
-              e.g. all-minilm or nomic-embed-text on Ollama, text-embedding-3-small on OpenAI.
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* 3. Speech-to-Text (Whisper) */}
-        <Card className="border-border">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Mic className="h-4 w-4 text-rose-500" /> Voice & Speech Transcription
-            </CardTitle>
-            <CardDescription className="text-xs">
-              Whisper STT model used for transcribing voice notes and audio memos.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 pt-0 text-xs">
-            <div className="space-y-1.5">
-              <Label htmlFor="whisper-model" className="text-xs">Whisper Model</Label>
-              <Input
-                id="whisper-model"
-                placeholder="Systran/faster-distil-whisper-small.en"
-                value={whisperModel}
-                onChange={(e) => setWhisperModel(e.target.value)}
-                className="h-8 text-xs"
-              />
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       <div className="flex justify-end pt-2">

@@ -14,7 +14,7 @@ import type { HighlightWithStints, SocialAccountPost, StorySeenBy, TrackingJob }
 import { withImageSize } from "@shared/image-size";
 import { PostSummarySection } from "@/components/account-summary";
 import { VideoTranscript } from "@/components/video-transcript";
-import { PhotoFaces } from "@/components/photo-faces";
+import { PhotoFaces, postSlidesKey } from "@/components/photo-faces";
 
 /** What prm-stories puts in social_account_posts.metadata for a story. */
 interface StoryMetadata {
@@ -168,7 +168,7 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
           <div className="relative bg-black flex items-center justify-center md:w-[45%] shrink-0">
             {/* A video's faces are on its cover frame: showing them pauses it and draws the boxes on the poster. */}
             <PhotoFaces
-              postId={story.id}
+              slidesKey={postSlidesKey(story.id)}
               slide={0}
               src={withImageSize(image, 1080)}
               imgClassName="max-h-[85vh] object-contain"

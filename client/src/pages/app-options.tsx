@@ -1,11 +1,20 @@
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { getThemeMode, setThemeMode, type ThemeMode } from "@/lib/theme";
 import { Link } from "wouter";
-import { Network, Chrome, Key, Search, Sparkles, Layers, Trash2, ChevronRight } from "lucide-react";
+import { Network, Chrome, Key, Search, Sparkles, Layers, Trash2, ChevronRight, Monitor, Moon, Palette, Sun } from "lucide-react";
+
+const THEMES = [
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "System", icon: Monitor },
+] as const;
 
 const APP_OPTIONS = [
   {
@@ -54,6 +63,12 @@ const APP_OPTIONS = [
 
 export default function AppOptionsPage() {
   const { toast } = useToast();
+  const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
+
+  const handleThemeChange = (value: string) => {
+    setTheme(value as ThemeMode);
+    setThemeMode(value as ThemeMode);
+  };
 
   const { data: settings } = useQuery<Record<string, string | null>>({
     queryKey: ["/api/settings"],
@@ -87,6 +102,33 @@ export default function AppOptionsPage() {
         <p className="text-muted-foreground">
           Configure application-level settings and integrations.
         </p>
+      </div>
+
+      <div className="settings-cards-grid mb-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Palette className="h-5 w-5 text-muted-foreground" />
+              Color theme
+            </CardTitle>
+            <CardDescription>System follows your operating system's light/dark setting.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RadioGroup value={theme} onValueChange={handleThemeChange} className="grid grid-cols-3 gap-3">
+              {THEMES.map((t) => (
+                <Label
+                  key={t.value}
+                  htmlFor={`theme-${t.value}`}
+                  className="flex flex-col items-center gap-2 rounded-md border p-4 cursor-pointer hover:bg-accent has-[[data-state=checked]]:border-primary"
+                >
+                  <RadioGroupItem id={`theme-${t.value}`} value={t.value} className="sr-only" data-testid={`radio-theme-${t.value}`} />
+                  <t.icon className="h-5 w-5" />
+                  <span>{t.label}</span>
+                </Label>
+              ))}
+            </RadioGroup>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="settings-cards-grid">

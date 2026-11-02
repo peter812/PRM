@@ -29,7 +29,7 @@ import {
   type CaptureScope,
 } from "./social-account-history";
 import { followRename, instagramPkOf } from "./instagram-identity";
-import type { SocialAccount } from "@shared/schema";
+import type { ReferenceLocation, SocialAccount } from "@shared/schema";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -83,6 +83,8 @@ import {
   faces,
   facePairDismissals,
   imageQuestions,
+  referenceRecords,
+  referenceVectors,
   dailyNotes,
   dailyNoteEvents,
   dailyNoteInvolvedParties,
@@ -546,6 +548,8 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     allPendingImports,
     allInsights,
     allOsintScans,
+    allReferenceRecords,
+    allReferenceVectors,
   ] = await Promise.all([
     db.select().from(schooling),
     db.select().from(subGroups),
@@ -556,6 +560,8 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     db.select().from(pendingSocialAccountImports),
     db.select().from(insights),
     db.select().from(osintScans),
+    db.select().from(referenceRecords),
+    db.select().from(referenceVectors),
   ]);
 
   const [
@@ -1074,6 +1080,23 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     chunks.push("    </image_question>\n");
   }
   chunks.push("  </image_questions>\n");
+
+  // ── References (record + PRM-Compute's embedding, same id) ──
+  const referenceEmbeddings = new Map(allReferenceVectors.map((v) => [v.id, v.embedding]));
+  chunks.push("  <references>\n");
+  for (const ref of allReferenceRecords) {
+    chunks.push("    <reference>\n");
+    chunks.push(`      ${xmlTag("id", ref.id)}\n`);
+    chunks.push(`      ${xmlTag("crop_url", ref.cropUrl)}\n`);
+    chunks.push(`      ${xmlTag("name", ref.name || "")}\n`);
+    chunks.push(`      ${xmlTag("role", ref.role || "")}\n`);
+    chunks.push(`      ${xmlTag("bio", ref.bio || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("location", ref.location)}\n`);
+    chunks.push(`      ${xmlJsonTag("embedding", referenceEmbeddings.get(ref.id) ?? null)}\n`);
+    chunks.push(`      ${xmlTag("collected_at", ref.collectedAt)}\n`);
+    chunks.push("    </reference>\n");
+  }
+  chunks.push("  </references>\n");
 
   // ── Lineages ──
   chunks.push("  <lineages>\n");
@@ -1689,6 +1712,7 @@ export async function executeImportXml(
     faces: 0,
     facePairDismissals: 0,
     imageQuestions: 0,
+    references: 0,
     lineages: 0,
     partnerships: 0,
     dailyNotes: 0,
@@ -2730,6 +2754,29 @@ export async function executeImportXml(
     });
   }
   importedCounts.imageQuestions += await insertBatchWithFallback(imageQuestions, imageQuestionsBatch, "image_questions");
+
+  // ── References (records before vectors: PRM-Compute sweeps vectors with no record) ──
+  const referenceRecordsBatch: (typeof referenceRecords.$inferInsert)[] = [];
+  const referenceVectorsBatch: (typeof referenceVectors.$inferInsert)[] = [];
+  for (const block of sectionEntries(xml, "references", "reference")) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const cropUrl = unescapeXml(parseXmlTag("crop_url", block));
+    if (!id || !cropUrl) continue;
+    const collectedAt = parseOptDate(block, "collected_at") ?? new Date();
+    referenceRecordsBatch.push({
+      id,
+      cropUrl,
+      name: parseOptStr(block, "name"),
+      role: parseOptStr(block, "role"),
+      bio: parseOptStr(block, "bio"),
+      location: parseOptJson<ReferenceLocation>(block, "location", { type: "Other" }),
+      collectedAt,
+    });
+    const embedding = parseOptJson<number[]>(block, "embedding", []);
+    if (embedding.length > 0) referenceVectorsBatch.push({ id, embedding, createdAt: collectedAt });
+  }
+  importedCounts.references += await insertBatchWithFallback(referenceRecords, referenceRecordsBatch, "reference_records");
+  await insertBatchWithFallback(referenceVectors, referenceVectorsBatch, "reference_vectors");
 
   await onProgress?.(78, "Importing OSINT, story importers, messages & geocodes…");
 

@@ -35,11 +35,9 @@ const COLORS = [
 interface PhotoUploadDialogProps {
   open: boolean;
   onClose: () => void;
-  /** When set, skip upload and detect faces on this existing photo. */
-  existingPhoto?: { id: string; imageUrl: string };
 }
 
-export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadDialogProps) {
+export function PhotoUploadDialog({ open, onClose }: PhotoUploadDialogProps) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -88,11 +86,6 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
       setFilterTextMap({});
       setNewPersonNameMap({});
       setAiDescription("");
-
-      if (existingPhoto) {
-        setImageDataUrl(existingPhoto.imageUrl);
-        detectExistingMutation.mutate(existingPhoto);
-      }
     }
   }, [open]);
 
@@ -191,55 +184,6 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
     },
   });
 
-  const detectExistingMutation = useMutation({
-    mutationFn: async (photo: { id: string; imageUrl: string }) => {
-      const res = await fetch(`/api/photos/${photo.id}/run-face-recog`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: "Unknown error" }));
-        throw new Error(body.error || `Server returned ${res.status}`);
-      }
-      return res.json() as Promise<{
-        imageUrl: string;
-        photoId: string;
-        faceDetection: { faces_detected: number; results: FaceResult[] };
-      }>;
-    },
-    onSuccess: (data) => {
-      setPhotoId(data.photoId);
-      setImageUrl(data.imageUrl);
-      setImageDataUrl(data.imageUrl);
-      const results = data.faceDetection.results || [];
-      setFaces(results);
-      const initialAssignments: typeof assignments = {};
-      results.forEach((face) => {
-        initialAssignments[face.face_index] = {
-          faceUuid: face.face_uuid,
-          coordinates: face.box,
-          resolution: face.person_uuid ? "known_person" : "unknown",
-          personId: face.person_uuid || undefined,
-        };
-      });
-      setAssignments(initialAssignments);
-      setStep("identify");
-      toast({
-        title: "Detection Complete",
-        description: `Found ${results.length} face(s).`,
-      });
-    },
-    onError: (err: Error) => {
-      toast({
-        title: "Face detection failed",
-        description: err.message,
-        variant: "destructive",
-      });
-      onClose();
-    },
-  });
-
   // Save assignments & run optional AI description
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -288,12 +232,10 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
           <div>
             <DialogTitle className="text-xl font-semibold flex items-center gap-2">
               <Scan className="h-5 w-5" />
-              {existingPhoto ? "Run Facial Recognition" : "Upload & Identify Scene Photo"}
+              Upload & Identify Scene Photo
             </DialogTitle>
             <DialogDescription>
-              {existingPhoto
-                ? "Detecting and identifying faces in this image."
-                : "Upload a scene photo to automatically detect and index faces in your CRM."}
+              Upload a scene photo to automatically detect and index faces in your CRM.
             </DialogDescription>
           </div>
           {step !== "saving" && (
@@ -306,13 +248,13 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
         {/* 1. Uploading State */}
         {step === "upload" && (
           <div className="flex-1 flex flex-col items-center justify-center p-12 space-y-6">
-            {(uploadMutation.isPending || !!existingPhoto) ? (
+            {uploadMutation.isPending ? (
               <div className="flex flex-col items-center gap-4 text-center">
                 <Loader2 className="h-12 w-12 animate-spin text-primary" />
                 <div>
-                  <h3 className="font-semibold text-lg">{existingPhoto ? "Detecting Faces..." : "Processing Photo..."}</h3>
+                  <h3 className="font-semibold text-lg">Processing Photo...</h3>
                   <p className="text-sm text-muted-foreground">
-                    {existingPhoto ? "Scanning image for faces" : "Uploading image and scanning for faces"}
+                    Uploading image and scanning for faces
                   </p>
                 </div>
               </div>

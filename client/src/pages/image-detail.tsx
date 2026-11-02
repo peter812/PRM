@@ -1,15 +1,14 @@
 import { formatPersonName } from "@shared/person-name";
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRoute, useLocation } from "wouter";
-import { Loader2, ChevronLeft, ImageOff, CheckCircle2, XCircle, ExternalLink, Trash2, Scan, Clock } from "lucide-react";
+import { Loader2, ChevronLeft, ImageOff, CheckCircle2, XCircle, ExternalLink, Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import type { Photo, Person, SocialAccountWithCurrentProfile } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
 import { Button } from "@/components/ui/button";
 import { imageDetailHref } from "@/lib/image-link";
 import { useToast } from "@/hooks/use-toast";
-import { ToastAction } from "@/components/ui/toast";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,15 +19,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
+import { PhotoFaces, photoFacesKey } from "@/components/photo-faces";
+import { faceColor } from "@/components/face-box-overlay";
 import { OcrRunDialog, isOcrData } from "@/components/ocr-run-dialog";
 import { ReferenceMatchesDialog, type ReferenceProbe } from "@/components/reference-matches-dialog";
 
@@ -37,19 +29,19 @@ function formatDate(d: string | Date | null | undefined): string {
   return format(new Date(d), "MMM d, yyyy HH:mm:ss");
 }
 
-function StatusChip({ label, value, onClick, testId }: { label: string; value: boolean; onClick?: () => void; testId?: string }) {
-  const Icon = value ? CheckCircle2 : XCircle;
+function StatusChip({ label, value, busy, onClick, testId }: { label: string; value: boolean; busy?: boolean; onClick?: () => void; testId?: string }) {
+  const Icon = busy ? Loader2 : value ? CheckCircle2 : XCircle;
   return (
     <span
-      onClick={onClick}
+      onClick={busy ? undefined : onClick}
       className={
         "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-white " +
         (value ? "bg-green-600" : "bg-red-600") +
-        (onClick ? " cursor-pointer hover:opacity-90 active:scale-95 transition-all" : "")
+        (onClick && !busy ? " cursor-pointer hover:opacity-90 active:scale-95 transition-all" : "")
       }
       data-testid={testId}
     >
-      <Icon className="h-3.5 w-3.5" />
+      <Icon className={"h-3.5 w-3.5" + (busy ? " animate-spin" : "")} />
       {label}
     </span>
   );
@@ -84,8 +76,6 @@ function isFacialIdsArray(v: unknown): v is FacialIdEntry[] {
   return Array.isArray(v);
 }
 
-const COLORS = ["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6"];
-
 function useBackHref(currentId: string): { href: string; label: string } {
   const search = typeof window !== "undefined" ? window.location.search : "";
   const from = new URLSearchParams(search).get("from");
@@ -104,6 +94,8 @@ export interface ResolvedPhotoSource {
   label: string;
   href: string;
   sublabel?: string;
+  /** The post's stored video, when this photo is its cover frame. */
+  videoUrl?: string;
 }
 
 export type PhotoWithSource = Photo & {
@@ -122,42 +114,23 @@ export default function ImageDetailPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
 
-  const [showConfirmRecog, setShowConfirmRecog] = useState(false);
-  const [showForegroundRecog, setShowForegroundRecog] = useState(false);
   const [showOcr, setShowOcr] = useState(false);
   const [referenceProbe, setReferenceProbe] = useState<ReferenceProbe | null>(null);
-  const [isRunningBackground, setIsRunningBackground] = useState(false);
+  const [isRunningRecog, setIsRunningRecog] = useState(false);
+  const [showFaces, setShowFaces] = useState(false);
 
-  const handleRunBackground = async () => {
-    setIsRunningBackground(true);
-    setShowConfirmRecog(false);
+  // No dialog: the scan runs while the page stays usable, and the page refreshes when it's back.
+  const runFaceRecog = async () => {
+    setIsRunningRecog(true);
     try {
-      const res = await fetch(`/api/photos/${id}/run-face-recog`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ background: true }),
-      });
+      const res = await fetch(`/api/photos/${id}/run-face-recog`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: "Unknown error" }));
         throw new Error(body.error || `Server returned ${res.status}`);
       }
-      const data = await res.json();
-      
       queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
+      queryClient.invalidateQueries({ queryKey: photoFacesKey(id) });
       queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
-
-      toast({
-        title: "Facial Recog Complete",
-        description: `Successfully detected ${data.facesDetected} face(s) in the background.`,
-        action: (
-          <ToastAction altText="View Results" onClick={() => {
-            queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
-            setLocation(`/image/${id}`);
-          }}>
-            View Results
-          </ToastAction>
-        ),
-      });
     } catch (err: any) {
       toast({
         title: "Facial Recog Failed",
@@ -165,7 +138,7 @@ export default function ImageDetailPage() {
         variant: "destructive",
       });
     } finally {
-      setIsRunningBackground(false);
+      setIsRunningRecog(false);
     }
   };
 
@@ -198,10 +171,6 @@ export default function ImageDetailPage() {
     }
   };
 
-  const [showBoundingBoxes, setShowBoundingBoxes] = useState(false);
-  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
-
   const { data: people = [] } = useQuery<Person[]>({
     queryKey: ["/api/people"],
   });
@@ -212,18 +181,6 @@ export default function ImageDetailPage() {
 
   const peopleMap = new Map(people.map((p) => [p.id, p]));
   const socialMap = new Map(socialAccounts.map((s) => [s.id, s]));
-
-  const handleImageLoad = () => {
-    if (!imgRef.current) return;
-    setNaturalSize({ w: imgRef.current.naturalWidth, h: imgRef.current.naturalHeight });
-  };
-
-  const pctBox = (box: { x: number; y: number; w: number; h: number }, nat: { w: number; h: number }) => ({
-    left: `${(box.x / nat.w) * 100}%`,
-    top: `${(box.y / nat.h) * 100}%`,
-    width: `${(box.w / nat.w) * 100}%`,
-    height: `${(box.h / nat.h) * 100}%`,
-  });
 
   const { data: photo, isLoading, error } = useQuery<PhotoWithSource>({
     queryKey: [`/api/photos/${id}`],
@@ -310,6 +267,25 @@ export default function ImageDetailPage() {
   })();
 
   const resolvedSource = photo.source ?? clientSource;
+  const videoUrl = photo.source?.videoUrl;
+  const media = videoUrl ? (
+    <video
+      key={videoUrl}
+      src={videoUrl}
+      poster={withImageSize(photo.location, "max")}
+      controls
+      playsInline
+      className="max-h-[560px] w-auto object-contain block"
+      data-testid="video-photo"
+    />
+  ) : (
+    <img
+      src={withImageSize(photo.location, "max")}
+      alt={photo.imageDescription || photo.id}
+      className="max-h-[560px] w-auto object-contain block"
+      data-testid="img-photo"
+    />
+  );
 
   return (
     <div className="container max-w-4xl py-6 px-4 overflow-y-auto h-full">
@@ -322,16 +298,6 @@ export default function ImageDetailPage() {
           <ChevronLeft className="h-4 w-4 mr-1" /> {back.label}
         </Link>
         <div className="flex items-center gap-2">
-          {hasFaceRecog && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}
-              data-testid="btn-toggle-bounds"
-            >
-              {showBoundingBoxes ? "Hide bounds" : "Show bounds"}
-            </Button>
-          )}
           <Button asChild variant="outline" size="sm">
             <a href={photo.location} target="_blank" rel="noreferrer" data-testid="link-open-original">
               <ExternalLink className="h-4 w-4 mr-1" />
@@ -363,53 +329,22 @@ export default function ImageDetailPage() {
       {/* Image at the top */}
       <div className="border rounded-md overflow-hidden bg-muted/30 flex items-center justify-center mb-6">
         <div className="relative inline-block max-w-full">
-          <img
-            ref={imgRef}
-            src={withImageSize(photo.location, "max")}
-            alt={photo.imageDescription || photo.id}
-            className="max-h-[560px] w-auto object-contain block"
-            onLoad={handleImageLoad}
-            data-testid="img-photo"
-          />
-          {showBoundingBoxes && naturalSize && facialIds.map((face, i) => {
-            if (!face.coordinates) return null;
-            const pos = pctBox(face.coordinates, naturalSize);
-            const color = COLORS[i % COLORS.length];
-            return (
-              <div
-                key={face.faceUuid || i}
-                style={{
-                  position: "absolute",
-                  left: pos.left,
-                  top: pos.top,
-                  width: pos.width,
-                  height: pos.height,
-                  border: `2.5px solid ${color}`,
-                  borderRadius: 3,
-                  boxSizing: "border-box",
-                  pointerEvents: "none",
-                }}
-              >
-                <span
-                  style={{
-                    position: "absolute",
-                    top: 2,
-                    right: 2,
-                    background: color,
-                    color: "#fff",
-                    fontSize: 10,
-                    fontWeight: 700,
-                    lineHeight: 1,
-                    padding: "2px 4px",
-                    borderRadius: 2,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {i + 1}
-                </span>
-              </div>
-            );
-          })}
+          {hasFaceRecog ? (
+            // Face boxes are drawn on the cover frame, so showing them swaps the video for it.
+            <PhotoFaces
+              slidesKey={photoFacesKey(id)}
+              slide={0}
+              src={withImageSize(photo.location, "max")}
+              imgClassName="max-h-[560px] w-auto object-contain"
+              mentions={[]}
+              show={showFaces}
+              onShowChange={setShowFaces}
+            >
+              {media}
+            </PhotoFaces>
+          ) : (
+            media
+          )}
         </div>
       </div>
       {(photo.widthPx || photo.heightPx) && (
@@ -421,7 +356,13 @@ export default function ImageDetailPage() {
       {/* Status chips */}
       <div className="flex flex-wrap gap-2 mb-4" data-testid="group-status-chips">
         <StatusChip label="AI desc" value={hasAiDescription} testId="chip-ai-status" />
-        <StatusChip label="Face recog" value={hasFaceRecog} onClick={() => setShowConfirmRecog(true)} testId="chip-face-recog" />
+        <StatusChip
+          label="Face recog"
+          value={hasFaceRecog}
+          busy={isRunningRecog}
+          onClick={hasFaceRecog ? () => setShowFaces(!showFaces) : runFaceRecog}
+          testId="chip-face-recog"
+        />
         <StatusChip label="OCR" value={hasOcr} onClick={() => setShowOcr(true)} testId="chip-ocr" />
         <StatusChip label="Sub image" value={!!photo.isSubImage} testId="chip-sub-image" />
       </div>
@@ -454,10 +395,12 @@ export default function ImageDetailPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setShowConfirmRecog(true)}
+              onClick={runFaceRecog}
+              disabled={isRunningRecog}
               data-testid="btn-run-recognition"
             >
-              Run Recognition
+              {isRunningRecog && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              {isRunningRecog ? "Scanning…" : "Run Recognition"}
             </Button>
           )}
         </div>
@@ -469,7 +412,7 @@ export default function ImageDetailPage() {
           ) : (
             <ul className="space-y-2 py-1" data-testid="list-facial-recog">
               {facialIds.map((face, i) => {
-                const color = COLORS[i % COLORS.length];
+                const color = faceColor(i);
                 const person = face.personId ? peopleMap.get(face.personId) : null;
                 const social = face.socialAccountId ? socialMap.get(face.socialAccountId) : null;
 
@@ -626,6 +569,22 @@ export default function ImageDetailPage() {
               </a>
             }
           />
+          {videoUrl && (
+            <MetaRow
+              label="Video URL"
+              value={
+                <a
+                  href={videoUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary hover:underline break-all"
+                  data-testid="link-video-url"
+                >
+                  {videoUrl}
+                </a>
+              }
+            />
+          )}
           <MetaRow label="Image UUID" value={photo.id} mono testId="text-image-uuid" />
         </div>
       </div>
@@ -700,82 +659,6 @@ export default function ImageDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Confirmation Dialog for Face Recognition */}
-      <Dialog open={showConfirmRecog} onOpenChange={setShowConfirmRecog}>
-        <DialogContent className="max-w-md w-full">
-          <DialogHeader>
-            <DialogTitle className="text-lg font-semibold flex items-center gap-2 animate-fade-in">
-              <Scan className="h-5 w-5 text-primary" />
-              {hasFaceRecog ? "Re-run Facial Recognition?" : "Run Facial Recognition?"}
-            </DialogTitle>
-            <DialogDescription className="mt-2 text-sm text-muted-foreground">
-              {hasFaceRecog 
-                ? "This image already has facial recognition results. Do you want to re-run detection? Old Assignments will be replaced."
-                : "Confirm you want to run facial recognition on this image."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 py-4">
-            <button
-              onClick={() => {
-                setShowConfirmRecog(false);
-                setShowForegroundRecog(true);
-              }}
-              className="flex items-start gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 text-left transition-all hover:border-primary/50 group"
-            >
-              <div className="p-2 rounded-md bg-primary/10 text-primary group-hover:bg-primary/20 transition-all shrink-0">
-                <Scan className="h-5 w-5 animate-pulse" />
-              </div>
-              <div>
-                <div className="font-semibold text-sm">Interactive Mode (Foreground)</div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Run detection and identify people immediately in a pop-up dialog.
-                </div>
-              </div>
-            </button>
-
-            <button
-              onClick={handleRunBackground}
-              disabled={isRunningBackground}
-              className="flex items-start gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 text-left transition-all hover:border-primary/50 group"
-            >
-              <div className="p-2 rounded-md bg-green-500/10 text-green-600 group-hover:bg-green-500/20 transition-all shrink-0">
-                <Clock className="h-5 w-5" />
-              </div>
-              <div className="flex-1">
-                <div className="font-semibold text-sm flex items-center gap-1.5 justify-between">
-                  <span>Background Mode</span>
-                  {isRunningBackground && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Run detection silently. You'll get a notification when finished.
-                </div>
-              </div>
-            </button>
-          </div>
-          <DialogFooter className="sm:justify-start">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setShowConfirmRecog(false)}
-            >
-              Cancel
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Foreground Interactive Face Recog Dialog */}
-      {photo && (
-        <PhotoUploadDialog
-          open={showForegroundRecog}
-          onClose={() => {
-            setShowForegroundRecog(false);
-            queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
-          }}
-          existingPhoto={{ id, imageUrl: photo.location }}
-        />
-      )}
 
       {/* OCR Dialog */}
       {photo && (

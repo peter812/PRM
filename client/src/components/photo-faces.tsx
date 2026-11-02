@@ -1,4 +1,4 @@
-// Identify faces on one photo of a post or story, in its modal (photo-faces-plan.md §2–§4): the
+// Identify faces on one photo of a post or story in its modal, or on the image page (photo-faces-plan.md §2–§4): the
 // ScanFace toggle, the faces & mentions panel, face boxes, a popover per clicked box that names,
 // renames, confirms, removes or skips that face through the Face review endpoints, and drawing a
 // box around a face the scanner missed.
@@ -37,6 +37,8 @@ export type PostSlide = {
 };
 
 export const postSlidesKey = (postId: string) => [`/api/social-account-posts/${postId}/slides`];
+/** The image page's one photo, as a one-slide list (slide 0). */
+export const photoFacesKey = (photoId: string) => [`/api/photos/${photoId}/faces`];
 
 type FaceEdit = {
   path: "assign" | "unassign" | "dismiss" | "undismiss";
@@ -55,15 +57,17 @@ const isOpen = (f: FaceReviewFace) => !!f.box && !f.identified && !f.dismissed;
 
 type FaceReviewReply = { faces: FaceReviewFace[]; suggestions: FaceReviewSuggestion[] };
 
-// Face review's queues and counts, the faces lists, and the account's Faces tab.
+// Face review's queues and counts, the faces lists, the account's Faces tab, and the image page.
 const invalidateFaceLists = () =>
   queryClient.invalidateQueries({
     predicate: ({ queryKey: [k] }) =>
-      typeof k === "string" && (k.startsWith("/api/face-review") || k.startsWith("/api/faces") || /^\/api\/social-accounts\/[^/]+\/faces/.test(k)),
+      typeof k === "string" &&
+      (k.startsWith("/api/face-review") || k.startsWith("/api/faces") || /^\/api\/social-accounts\/[^/]+\/faces/.test(k) || /^\/api\/photos\/[^/]+$/.test(k)),
   });
 
-export function PhotoFaces({ postId, slide, src, imgClassName, mentions, show, onShowChange, onNavigate, children }: {
-  postId: string;
+export function PhotoFaces({ slidesKey: key, slide, src, imgClassName, mentions, show, onShowChange, onNavigate, children }: {
+  /** postSlidesKey or photoFacesKey: the query holding this photo's PostSlide list. */
+  slidesKey: string[];
   slide: number;
   /** The photo to draw boxes on; unset (a video slide) shows only the panel. */
   src?: string;
@@ -78,7 +82,6 @@ export function PhotoFaces({ postId, slide, src, imgClassName, mentions, show, o
   children: ReactNode;
 }) {
   const { toast } = useToast();
-  const key = postSlidesKey(postId);
   const { data: slides } = useQuery<PostSlide[]>({ queryKey: key });
   // A story's single photo may carry no slide index; it's still the story's photo.
   const current = slides?.find((s) => s.slide === slide) ?? (slides?.length === 1 && slide === 0 ? slides[0] : undefined);
@@ -183,7 +186,7 @@ export function PhotoFaces({ postId, slide, src, imgClassName, mentions, show, o
     }
     setSelected(null);
     queryClient.invalidateQueries({ queryKey: key });
-    queryClient.invalidateQueries({ queryKey: ["/api/face-review"] });
+    invalidateFaceLists();
     toast({ title: "Face re-scan finished" });
   }, [task?.status]);
 

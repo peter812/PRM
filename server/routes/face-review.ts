@@ -14,7 +14,7 @@ import {
 } from "../recognition";
 import {
   FACE_REVIEW_KINDS, type FaceReviewKind,
-  getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto, accountForHandle,
+  getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto, accountForHandle, getPhotoFaceAnalysis,
 } from "../face-review";
 import {
   runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces, identityKey,
@@ -285,6 +285,17 @@ export function registerFaceReview(app: Express) {
       res.json(item);
     } catch (error) {
       fail(res, "load face review item", error);
+    }
+  });
+
+  // The image page's face panel: one photo's faces as a one-slide list (getPhotoFaceAnalysis).
+  app.get("/api/photos/:id/faces", requireAuth, async (req, res) => {
+    try {
+      const slides = await getPhotoFaceAnalysis(req.params.id);
+      if (!slides) return res.status(404).json({ error: "Photo not found" });
+      res.json(slides);
+    } catch (error) {
+      fail(res, "load photo faces", error);
     }
   });
 

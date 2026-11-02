@@ -18,6 +18,8 @@ export interface ResolvedPhotoSource {
   label: string;
   href: string;
   sublabel?: string;
+  /** The post's stored video, when this photo is its cover frame. */
+  videoUrl?: string;
 }
 
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
@@ -245,6 +247,8 @@ export async function resolvePhotoSources(photos: Photo[]): Promise<Map<string, 
           id: socialAccountPosts.id,
           socialAccountId: socialAccountPosts.socialAccountId,
           postType: socialAccountPosts.postType,
+          content: socialAccountPosts.content,
+          videoUrl: sql<string | null>`${socialAccountPosts.metadata}->>'videoUrl'`,
         })
         .from(socialAccountPosts)
         .where(inArray(socialAccountPosts.id, postTargetIds));
@@ -268,11 +272,15 @@ export async function resolvePhotoSources(photos: Photo[]): Promise<Map<string, 
                 const tab = isStory ? "stories" : "posts";
                 const typeLabel = isStory ? "Story" : "Post";
                 const handle = account.username ? ` (@${account.username})` : "";
+                // The video belongs to the post's first slide, its cover frame.
+                let cover: string | undefined;
+                try { if (post.videoUrl) cover = JSON.parse(post.content ?? "[]")[0]; } catch {}
                 result.set(p.photo.id, {
                   type: isStory ? "story" : "post",
                   id: post.id,
                   label: `${typeLabel}${handle}`,
                   href: `/social-accounts/${post.socialAccountId}?tab=${tab}&postId=${post.id}`,
+                  ...(cover && cover === p.locationUrl ? { videoUrl: post.videoUrl! } : {}),
                 });
               }
             }

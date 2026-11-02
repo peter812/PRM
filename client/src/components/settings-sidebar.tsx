@@ -31,7 +31,6 @@ import {
   Server,
   History,
   Globe,
-  Palette,
   ScrollText,
 } from "lucide-react";
 import {
@@ -87,7 +86,6 @@ export const settingsMenuItems: MenuItem[] = [
     url: "/settings/app",
     icon: Settings,
     subItems: [
-      { title: "Looks", url: "/settings/looks", icon: Palette },
       { title: "Social Graph", url: "/settings/social-graph", icon: Network },
       { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
       { title: "Search Options", url: "/settings/search", icon: Search },
@@ -172,7 +170,6 @@ export function SettingsSidebar() {
   const isInstagramActive = location.startsWith("/settings/instagram");
   const isAppOptionsActive =
     location.startsWith("/settings/app") ||
-    location.startsWith("/settings/looks") ||
     location.startsWith("/settings/social-graph") ||
     location.startsWith("/settings/chrome-extension") ||
     location.startsWith("/settings/search") ||

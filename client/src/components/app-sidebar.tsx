@@ -167,6 +167,11 @@ const menuItems = [
         icon: Globe,
       },
       {
+        title: "References",
+        url: "/demos/references",
+        icon: ScanFace,
+      },
+      {
         title: "ELO Ranking",
         url: "/demos/elo-ranking",
         icon: Trophy,

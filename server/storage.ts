@@ -5230,7 +5230,7 @@ export class DatabaseStorage implements IStorage {
     return photo || undefined;
   }
 
-  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean } = {}): Promise<{ items: Photo[]; total: number }> {
+  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean } = {}): Promise<{ items: (Photo & { isVideo: boolean })[]; total: number }> {
     const { prmLocationPrefix, limit = 100, offset = 0, excludeSubImages } = options;
     
     const conditions = [];
@@ -5247,8 +5247,16 @@ export class DatabaseStorage implements IStorage {
 
     // id tiebreaker: photos imported in bulk share uploadedAt, and without a total order
     // offset pages can overlap (duplicate rows across pages).
+    // isVideo: the photo is the cover frame (first slide) of a post with a stored
+    // video — the same rule resolvePhotoSources uses to hand the image page its video.
+    const isVideo = sql<boolean>`${photos.prmLocation} LIKE 'post:%' AND EXISTS (
+      SELECT 1 FROM ${socialAccountPosts} p
+      WHERE p.id = substring(${photos.prmLocation} from 6)
+        AND p.metadata->>'videoUrl' IS NOT NULL
+        AND starts_with(p.content, '[' || to_json(${photos.location})::text)
+    )`;
     const [items, countResult] = await Promise.all([
-      db.select().from(photos).where(whereCondition).orderBy(desc(photos.uploadedAt), desc(photos.id)).limit(limit).offset(offset),
+      db.select({ ...getTableColumns(photos), isVideo }).from(photos).where(whereCondition).orderBy(desc(photos.uploadedAt), desc(photos.id)).limit(limit).offset(offset),
       db.select({ count: sql<number>`count(*)::int` }).from(photos).where(whereCondition),
     ]);
 

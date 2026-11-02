@@ -1,38 +1,24 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "wouter";
+import { ImporterList } from "@/components/instagram-importer-list";
+import { HEALTH_KEY, ServiceStatusBadge, type HealthResult } from "./service-status";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
   HardDrive,
   Scan,
-  BrainCircuit,
-  Database,
-  Mic,
+  Instagram,
   ExternalLink,
   RefreshCw,
-  CheckCircle2,
-  AlertTriangle,
-  XCircle,
-  HelpCircle,
   Loader2,
   Terminal,
   Save,
 } from "lucide-react";
-
-type HealthStatus = "online" | "degraded" | "offline" | "not_configured" | "testing";
-
-interface HealthResult {
-  ok: boolean;
-  status: HealthStatus;
-  message: string;
-  details?: Record<string, any>;
-}
 
 export function StageServices() {
   const { toast } = useToast();
@@ -45,7 +31,7 @@ export function StageServices() {
     refetch: refetchHealth,
     isFetching: isHealthFetching,
   } = useQuery<Record<string, HealthResult>>({
-    queryKey: ["/api/setup/services/health"],
+    queryKey: HEALTH_KEY,
     refetchInterval: false,
   });
 
@@ -65,25 +51,12 @@ export function StageServices() {
     queryKey: ["/api/prm-compute/settings"],
   });
 
-  const { data: vectorSettings } = useQuery<{
-    enabled: boolean;
-    qdrantUrl: string;
-    collectionName: string;
-  }>({
-    queryKey: ["/api/vector/settings"],
-  });
-
   // Local Form States
   const [s3Endpoint, setS3Endpoint] = useState<string>("");
   const [s3Bucket, setS3Bucket] = useState<string>("");
 
   const [computeUrl, setComputeUrl] = useState<string>("");
   const [computeSetupCode, setComputeSetupCode] = useState<string>("");
-
-  const [vectorEnabled, setVectorEnabled] = useState<boolean>(true);
-  const [vectorUrl, setVectorUrl] = useState<string>("");
-
-  const [whisperUrl, setWhisperUrl] = useState<string>("");
 
   // Populate from query results when loaded
   useEffect(() => {
@@ -99,12 +72,6 @@ export function StageServices() {
     }
   }, [computeSettings]);
 
-  useEffect(() => {
-    if (vectorSettings) {
-      setVectorEnabled(vectorSettings.enabled ?? true);
-      setVectorUrl(vectorSettings.qdrantUrl || "http://localhost:6333");
-    }
-  }, [vectorSettings]);
 
   // Individual test states
   const [testingService, setTestingService] = useState<string | null>(null);
@@ -139,36 +106,6 @@ export function StageServices() {
     },
   });
 
-  const saveVectorMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/vector/settings", {
-        enabled: vectorEnabled,
-        qdrantUrl: vectorUrl || "http://localhost:6333",
-        collectionName: vectorSettings?.collectionName || "people_vectors",
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/vector/settings"] });
-      refetchHealth();
-      toast({ title: "Vector DB settings saved" });
-    },
-  });
-
-  const saveWhisperMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ai/settings", {
-        whisperApiUrl: whisperUrl || "http://localhost:8000",
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/ai/settings"] });
-      refetchHealth();
-      toast({ title: "Whisper settings saved" });
-    },
-  });
-
   // Single test handler
   const handleTestService = async (service: string) => {
     setTestingService(service);
@@ -189,22 +126,6 @@ export function StageServices() {
           description: data.message,
           variant: data.ok ? "default" : "destructive",
         });
-      } else if (service === "vector") {
-        const res = await apiRequest("POST", "/api/vector/test");
-        const data = await res.json();
-        toast({
-          title: data.ok ? "Qdrant Connected" : "Qdrant Test Failed",
-          description: data.message,
-          variant: data.ok ? "default" : "destructive",
-        });
-      } else if (service === "whisper") {
-        const res = await apiRequest("POST", "/api/whisper/test", { apiUrl: whisperUrl });
-        const data = await res.json();
-        toast({
-          title: data.ok ? "Whisper Connected" : "Whisper Test Failed",
-          description: data.message,
-          variant: data.ok ? "default" : "destructive",
-        });
       }
       refetchHealth();
     } catch (err: any) {
@@ -218,42 +139,6 @@ export function StageServices() {
     }
   };
 
-  const renderStatusBadge = (res?: HealthResult) => {
-    if (!res) {
-      return (
-        <Badge variant="outline" className="gap-1 text-muted-foreground border-dashed">
-          <HelpCircle className="h-3 w-3" /> Unknown
-        </Badge>
-      );
-    }
-    if (res.status === "online") {
-      return (
-        <Badge className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1">
-          <CheckCircle2 className="h-3 w-3" /> Online
-        </Badge>
-      );
-    }
-    if (res.status === "degraded") {
-      return (
-        <Badge className="bg-amber-600 hover:bg-amber-700 text-white gap-1">
-          <AlertTriangle className="h-3 w-3" /> Setup Needed
-        </Badge>
-      );
-    }
-    if (res.status === "not_configured") {
-      return (
-        <Badge variant="secondary" className="gap-1 text-muted-foreground">
-          <HelpCircle className="h-3 w-3" /> Unconfigured
-        </Badge>
-      );
-    }
-    return (
-      <Badge variant="destructive" className="gap-1">
-        <XCircle className="h-3 w-3" /> Offline
-      </Badge>
-    );
-  };
-
   return (
     <div className="space-y-6">
       {/* Header and Test All button */}
@@ -261,7 +146,7 @@ export function StageServices() {
         <div>
           <h3 className="font-semibold text-base">PRM Distributed Sub-Services</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            PRM uses companion microservices for storage, face recognition, vector search, and local AI.
+            PRM uses companion microservices for storage, face recognition, and Instagram stories.
           </p>
         </div>
         <Button
@@ -302,7 +187,7 @@ export function StageServices() {
                   </CardDescription>
                 </div>
               </div>
-              <div className="shrink-0">{renderStatusBadge(health?.s3)}</div>
+              <div className="shrink-0"><ServiceStatusBadge result={health?.s3} /></div>
             </div>
           </CardHeader>
           <CardContent className="space-y-3 pt-0 text-xs">
@@ -387,7 +272,7 @@ export function StageServices() {
                   </CardDescription>
                 </div>
               </div>
-              <div className="shrink-0">{renderStatusBadge(health?.compute)}</div>
+              <div className="shrink-0"><ServiceStatusBadge result={health?.compute} /></div>
             </div>
           </CardHeader>
           <CardContent className="space-y-3 pt-0 text-xs">
@@ -446,184 +331,40 @@ export function StageServices() {
           </CardContent>
         </Card>
 
-        {/* 3. AI providers */}
+        {/* 3. PRM-stories */}
         <Card className="border-border">
           <CardHeader className="pb-3">
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-md bg-amber-500/10 text-amber-500">
-                  <BrainCircuit className="h-5 w-5" />
+                <div className="p-2 rounded-md bg-pink-500/10 text-pink-500">
+                  <Instagram className="h-5 w-5" />
                 </div>
                 <div>
-                  <CardTitle className="text-base font-semibold">AI Providers</CardTitle>
+                  <CardTitle className="text-base font-semibold">PRM-stories (Instagram)</CardTitle>
                   <CardDescription className="text-xs">
-                    Ollama servers and OpenAI-compatible endpoints for chat, descriptions, and event extraction.
+                    Drives a logged-in Chrome window to collect Instagram stories and posts. One service per Instagram account.
                   </CardDescription>
                 </div>
               </div>
-              <div className="shrink-0">{renderStatusBadge(health?.ai)}</div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-2 pt-0 text-xs">
-            {health?.ai?.message && (
-              <p className="text-muted-foreground bg-muted/50 p-2 rounded text-[11px] whitespace-pre-line">
-                {health.ai.message}
-              </p>
-            )}
-            <p className="text-[11px] text-muted-foreground">
-              Add, test, and choose models for providers in the AI &amp; Intelligence step.
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* 4. Qdrant */}
-        <Card className="border-border">
-          <CardHeader className="pb-3">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-md bg-emerald-500/10 text-emerald-500">
-                  <Database className="h-5 w-5" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-semibold">Qdrant (Vector Database)</CardTitle>
-                    <a
-                      href="https://github.com/qdrant/qdrant"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 hover:underline"
-                    >
-                      GitHub <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </div>
-                  <CardDescription className="text-xs">
-                    Enables semantic natural-language search across notes, interactions, and faces.
-                  </CardDescription>
-                </div>
-              </div>
-              <div className="shrink-0">{renderStatusBadge(health?.vector)}</div>
+              <div className="shrink-0"><ServiceStatusBadge result={health?.stories} /></div>
             </div>
           </CardHeader>
           <CardContent className="space-y-3 pt-0 text-xs">
-            {health?.vector?.message && (
+            {health?.stories?.message && (
               <p className="text-muted-foreground bg-muted/50 p-2 rounded text-[11px]">
-                {health.vector.message}
+                {health.stories.message}
               </p>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
-              <div className="sm:col-span-2 space-y-1">
-                <Label htmlFor="qdrant-url" className="text-xs">Qdrant Host URL</Label>
-                <Input
-                  id="qdrant-url"
-                  className="h-8 text-xs"
-                  placeholder="http://localhost:6333"
-                  value={vectorUrl}
-                  onChange={(e) => setVectorUrl(e.target.value)}
-                />
-              </div>
-              <div className="flex items-center justify-between sm:justify-start gap-3 sm:pt-4">
-                <Label htmlFor="vector-enabled" className="text-xs cursor-pointer">Enable Vector DB</Label>
-                <Switch
-                  id="vector-enabled"
-                  checked={vectorEnabled}
-                  onCheckedChange={setVectorEnabled}
-                />
-              </div>
-            </div>
+            <ImporterList onChange={() => refetchHealth()} />
             <div className="flex items-center justify-between pt-1">
               <span className="text-[11px] text-muted-foreground flex items-center gap-1">
-                <Terminal className="h-3 w-3" /> Port 6333 (Docker: <code>qdrant/qdrant</code>)
+                <Terminal className="h-3 w-3" /> Port 5055 (Node / Chrome)
               </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-xs"
-                  onClick={() => handleTestService("vector")}
-                  disabled={testingService === "vector"}
-                >
-                  {testingService === "vector" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => saveVectorMutation.mutate()}
-                  disabled={saveVectorMutation.isPending}
-                >
-                  <Save className="h-3 w-3 mr-1" /> Save
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* 5. Whisper */}
-        <Card className="border-border">
-          <CardHeader className="pb-3">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-md bg-rose-500/10 text-rose-500">
-                  <Mic className="h-5 w-5" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-semibold">Whisper / Speaches (Speech-to-Text)</CardTitle>
-                    <a
-                      href="https://github.com/speaches-ai/speaches"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 hover:underline"
-                    >
-                      GitHub <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </div>
-                  <CardDescription className="text-xs">
-                    Transcribes audio voice notes and supports the voice dictation interface.
-                  </CardDescription>
-                </div>
-              </div>
-              <div className="shrink-0">{renderStatusBadge(health?.whisper)}</div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3 pt-0 text-xs">
-            {health?.whisper?.message && (
-              <p className="text-muted-foreground bg-muted/50 p-2 rounded text-[11px]">
-                {health.whisper.message}
-              </p>
-            )}
-            <div className="space-y-1">
-              <Label htmlFor="whisper-url" className="text-xs">Whisper API Endpoint</Label>
-              <Input
-                id="whisper-url"
-                className="h-8 text-xs"
-                placeholder="http://localhost:8000"
-                value={whisperUrl || "http://localhost:8000"}
-                onChange={(e) => setWhisperUrl(e.target.value)}
-              />
-            </div>
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[11px] text-muted-foreground flex items-center gap-1">
-                <Terminal className="h-3 w-3" /> Port 8000 (Speaches / Faster-Whisper)
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-xs"
-                  onClick={() => handleTestService("whisper")}
-                  disabled={testingService === "whisper"}
-                >
-                  {testingService === "whisper" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => saveWhisperMutation.mutate()}
-                  disabled={saveWhisperMutation.isPending}
-                >
-                  <Save className="h-3 w-3 mr-1" /> Save
-                </Button>
-              </div>
+              <Button asChild size="sm" variant="outline" className="h-7 text-xs">
+                <Link href="~/settings/instagram">
+                  Setup Guide <ExternalLink className="h-3 w-3 ml-1" />
+                </Link>
+              </Button>
             </div>
           </CardContent>
         </Card>

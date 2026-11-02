@@ -2,7 +2,6 @@ import type { Express } from "express";
 import { storage } from "../storage";
 import { listProviders, testProvider } from "../ai/provider";
 import { checkPrmS3Health } from "../prm-s3";
-import { testVectorConnection, getVectorSetting } from "../vector";
 import { db } from "../db";
 import { sql, eq, or } from "drizzle-orm";
 import { storyImporters } from "@shared/schema";
@@ -13,26 +12,6 @@ interface ServiceHealthResult {
   status: "online" | "degraded" | "offline" | "not_configured";
   message: string;
   details?: Record<string, any>;
-}
-
-function isSafeServiceUrl(urlStr: string): boolean {
-  try {
-    const u = new URL(urlStr);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
-    const host = u.hostname.toLowerCase();
-    // Block cloud metadata services and link-local addresses
-    if (
-      host === "169.254.169.254" ||
-      host === "metadata.google.internal" ||
-      host === "metadata.azure.com" ||
-      host.endsWith(".internal")
-    ) {
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function checkS3(): Promise<ServiceHealthResult> {
@@ -105,15 +84,14 @@ export function registerSetupServicesRoutes(app: Express) {
     res.json({ prm: p, s3, compute, stories: st });
   });
 
-  // Aggregated health check for all 5 sub-services
+  // Aggregated health check for the sub-services
   app.get("/api/setup/services/health", async (req, res) => {
     try {
       const results: Record<string, ServiceHealthResult> = {
         s3: { ok: false, status: "offline", message: "Checking S3..." },
         compute: { ok: false, status: "not_configured", message: "Checking PRM-Compute..." },
         ai: { ok: false, status: "not_configured", message: "Checking AI providers..." },
-        vector: { ok: false, status: "not_configured", message: "Checking Vector DB..." },
-        whisper: { ok: false, status: "not_configured", message: "Checking Whisper..." },
+        stories: { ok: false, status: "not_configured", message: "Checking PRM-stories..." },
       };
 
       // 1. PRM-S3 and 2. PRM Compute
@@ -145,89 +123,12 @@ export function registerSetupServicesRoutes(app: Express) {
         }
       })();
 
-      // 4. Qdrant / Vector
-      const vectorPromise = (async () => {
-        try {
-          const enabled = (await storage.getAppSetting("vector_enabled")) === "true";
-          const qdrantUrl = (await getVectorSetting("qdrant_url")) || "";
-          if (!qdrantUrl.trim()) {
-            results.vector = {
-              ok: false,
-              status: "not_configured",
-              message: "Qdrant URL not configured (default: http://localhost:6333)",
-            };
-            return;
-          }
-          const res = await testVectorConnection();
-          results.vector = {
-            ok: res.ok,
-            status: res.ok ? "online" : "offline",
-            message: res.message,
-            details: { enabled },
-          };
-        } catch (err: any) {
-          results.vector = {
-            ok: false,
-            status: "offline",
-            message: `Qdrant connection error: ${err.message}`,
-          };
-        }
-      })();
+      // 4. PRM-stories
+      const storiesPromise = checkStories()
+        .catch((err: any): ServiceHealthResult => ({ ok: false, status: "offline", message: err.message }))
+        .then((r) => (results.stories = r));
 
-      // 5. Whisper
-      const whisperPromise = (async () => {
-        try {
-          const apiUrl =
-            (await storage.getAppSetting("whisper_api_url")) ||
-            process.env.WHISPER_API_URL ||
-            "http://localhost:8000";
-          const base = apiUrl.replace(/\/+$/, "");
-          
-          let ok = false;
-          let message = "";
-          
-          try {
-            const resp = await fetch(`${base}/health`, { signal: AbortSignal.timeout(3000) });
-            if (resp.ok) {
-              ok = true;
-              message = "Whisper transcription service is online";
-            }
-          } catch {
-            try {
-              const resp2 = await fetch(`${base}/v1/models`, { signal: AbortSignal.timeout(3000) });
-              if (resp2.ok) {
-                ok = true;
-                message = "Whisper transcription service is online (/v1/models)";
-              }
-            } catch {
-              try {
-                const resp3 = await fetch(`${base}/`, { signal: AbortSignal.timeout(2000) });
-                if (resp3.status < 500) {
-                  ok = true;
-                  message = `Whisper service reachable (HTTP ${resp3.status})`;
-                }
-              } catch (e: any) {
-                message = e.message;
-              }
-            }
-          }
-
-          results.whisper = {
-            ok,
-            status: ok ? "online" : "offline",
-            message: ok ? message : `Could not reach Whisper at ${apiUrl}`,
-            details: { apiUrl },
-          };
-        } catch (err: any) {
-          results.whisper = {
-            ok: false,
-            status: "offline",
-            message: `Whisper error: ${err.message}`,
-          };
-        }
-      })();
-
-      await Promise.allSettled([s3Promise, computePromise, aiPromise, vectorPromise, whisperPromise]);
+      await Promise.allSettled([s3Promise, computePromise, aiPromise, storiesPromise]);
 
       if (!req.isAuthenticated()) {
         for (const key of Object.keys(results)) {
@@ -239,59 +140,6 @@ export function registerSetupServicesRoutes(app: Express) {
     } catch (error: any) {
       console.error("Error checking services health:", error);
       res.status(500).json({ error: "Failed to test sub-services" });
-    }
-  });
-
-  // Dedicated Whisper test endpoint
-  app.post("/api/whisper/test", async (req, res) => {
-    try {
-      const userCount = await storage.getUserCount();
-      if (userCount > 0 && !req.isAuthenticated()) {
-        return res.status(401).json({ error: "Authentication required" });
-      }
-
-      const inputUrl = req.body?.apiUrl;
-      if (inputUrl && !isSafeServiceUrl(inputUrl)) {
-        return res.status(400).json({ ok: false, message: "Invalid or restricted service URL." });
-      }
-
-      const apiUrl =
-        inputUrl ||
-        (await storage.getAppSetting("whisper_api_url")) ||
-        process.env.WHISPER_API_URL ||
-        "http://localhost:8000";
-
-      if (!isSafeServiceUrl(apiUrl)) {
-        return res.status(400).json({ ok: false, message: "Invalid or restricted service URL." });
-      }
-      const base = apiUrl.replace(/\/+$/, "");
-
-      try {
-        const resp = await fetch(`${base}/health`, { signal: AbortSignal.timeout(4000) });
-        if (resp.ok) {
-          return res.json({ ok: true, message: "Whisper service is online and healthy." });
-        }
-      } catch {}
-
-      try {
-        const resp = await fetch(`${base}/v1/models`, { signal: AbortSignal.timeout(4000) });
-        if (resp.ok) {
-          return res.json({ ok: true, message: "Whisper service is online (OpenAI-compatible)." });
-        }
-      } catch {}
-
-      try {
-        const resp = await fetch(`${base}/`, { signal: AbortSignal.timeout(3000) });
-        if (resp.status < 500) {
-          return res.json({ ok: true, message: `Whisper service reachable (HTTP ${resp.status}).` });
-        }
-      } catch (err: any) {
-        return res.json({ ok: false, message: `Could not connect to Whisper: ${err.message}` });
-      }
-
-      res.json({ ok: false, message: `Could not reach Whisper service at ${apiUrl}.` });
-    } catch (error: any) {
-      res.status(500).json({ ok: false, message: error.message });
     }
   });
 

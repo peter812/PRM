@@ -58,13 +58,13 @@ const STAGES = [
   {
     id: "services",
     title: "Sub-Services",
-    description: "S3, Face, AI providers & Qdrant",
+    description: "S3, Face & Stories",
     icon: HardDrive,
   },
   {
     id: "ai",
     title: "AI Intelligence",
-    description: "LLMs, Vectors & Speech",
+    description: "Providers & models",
     icon: Brain,
   },
   {
