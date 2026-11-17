@@ -94,6 +94,7 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/v1/pending-imports",
   "/v1/scrape-results",
   "/v1/account-status",
+  "/mcp", // bearer MCP key auth in routes/mcp.ts
 ]);
 
 function isPublicApiPath(path: string, method?: string): boolean {
@@ -1115,18 +1116,18 @@ export function registerRoutes(app: Express) {
         }
   
         // Validate keyType if provided
-        const validKeyTypes = ['full', 'chrome'];
+        const validKeyTypes = ['full', 'chrome', 'mcp'];
         if (keyType !== undefined && !validKeyTypes.includes(keyType)) {
-          return res.status(400).json({ error: "Invalid key type. Must be 'full' or 'chrome'" });
+          return res.status(400).json({ error: "Invalid key type. Must be 'full', 'chrome' or 'mcp'" });
         }
         const resolvedKeyType = validKeyTypes.includes(keyType) ? keyType : 'chrome';
-  
+
         // Generate a random API key (32 bytes = 64 hex characters)
-        const crypto = await import("crypto");
         const rawKey = crypto.randomBytes(32).toString('hex');
-        
-        // Hash the key for storage (like password hashing)
-        const hashedKey = await hashPassword(rawKey);
+
+        // SHA-256 (not salted scrypt) so a presented key can be looked up directly
+        // via storage.getApiKeyByKey — same scheme as extension tokens.
+        const hashedKey = crypto.createHash("sha256").update(rawKey).digest("hex");
   
         const validatedData = insertApiKeySchema.parse({
           userId: req.user.id,

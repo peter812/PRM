@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 export default function DemosPage() {
   return (
     <div className="h-full overflow-auto">
-    <div className="container mx-auto p-6 max-w-4xl">
+    <div className="container mx-auto p-3 md:p-6 max-w-4xl">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Demos</h1>
         <p className="text-muted-foreground text-lg">

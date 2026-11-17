@@ -53,7 +53,7 @@ export function StatusDot() {
           <Dot color={worst} className={cn(worst !== "online" && "animate-pulse")} />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-96 p-2">
+      <PopoverContent align="end" collisionPadding={8} className="w-[calc(100vw-1rem)] max-w-96 p-2">
         {rows.map((r) => (
           <div key={r.key} className="flex items-start gap-3 px-2 py-1.5 text-sm" data-testid={`status-row-${r.key}`}>
             <Dot color={r.color} className="mt-1.5" />

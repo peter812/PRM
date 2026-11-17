@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, X, Trash2, Loader2, ScanText } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, Trash2, Loader2, ScanText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LikesHiddenBadge } from "@/components/likes-hidden-badge";
@@ -134,6 +134,19 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete, i
     }
   };
 
+  // Mobile: swipe the media left/right to change image.
+  const touchStartX = useRef<number | null>(null);
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  };
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    touchStartX.current = null;
+    if (dx > 50) prevImage();
+    else if (dx < -50) nextImage();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowLeft") prevImage();
     if (e.key === "ArrowRight") nextImage();
@@ -176,23 +189,17 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete, i
       }
     }}>
       <DialogContent
-        className="max-w-5xl w-full p-0 gap-0 overflow-hidden"
+        className="max-w-none md:max-w-5xl w-full h-[100dvh] md:h-auto p-0 gap-0 overflow-hidden rounded-none [&>button:last-child]:z-30 [&>button:last-child]:text-white md:[&>button:last-child]:text-current"
         onKeyDown={handleKeyDown}
       >
-        {/* Close button */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="absolute right-2 top-2 z-10"
-          onClick={() => onOpenChange(false)}
-          data-testid="button-close-post-detail"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-
-        <div className="flex flex-col md:flex-row min-h-[400px] max-h-[85vh] h-[85vh]">
+        {/* Mobile: one vertical scroll, media first then text. Desktop: media | info side by side. */}
+        <div className="flex flex-col md:flex-row h-full md:h-[85vh] md:min-h-[400px] md:max-h-[85vh] overflow-y-auto md:overflow-hidden">
           {/* Image/Video Section */}
-          <div className="relative flex-1 bg-black flex items-center justify-center min-h-[300px] md:min-h-[400px] overflow-hidden">
+          <div
+            className="relative shrink-0 md:shrink md:flex-1 bg-black flex items-center justify-center min-h-[300px] md:min-h-[400px] overflow-hidden"
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+          >
             {images.length > 0 ? (
               <div className="relative max-w-full max-h-[60vh] md:max-h-[80vh] flex items-center justify-center w-fit h-fit">
                 <PhotoFaces
@@ -275,7 +282,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete, i
           </div>
 
           {/* Info Section */}
-          <div className="w-full md:w-[420px] border-t md:border-t-0 md:border-l flex flex-col h-full overflow-hidden bg-background">
+          <div className="w-full md:w-[420px] border-t md:border-t-0 md:border-l flex flex-col md:h-full md:overflow-hidden bg-background">
             {/* Header: Posters & Close button area */}
             <div className="p-3.5 border-b shrink-0 flex items-center justify-between gap-2 pr-10">
               {posters.length > 0 ? (

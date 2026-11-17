@@ -17,11 +17,12 @@ import {
   getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto, accountForHandle, getPhotoFaceAnalysis,
 } from "../face-review";
 import {
-  runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces, identityKey,
+  runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces, honeypotCluster, identityKey,
   type ClusterScope,
 } from "../face-clusters";
 import { accountScopeFor } from "../account-faces";
 import { listVerifyIdentities, getVerifyGroup, confirmVerify } from "../face-verify";
+import { confirmHoneypot, listHoneypot, releaseFromHoneypot, sendToHoneypot } from "../face-honeypot";
 import { DRAWN_FACE_MAX_IOU, MIN_DRAWN_FACE_PX, boxIou, type FaceBox } from "@shared/face-box";
 
 const fail = (res: Response, what: string, error: unknown) => {
@@ -221,6 +222,52 @@ export function registerFaceReview(app: Express) {
     }
   });
 
+  // { faceIds? } — Honey pot: put the cluster's faces out of the way as too blurry (all when faceIds is omitted).
+  app.post("/api/face-review/clusters/:id/honeypot", requireAuth, async (req, res) => {
+    try {
+      const faceIds = parseOptionalIds(req.body?.faceIds);
+      if (faceIds === null) return res.status(400).json({ error: "faceIds must be a non-empty list" });
+      res.json(await honeypotCluster(req.params.id, faceIds));
+    } catch (error) {
+      fail(res, "send cluster to honey pot", error);
+    }
+  });
+
+  // ── Honey pot tab (honey-pot-plan.md) ──
+  // ?offset=&limit=&source=manual|auto — honey pot faces, newest first, with the totals.
+  app.get("/api/face-review/honeypot", requireAuth, async (req, res) => {
+    try {
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const limit = Math.min(Math.max(Number(req.query.limit) || 120, 1), 500);
+      const source = req.query.source === "manual" || req.query.source === "auto" ? req.query.source : undefined;
+      res.json(await listHoneypot(offset, limit, source));
+    } catch (error) {
+      fail(res, "load honey pot", error);
+    }
+  });
+
+  // { faceIds } — take faces back out of the honey pot (sending is POST /api/face-review/honeypot, per photo, or the cluster route).
+  app.post("/api/face-review/honeypot/release", requireAuth, async (req, res) => {
+    try {
+      const faceIds = parseOptionalIds(req.body?.faceIds);
+      if (!faceIds) return res.status(400).json({ error: "faceIds must be a non-empty list" });
+      res.json(await releaseFromHoneypot(faceIds));
+    } catch (error) {
+      fail(res, "release honey pot faces", error);
+    }
+  });
+
+  // { faceIds } — keep auto-routed faces: they become manual honey pot faces that future faces are matched against.
+  app.post("/api/face-review/honeypot/confirm", requireAuth, async (req, res) => {
+    try {
+      const faceIds = parseOptionalIds(req.body?.faceIds);
+      if (!faceIds) return res.status(400).json({ error: "faceIds must be a non-empty list" });
+      res.json(await confirmHoneypot(faceIds));
+    } catch (error) {
+      fail(res, "confirm honey pot faces", error);
+    }
+  });
+
   // ── Verify tab (face-clustering-plan.md §4) ──
   app.get("/api/face-review/verify", requireAuth, async (_req, res) => {
     try {
@@ -367,7 +414,16 @@ export function registerFaceReview(app: Express) {
 
   // { faceUuid | faceUuids, photoId, kind } — "not someone I track" (§3.4); faceUuids for Skip all.
   // /undismiss takes the same body and reverses it.
-  for (const [path, dismissedAt] of [["dismiss", () => new Date()], ["undismiss", () => null]] as const) {
+  // /honeypot (same body) sends the faces to the honey pot instead (honey-pot-plan.md); /undismiss also takes them out of it.
+  const faceActions = {
+    dismiss: (ids: string[]) => db.update(faces).set({ dismissedAt: new Date(), ...clearedSuggestions }).where(inArray(faces.id, ids)),
+    undismiss: async (ids: string[]) => {
+      await releaseFromHoneypot(ids);
+      await db.update(faces).set({ dismissedAt: null, ...clearedSuggestions }).where(inArray(faces.id, ids));
+    },
+    honeypot: sendToHoneypot,
+  };
+  for (const [path, apply] of Object.entries(faceActions)) {
     app.post(`/api/face-review/${path}`, requireAuth, async (req, res) => {
       try {
         const { photoId, kind } = req.body ?? {};
@@ -375,7 +431,7 @@ export function registerFaceReview(app: Express) {
         const k = parseKind(kind);
         if (!ids || typeof photoId !== "string" || !k) return res.status(400).json({ error: "faceUuid (or faceUuids), photoId and kind are required" });
         if (!(await faceInReadablePhoto(ids, photoId))) return res.status(404).json({ error: "Photo not found" });
-        await db.update(faces).set({ dismissedAt: dismissedAt(), ...clearedSuggestions }).where(inArray(faces.id, ids));
+        await apply(ids);
         const item = await getFaceReviewItem(photoId, k);
         if (!item) return res.status(404).json({ error: "Photo not found" });
         res.json(item);

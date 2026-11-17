@@ -824,6 +824,7 @@ type AutoRecognitionSettings = Record<AutoRecognitionKind, Partial<Record<AutoRe
   profileLink?: { minFacePct: number };
   lookalike?: { minScore: number };
   autoAssign?: { minScore: number; verifyMinScore: number };
+  honeypot?: { auto: boolean; minScore: number };
   clustering?: Partial<ClusteringSettings>;
 };
 type ClusteringSettings = { minSimilarity: number; noiseMinConf: number; noiseMinSharpness: number | null };
@@ -866,6 +867,7 @@ function AutoRecognitionCard() {
   const [minScore, setMinScore] = useState("");
   const [autoAssignScore, setAutoAssignScore] = useState("");
   const [verifyScore, setVerifyScore] = useState("");
+  const [honeypotScore, setHoneypotScore] = useState("");
   const [clusterInputs, setClusterInputs] = useState<Partial<Record<keyof ClusteringSettings, string>>>({});
 
   const { data: settings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
@@ -881,6 +883,9 @@ function AutoRecognitionCard() {
       setVerifyScore(String(settings.autoAssign.verifyMinScore));
     }
   }, [settings?.autoAssign?.minScore, settings?.autoAssign?.verifyMinScore]);
+  useEffect(() => {
+    if (settings?.honeypot) setHoneypotScore(String(settings.honeypot.minScore));
+  }, [settings?.honeypot?.minScore]);
   useEffect(() => {
     const c = settings?.clustering;
     if (c) setClusterInputs(Object.fromEntries(CLUSTER_FIELDS.map(({ key }) => [key, c[key] == null ? "" : String(c[key])])));
@@ -908,12 +913,12 @@ function AutoRecognitionCard() {
   const autoAssignMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/face-review/auto-assign");
-      return res.json() as Promise<{ scanned: number; assigned: number; verify: number }>;
+      return res.json() as Promise<{ scanned: number; assigned: number; verify: number; honeypot: number }>;
     },
-    onSuccess: ({ scanned, assigned, verify }) => {
+    onSuccess: ({ scanned, assigned, verify, honeypot }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/face-review"] });
       queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
-      toast({ title: `${assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces`}${verify ? `, ${verify} to verify` : ""}` });
+      toast({ title: `${assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces`}${verify ? `, ${verify} to verify` : ""}${honeypot ? `, ${honeypot} to the honey pot` : ""}` });
     },
     onError: (error: Error) => {
       toast({ title: "Auto-assign failed", description: error.message, variant: "destructive" });
@@ -1142,6 +1147,42 @@ function AutoRecognitionCard() {
                   >
                     {autoAssignMutation.isPending ? "Matching…" : "Run now"}
                   </Button>
+                </div>
+              </div>
+            )}
+            {section.kind === "profile" && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="honeypot-auto" className="text-sm font-medium">Honey pot routing</Label>
+                  <p className="text-xs text-muted-foreground">
+                    When auto-assign runs, faces that look more like a face you put in the honey pot than like anyone named go to the honey pot too. Score: minimum similarity (0–1) to a honey pot face.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <Input
+                    id="honeypot-min-score"
+                    type="number"
+                    min={0.01}
+                    max={1}
+                    step={0.01}
+                    className="w-20"
+                    title="Honey pot score"
+                    value={honeypotScore}
+                    onChange={(e) => setHoneypotScore(e.target.value)}
+                    onBlur={() => {
+                      const score = Number(honeypotScore);
+                      if (score > 0 && score <= 1 && score !== settings?.honeypot?.minScore) saveMutation.mutate({ honeypot: { ...settings!.honeypot!, minScore: score } });
+                    }}
+                    disabled={!settings || saveMutation.isPending}
+                    data-testid="input-honeypot-min-score"
+                  />
+                  <Switch
+                    id="honeypot-auto"
+                    checked={!!settings?.honeypot?.auto}
+                    onCheckedChange={(auto) => saveMutation.mutate({ honeypot: { ...settings!.honeypot!, auto } })}
+                    disabled={!settings || saveMutation.isPending}
+                    data-testid="switch-honeypot-auto"
+                  />
                 </div>
               </div>
             )}

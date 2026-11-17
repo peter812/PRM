@@ -4,6 +4,7 @@ import { db, pool } from "./db";
 import { legacyHqImageUrls, legacyProfileImagesPending } from "./db-init";
 import { syncEntityInBackground } from "./vector-universal";
 import { uploadImage, uploadMedia, listPrmS3ObjectKeys, copyPrmS3ObjectInPlace, isPrmS3VariantBaked, deleteImageFromPrmS3, getPrmS3Client, getPrmS3BackupStatus, cancelPrmS3Backup } from "./prm-s3";
+import { bucketForKey } from "./prm-s3-buckets";
 import { CopyObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
@@ -1359,7 +1360,9 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     chunks.push(`      ${xmlTag("last_username", imp.lastUsername || "")}\n`);
     chunks.push(`      ${xmlTag("tracking_enabled", imp.trackingEnabled)}\n`);
     chunks.push(`      ${xmlTag("tracking_window", imp.trackingWindow)}\n`);
+    chunks.push(`      ${xmlTag("tracking_quiet_hours", imp.trackingQuietHours)}\n`);
     chunks.push(`      ${xmlTag("tracking_max_jobs", imp.trackingMaxJobs)}\n`);
+    chunks.push(`      ${xmlTag("tracking_min_batch", imp.trackingMinBatch)}\n`);
     chunks.push(`      ${xmlTag("next_tracking_run_at", imp.nextTrackingRunAt)}\n`);
     chunks.push(`      ${xmlTag("created_at", imp.createdAt)}\n`);
     chunks.push("    </story_importer>\n");
@@ -2901,7 +2904,9 @@ export async function executeImportXml(
       lastUsername: parseOptStr(block, "last_username"),
       trackingEnabled: parseOptBool(block, "tracking_enabled", false),
       trackingWindow: parseOptStr(block, "tracking_window") || "daytime",
-      trackingMaxJobs: parseOptInt(block, "tracking_max_jobs") ?? 5,
+      trackingQuietHours: parseOptStr(block, "tracking_quiet_hours") || "01:00-09:00",
+      trackingMaxJobs: parseOptInt(block, "tracking_max_jobs") ?? 30,
+      trackingMinBatch: parseOptInt(block, "tracking_min_batch") ?? 10,
       nextTrackingRunAt: parseOptDate(block, "next_tracking_run_at"),
       createdAt: parseOptDate(block, "created_at") ?? new Date(),
     });
@@ -3581,7 +3586,7 @@ import { sql } from "drizzle-orm";
 async function processMigrateImagePrefixes(taskId: string): Promise<string> {
   const counts = { total: 0, migrated: 0, skipped: 0, failed: 0 };
   const errors: string[] = [];
-  const { client: s3Client, bucket } = await getPrmS3Client();
+  const { client: s3Client, cfg } = await getPrmS3Client();
 
   const toMigrate = await db.execute(sql`
     SELECT 
@@ -3638,8 +3643,8 @@ async function processMigrateImagePrefixes(taskId: string): Promise<string> {
 
         // 1. Copy original object to new prefix (PRM-S3 bakes the new folder's WebP proxies on write)
         await s3Client.send(new CopyObjectCommand({
-          Bucket: bucket,
-          CopySource: bucket + "/" + oldKey,
+          Bucket: bucketForKey(cfg, newKey),
+          CopySource: bucketForKey(cfg, oldKey) + "/" + oldKey,
           Key: newKey,
         }));
 
@@ -3659,7 +3664,7 @@ async function processMigrateImagePrefixes(taskId: string): Promise<string> {
 
         // 3. Delete old object from images/ (cleans up old key and any old proxies)
         await s3Client.send(new DeleteObjectCommand({
-          Bucket: bucket,
+          Bucket: bucketForKey(cfg, oldKey),
           Key: oldKey,
         }));
 

@@ -10,7 +10,7 @@
 import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import multer from "multer";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import { storage } from "../storage";
@@ -20,7 +20,7 @@ import { people, photos, socialAccountPosts, socialAccounts, storyImporters, sto
 import { formatPersonName } from "@shared/person-name";
 import { generateDeterministicUuid } from "./social-media";
 import { queueMentioned } from "./tracking";
-import { DEFAULT_WINDOW, kickManualTrackingJobs, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
+import { DEFAULT_WINDOW, broadcastStoryRun, kickManualTrackingJobs, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { getImageDimensions } from "../profile-image";
@@ -86,6 +86,11 @@ const timeWindow = (name: string) =>
     const [a, b] = w.split("-");
     return Boolean(a && b && timeOfDay.test(a) && timeOfDay.test(b) && a < b);
   }, `${name} must be HH:MM-HH:MM with the end after the start`);
+/** Quiet hours may wrap midnight ("23:00-07:00"), so only the shape is checked. */
+const quietHours = z.string().refine((w) => {
+  const [a, b] = w.split("-");
+  return Boolean(a && b && timeOfDay.test(a) && timeOfDay.test(b) && a !== b && a <= "23:59" && b <= "23:59");
+}, "trackingQuietHours must be HH:MM-HH:MM with different start and end");
 const importerPatchSchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
   serviceUrl: z.string().trim().max(500).optional(),
@@ -98,8 +103,9 @@ const importerPatchSchema = z.object({
   unseenOnly: z.boolean().optional(),
   runNowUnseenOnly: z.boolean().optional(),
   trackingEnabled: z.boolean().optional(),
-  trackingWindow: timeWindow("trackingWindow").optional(),
+  trackingQuietHours: quietHours.optional(),
   trackingMaxJobs: z.number().int().min(1).max(500).optional(),
+  trackingMinBatch: z.number().int().min(1).max(500).optional(),
 }).strict();
 
 /** An importer as the settings pages see it: whether a secret is stored, never the secret. */
@@ -510,6 +516,7 @@ export function registerStories(app: Express) {
         await failUnfinishedJobs(m.runId, m.status);
         kickManualTrackingJobsAfterRun();
       }
+      broadcastStoryRun();
       res.status(201).json({ ok: true });
     } catch (error) {
       console.error("Error storing story run:", error);
@@ -609,6 +616,34 @@ export function registerStories(app: Express) {
     }
   });
 
+  // Task tracker: stories runs queued or going, plus those that ended in the last two minutes.
+  app.get("/api/stories/runs/current", requireAuth, async (_req, res) => {
+    try {
+      const runs = await db
+        .select({
+          id: storyScrapeRuns.id,
+          status: storyScrapeRuns.status,
+          importerLabel: storyImporters.label,
+          scrapedFrom: storyScrapeRuns.scrapedFrom,
+        })
+        .from(storyScrapeRuns)
+        .leftJoin(storyImporters, eq(storyImporters.id, storyScrapeRuns.importerId))
+        .where(and(
+          eq(storyScrapeRuns.kind, "stories"),
+          or(
+            inArray(storyScrapeRuns.status, ["queued", "starting", "running"]),
+            gt(storyScrapeRuns.finishedAt, new Date(Date.now() - 2 * 60_000)),
+          ),
+        ))
+        .orderBy(storyScrapeRuns.startedAt)
+        .limit(50);
+      res.json(runs);
+    } catch (error) {
+      console.error("Error listing current story runs:", error);
+      res.status(500).json({ error: "Failed to list current runs" });
+    }
+  });
+
   // Settings page: delete a single story run.
   app.delete("/api/stories/runs/:id", requireAuth, async (req, res) => {
     try {
@@ -619,6 +654,7 @@ export function registerStories(app: Express) {
       if (!result.length) {
         return res.status(404).json({ error: "Run not found" });
       }
+      broadcastStoryRun();
       res.json({ ok: true, deletedId: id });
     } catch (error) {
       console.error("Error deleting story run:", error);
@@ -640,6 +676,7 @@ export function registerStories(app: Express) {
       await Promise.all(ids.map((id) => failUnfinishedJobs(id, "run_deleted")));
       kickManualTrackingJobsAfterRun();
       const result = await db.delete(storyScrapeRuns).where(inArray(storyScrapeRuns.id, ids)).returning({ id: storyScrapeRuns.id });
+      broadcastStoryRun();
       res.json({ ok: true, deletedCount: result.length });
     } catch (error) {
       console.error("Error bulk deleting story runs:", error);
@@ -680,9 +717,9 @@ export function registerStories(app: Express) {
         (patch.serviceUrl !== undefined && patch.serviceUrl !== importer.serviceUrl) ||
         (patch.runWindow !== undefined && patch.runWindow !== importer.runWindow) ||
         (patch.runEveryDays !== undefined && patch.runEveryDays !== importer.runEveryDays);
-      // Same for tracking: a new window, or switching it on or off, drops the planned tracking run.
+      // Same for tracking: new quiet hours, or switching it on or off, drops the planned check.
       const rescheduleTracking =
-        (patch.trackingWindow !== undefined && patch.trackingWindow !== importer.trackingWindow) ||
+        (patch.trackingQuietHours !== undefined && patch.trackingQuietHours !== importer.trackingQuietHours) ||
         (patch.trackingEnabled !== undefined && patch.trackingEnabled !== importer.trackingEnabled);
       const [updated] = await db
         .update(storyImporters)

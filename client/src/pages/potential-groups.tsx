@@ -437,7 +437,7 @@ export default function PotentialGroupsPage() {
   return (
     <TooltipProvider>
       <div className="flex flex-col h-full overflow-auto">
-        <div className="border-b px-6 py-4 bg-background/50 sticky top-0 z-10 backdrop-blur-xl">
+        <div className="border-b px-3 py-3 md:px-6 md:py-4 bg-background/50 sticky top-0 z-10 backdrop-blur-xl">
           <Button variant="ghost" size="sm" onClick={() => navigate("/groups")} className="mb-4">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Groups
@@ -453,7 +453,7 @@ export default function PotentialGroupsPage() {
           </div>
         </div>
 
-        <div className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="p-3 md:p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Column: Clustering Controls */}
           <Card className="lg:col-span-1 border-primary/20 shadow-md h-fit">
             <CardHeader className="pb-4">

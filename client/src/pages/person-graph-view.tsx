@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { GraphInfoPanel } from "@/components/graph-info-panel";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Command,
@@ -730,12 +731,18 @@ export default function PersonGraphView({
 
       <div className="flex-1 relative overflow-hidden">
         {selectedPerson && (
-          <div
-            className="absolute top-4 left-4 w-72 max-h-[calc(100%-2rem)] overflow-y-auto bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg z-50"
-            data-testid="sidebar-person-info"
+          <GraphInfoPanel
+            key={selectedPerson.id}
+            testId="sidebar-person-info"
+            imageUrl={selectedPerson.imageUrl}
+            fallback={personInitials(selectedPerson)}
+            title={formatPersonName(selectedPerson)}
+            subtitle={selectedPerson.company}
+            viewHref={`/person/${selectedPerson.id}`}
+            onClose={() => setSelectedPersonId(null)}
           >
             <div className="p-4 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="hidden md:flex items-center justify-between">
                 <h3 className="font-semibold text-sm">Person Info</h3>
                 <Button
                   variant="ghost"
@@ -746,7 +753,7 @@ export default function PersonGraphView({
                   <X className="h-4 w-4" />
                 </Button>
               </div>
-              <div className="flex flex-col items-center gap-3">
+              <div className="hidden md:flex flex-col items-center gap-3">
                 <Avatar className="h-20 w-20">
                   {selectedPerson.imageUrl && (
                     <AvatarImage
@@ -823,7 +830,7 @@ export default function PersonGraphView({
                 </Button>
               </div>
             </div>
-          </div>
+          </GraphInfoPanel>
         )}
 
         <div ref={graphRef} className="w-full h-full" data-testid="canvas-person-graph" />

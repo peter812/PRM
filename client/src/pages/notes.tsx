@@ -106,6 +106,7 @@ function NoteCard({ group, hideAccount }: { group: NoteGroup; hideAccount?: bool
 /** The search, filters and note rows; given a socialAccountId, only that account's notes. */
 export function NotesList({ socialAccountId }: { socialAccountId?: string }) {
   const [collapse, setCollapse] = useState(true);
+  const [onlyWithText, setOnlyWithText] = useState(false);
   const [search, setSearch] = useState("");
   const [account, setAccount] = useState(ALL);
   const { data, isLoading } = useQuery<NoteRow[]>({ queryKey: ["/api/inbox-notes", { socialAccountId }] });
@@ -120,6 +121,7 @@ export function NotesList({ socialAccountId }: { socialAccountId?: string }) {
     const shown = (data ?? []).filter(
       (n) =>
         (account === ALL || n.socialAccountId === account) &&
+        (!onlyWithText || Boolean(n.text && n.text.trim().length > 0)) &&
         (!q || [n.text, n.username, n.song?.title, n.song?.artist].some((s) => s?.toLowerCase().includes(q))),
     );
     if (!collapse) return shown.map((n) => groupOf(n.noteId, [n]));
@@ -130,7 +132,7 @@ export function NotesList({ socialAccountId }: { socialAccountId?: string }) {
       byKey.set(key, [...(byKey.get(key) ?? []), n]);
     }
     return Array.from(byKey, ([key, notes]) => groupOf(key, notes));
-  }, [data, search, account, collapse]);
+  }, [data, search, account, collapse, onlyWithText]);
 
   return (
     <>
@@ -161,6 +163,12 @@ export function NotesList({ socialAccountId }: { socialAccountId?: string }) {
           <Switch id="collapse-repeats" checked={collapse} onCheckedChange={setCollapse} data-testid="switch-collapse-repeats" />
           <Label htmlFor="collapse-repeats" className="text-sm">
             Collapse repeats
+          </Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch id="only-notes-with-text" checked={onlyWithText} onCheckedChange={setOnlyWithText} data-testid="switch-only-notes-with-text" />
+          <Label htmlFor="only-notes-with-text" className="text-sm">
+            Only notes with text
           </Label>
         </div>
       </div>

@@ -5,12 +5,13 @@
 // with faces there, sized by those faces, and actions apply to them unless widened to the cluster.
 import { useEffect, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { Check, Loader2, RefreshCw, Search, UserX, X } from "lucide-react";
+import { Check, Hexagon, Loader2, RefreshCw, Search, UserX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
@@ -83,7 +84,27 @@ function useClusterActions(onDone?: () => void) {
     },
     onError,
   });
-  return { name, reject, strangers, busy: name.isPending || reject.isPending || strangers.isPending };
+  // Too blurry to name: the faces go to the honey pot; Undo releases exactly those faces.
+  const honeypot = useMutation({
+    mutationFn: (v: { id: string; faceIds: string[] }) => post(v.id, "honeypot", { faceIds: v.faceIds }) as Promise<{ sent: number }>,
+    onSuccess: ({ sent }, v) => {
+      toast({
+        title: `Put ${sent} face${sent === 1 ? "" : "s"} in the honey pot`,
+        action: (
+          <ToastAction
+            altText="Undo"
+            onClick={() => apiRequest("POST", "/api/face-review/honeypot/release", { faceIds: v.faceIds }).then(invalidateFaceReview, onError)}
+          >
+            Undo
+          </ToastAction>
+        ),
+      });
+      invalidateFaceReview();
+      onDone?.();
+    },
+    onError,
+  });
+  return { name, reject, strangers, honeypot, busy: name.isPending || reject.isPending || strangers.isPending || honeypot.isPending };
 }
 
 const identityId = (s: IdentityTarget) => s.socialAccountId ?? s.personId ?? (s.username ? `@${s.username}` : "");
@@ -300,6 +321,16 @@ function ClusterDialog({ id, accountId, preset, onClose }: { id: string; account
                 data-testid="button-cluster-strangers"
               >
                 <UserX className="h-3 w-3" /> Strangers
+              </button>
+              <button
+                type="button"
+                className="text-xs px-2 py-1 rounded-full border border-dashed text-muted-foreground hover:bg-accent flex items-center gap-1"
+                disabled={actions.busy || !included.length}
+                onClick={() => actions.honeypot.mutate({ id, faceIds: included })}
+                title="Too blurry to name: put these faces in the honey pot"
+                data-testid="button-cluster-honeypot"
+              >
+                <Hexagon className="h-3 w-3" /> Honey pot
               </button>
             </div>
             {searching && <IdentitySearch onPick={(to, label) => nameAs(to, label ?? "them")} onCancel={() => setSearching(false)} />}

@@ -34,7 +34,7 @@ export default function ReferencesPage() {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="container mx-auto p-6 max-w-6xl space-y-6">
+      <div className="container mx-auto p-3 md:p-6 max-w-6xl space-y-6">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="text-3xl font-bold flex items-center gap-2"><ScanFace className="h-7 w-7" />References</h1>

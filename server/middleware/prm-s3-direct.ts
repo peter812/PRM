@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { getPrmS3Config, presignPrmS3PublicUrl, normalizeEndpointUrl, type PrmS3Config } from "../prm-s3";
+import { allBuckets } from "../prm-s3-buckets";
 
 /**
  * PRM-S3 direct delivery.
@@ -69,28 +70,34 @@ export function rewriteProxyPathsToPublicUrls(body: unknown, cfg: PrmS3Config): 
 
 const PROXY_SIZED_RE = /\/api\/prm-s3\/(images|profiles|posts|stories|media|faces|references)\/([A-Za-z0-9_.-]+)(?:[?&]s=[^\s"'\\<>]+)/g;
 
-let inboundRe: RegExp | null = null;
-let inboundReKey = "";
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
-function getInboundRegex(cfg: PrmS3Config): RegExp {
-  const key = `${cfg.publicEndpoint}|${cfg.bucket}`;
-  if (!inboundRe || inboundReKey !== key) {
+let inbound: { re: RegExp; needle: string } | null = null;
+let inboundKey = "";
+
+function getInbound(cfg: PrmS3Config): { re: RegExp; needle: string } {
+  // Unprefixed names too: a URL signed before the bucket prefix was set can
+  // still come back from a client.
+  const names = Array.from(new Set([...allBuckets(cfg), ...allBuckets({ ...cfg, bucketPrefix: "" })]));
+  const key = `${cfg.publicEndpoint}|${names.join("|")}`;
+  if (!inbound || inboundKey !== key) {
     const base = new URL(normalizeEndpointUrl(cfg.publicEndpoint, "https"));
-    const prefix = `${base.protocol}//${base.host}${base.pathname.replace(/\/+$/, "")}/${cfg.bucket}`;
-    const escaped = prefix.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    const needle = `${base.protocol}//${base.host}${base.pathname.replace(/\/+$/, "")}/`;
+    const escaped = `${escapeRegex(needle)}(?:${names.map(escapeRegex).join("|")})`;
     // The query stops at whitespace, quotes or a backslash (URLs inside JSON-encoded strings).
     // Swallows SigV4 parameters and any ?s= / &s= size parameters.
-    inboundRe = new RegExp(`${escaped}/(images|profiles|posts|stories|media|faces|references)/([A-Za-z0-9_.-]+)(?:\\?[^\\s"'\\\\<>]*)?`, "g");
-    inboundReKey = key;
+    const re = new RegExp(`${escaped}/(images|profiles|posts|stories|media|faces|references)/([A-Za-z0-9_.-]+)(?:\\?[^\\s"'\\\\<>]*)?`, "g");
+    inbound = { re, needle };
+    inboundKey = key;
   }
-  return inboundRe;
+  return inbound;
 }
 
 export function normalizePublicUrlsToProxyPaths(body: unknown, cfg: PrmS3Config): unknown {
   let result = body;
   if (cfg.publicEndpoint) {
-    const re = getInboundRegex(cfg);
-    result = mapStrings(result, `/${cfg.bucket}/`, (s) => s.replace(re, "/api/prm-s3/$1/$2"));
+    const { re, needle } = getInbound(cfg);
+    result = mapStrings(result, needle, (s) => s.replace(re, "/api/prm-s3/$1/$2"));
   }
   return mapStrings(result, "/api/prm-s3/", (s) => s.replace(PROXY_SIZED_RE, "/api/prm-s3/$1/$2"));
 }

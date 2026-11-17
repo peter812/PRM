@@ -45,9 +45,11 @@ export default function ApiSettingsPage() {
   const [newKeyData, setNewKeyData] = useState<{ name: string; key: string; keyType: string } | null>(null);
   const [keyToDelete, setKeyToDelete] = useState<string | null>(null);
 
-  const { data: apiKeys = [], isLoading } = useQuery<ApiKey[]>({
+  const { data: allKeys = [], isLoading } = useQuery<ApiKey[]>({
     queryKey: ["/api/api-keys"],
   });
+  // MCP keys are managed on the MCP Server page.
+  const apiKeys = allKeys.filter((k) => k.keyType !== "mcp");
 
   const createKeyMutation = useMutation({
     mutationFn: async ({ name }: { name: string }) => {

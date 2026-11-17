@@ -7,6 +7,7 @@ export type SSEEventType =
   | "task.updated"
   | "image_task.updated"
   | "tracking_job.updated"
+  | "story_run.updated"
   | "worker.status";
 
 interface SSEClient {

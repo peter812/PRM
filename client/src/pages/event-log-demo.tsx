@@ -136,7 +136,7 @@ export default function EventLogDemoPage() {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="container mx-auto p-6 max-w-4xl space-y-6">
+      <div className="container mx-auto p-3 md:p-6 max-w-4xl space-y-6">
         <div>
           <h1 className="text-3xl font-bold mb-2">Event Log</h1>
           <p className="text-muted-foreground">

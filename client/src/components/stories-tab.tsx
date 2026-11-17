@@ -140,6 +140,8 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
   const [index, setIndex] = useState(0);
   const [showFaces, setShowFaces] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Mobile: swipe the media left/right to change story.
+  const touchStartX = useRef<number | null>(null);
   const story = stories[index];
   if (!story) return null;
   const meta = (story.metadata ?? {}) as StoryMetadata;
@@ -156,7 +158,7 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent
-        className="max-w-4xl w-full p-0 gap-0 overflow-hidden"
+        className="max-w-none md:max-w-4xl w-full h-[100dvh] md:h-auto p-0 gap-0 overflow-hidden rounded-none [&>button:last-child]:z-30 [&>button:last-child]:text-white md:[&>button:last-child]:text-current"
         onKeyDown={(e) => {
           if (e.key === "ArrowLeft") prev();
           if (e.key === "ArrowRight") next();
@@ -164,14 +166,25 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
         data-testid="dialog-story-detail"
       >
         <DialogTitle className="sr-only">Story</DialogTitle>
-        <div className="flex flex-col md:flex-row max-h-[85vh]">
-          <div className="relative bg-black flex items-center justify-center md:w-[45%] shrink-0">
+        {/* Mobile: one vertical scroll, media first then text. */}
+        <div className="flex flex-col md:flex-row h-full md:h-auto md:max-h-[85vh] overflow-y-auto md:overflow-visible">
+          <div
+            className="relative bg-black flex items-center justify-center md:w-[45%] shrink-0"
+            onTouchStart={(e) => { touchStartX.current = e.touches[0].clientX; }}
+            onTouchEnd={(e) => {
+              if (touchStartX.current === null) return;
+              const dx = e.changedTouches[0].clientX - touchStartX.current;
+              touchStartX.current = null;
+              if (dx > 50) prev();
+              else if (dx < -50) next();
+            }}
+          >
             {/* A video's faces are on its cover frame: showing them pauses it and draws the boxes on the poster. */}
             <PhotoFaces
               slidesKey={postSlidesKey(story.id)}
               slide={0}
               src={withImageSize(image, 1080)}
-              imgClassName="max-h-[85vh] object-contain"
+              imgClassName="max-h-[70vh] md:max-h-[85vh] object-contain"
               mentions={mentions}
               show={showFaces}
               onShowChange={(on) => {
@@ -188,11 +201,11 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
                   poster={withImageSize(image, 1080)}
                   controls
                   playsInline
-                  className="max-h-[85vh] w-full object-contain"
+                  className="max-h-[70vh] md:max-h-[85vh] w-full object-contain"
                   data-testid="video-story"
                 />
               ) : image ? (
-                <img src={withImageSize(image, 1080)} alt={story.description ?? "Story"} className="max-h-[85vh] w-full object-contain" />
+                <img src={withImageSize(image, 1080)} alt={story.description ?? "Story"} className="max-h-[70vh] md:max-h-[85vh] w-full object-contain" />
               ) : (
                 <ImageIcon className="h-12 w-12 text-muted-foreground/40 my-24" />
               )}
@@ -225,7 +238,7 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
               </>
             )}
           </div>
-          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          <div className="md:flex-1 md:overflow-y-auto p-4 md:p-6 space-y-4">
             <Row label="Posted">
               <span className="inline-flex items-center gap-1.5">
                 {story.postedAt ? new Date(story.postedAt).toLocaleString() : "—"}

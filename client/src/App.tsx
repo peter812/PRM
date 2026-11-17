@@ -19,6 +19,7 @@ import { PrmS3StatusGuard } from "@/components/prm-s3-status";
 import { Button } from "@/components/ui/button";
 import { Settings, Home, Loader2 } from "lucide-react";
 import { SettingsSidebar } from "@/components/settings-sidebar";
+import { StatsSidebar } from "@/components/stats-sidebar";
 import { RouteSkeleton } from "@/components/route-skeleton";
 import { withImageSize } from "@shared/image-size";
 
@@ -60,6 +61,7 @@ const AuthPage = lazy(() => import("@/pages/auth-page"));
 const AuthDirectPage = lazy(() => import("@/pages/auth-direct"));
 const WelcomePage = lazy(() => import("@/pages/welcome-page"));
 const SettingsLayout = lazy(() => import("@/pages/settings-layout"));
+const StatsLayout = lazy(() => import("@/pages/stats-layout"));
 const EloRanking = lazy(() => import("@/pages/elo-ranking"));
 const GuessTheSex = lazy(() => import("@/pages/guess-the-sex"));
 const AccountMatching = lazy(() => import("@/pages/account-matching"));
@@ -285,6 +287,7 @@ function Router() {
           return <Redirect to={`/social-accounts/${(params as any)?.uuid || ""}${search}`} replace />;
         }} />
         <ProtectedRoute path="/settings" nest component={SettingsLayout} />
+        <ProtectedRoute path="/stats" nest component={StatsLayout} />
         <Route component={NotFound} />
       </Switch>
     </Suspense>
@@ -379,6 +382,18 @@ function AppLayout() {
   const [isAddInteractionDialogOpen, setIsAddInteractionDialogOpen] = useState(false);
   const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
   const [isAddPhotoDialogOpen, setIsAddPhotoDialogOpen] = useState(false);
+  // On mobile an active search takes the whole header row.
+  const [isSearchActive, setIsSearchActive] = useState(false);
+  const hideOnMobileSearch = isSearchActive ? "hidden md:flex" : "flex";
+  const addHandlers = {
+    onAddPerson: () => setIsAddPersonDialogOpen(true),
+    onAddSocialAccount: () => setIsAddSocialAccountDialogOpen(true),
+    onAddRelationship: () => setIsAddRelationshipDialogOpen(true),
+    onAddDailyNote: () => setIsAddDailyNoteDialogOpen(true),
+    onAddInteraction: () => setIsAddInteractionDialogOpen(true),
+    onAddNote: () => setIsAddNoteDialogOpen(true),
+    onAddPhoto: () => setIsAddPhotoDialogOpen(true),
+  };
   useThemeSync();
   useInitialRoutePrefetch(location);
   useExportNotifier();
@@ -386,17 +401,20 @@ function AppLayout() {
   const isAuthPage = location === "/auth" || location === "/auth-direct";
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");
+  const isStatsPage = location === "/stats" || location.startsWith("/stats/");
+  // Settings and Stats have their own sidebars; their back buttons return here.
+  const isSectionPage = isSettingsPage || isStatsPage;
 
   const [lastNonSettingsPath, setLastNonSettingsPath] = useState(() => {
     return localStorage.getItem("lastNonSettingsPath") || "/home";
   });
 
   useEffect(() => {
-    if (!isSettingsPage && !isAuthPage && !isWelcomePage) {
+    if (!isSectionPage && !isAuthPage && !isWelcomePage) {
       localStorage.setItem("lastNonSettingsPath", location);
       setLastNonSettingsPath(location);
     }
-  }, [location, isSettingsPage, isAuthPage, isWelcomePage]);
+  }, [location, isSectionPage, isAuthPage, isWelcomePage]);
 
   // Check if setup is needed
   const { data: setupStatus } = useQuery<{ isSetupNeeded: boolean }>({
@@ -421,36 +439,35 @@ function AppLayout() {
   return (
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
-        {isSettingsPage ? <SettingsSidebar /> : <AppSidebar />}
+        {isSettingsPage ? (
+          <SettingsSidebar />
+        ) : isStatsPage ? (
+          <StatsSidebar backPath={lastNonSettingsPath} />
+        ) : (
+          <AppSidebar />
+        )}
         <div className="flex flex-col flex-1 overflow-hidden">
           <PrmS3StatusGuard enabled={!!user} />
           <header className="flex items-center gap-3 px-3 py-2 border-b">
-            <div className="flex items-center gap-2 min-w-0 shrink-0">
+            <div className={`${hideOnMobileSearch} items-center gap-2 min-w-0 shrink-0`}>
               <SidebarTrigger data-testid="button-sidebar-toggle" />
             </div>
             <div className="flex-1 min-w-0 flex justify-center">
-              <GlobalSearch />
+              <GlobalSearch onActiveChange={setIsSearchActive} />
             </div>
             <div
               id="header-contextual-actions"
-              className="flex items-center gap-2 shrink-0"
+              className={`${hideOnMobileSearch} items-center gap-2 shrink-0`}
               data-testid="contextual-actions"
             />
-            <div className="flex items-center gap-1 shrink-0">
+            <div className={`${hideOnMobileSearch} items-center gap-1 shrink-0`}>
               {user && (
                 <>
-                  <UniversalAddButton
-                    onAddPerson={() => setIsAddPersonDialogOpen(true)}
-                    onAddSocialAccount={() => setIsAddSocialAccountDialogOpen(true)}
-                    onAddRelationship={() => setIsAddRelationshipDialogOpen(true)}
-                    onAddDailyNote={() => setIsAddDailyNoteDialogOpen(true)}
-                    onAddInteraction={() => setIsAddInteractionDialogOpen(true)}
-                    onAddNote={() => setIsAddNoteDialogOpen(true)}
-                    onAddPhoto={() => setIsAddPhotoDialogOpen(true)}
-                  />
+                  {/* On mobile the add menu lives in the bottom nav. */}
+                  <UniversalAddButton {...addHandlers} className="hidden md:inline-flex" />
                   <StatusDot />
                   <div className="hidden md:flex items-center gap-1">
-                    {isSettingsPage ? (
+                    {isSectionPage ? (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -476,14 +493,14 @@ function AppLayout() {
               )}
             </div>
           </header>
-          <main className="flex-1 overflow-hidden pb-16 md:pb-0">
+          <main className="flex-1 overflow-hidden pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
             <Router />
           </main>
         </div>
       </div>
       {user && (
         <>
-          <MobileBottomNav onAddPersonClick={() => setIsAddPersonDialogOpen(true)} />
+          <MobileBottomNav {...addHandlers} />
           <Suspense fallback={null}>
             {isAddPersonDialogOpen && (
               <PersonDialog open={isAddPersonDialogOpen} onOpenChange={setIsAddPersonDialogOpen} />

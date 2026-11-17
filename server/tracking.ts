@@ -11,7 +11,7 @@ import { db } from "./db";
 import { sseManager } from "./middleware/sse";
 import { resolveScrapedAccounts } from "./task-worker";
 import { postedBy } from "./storage";
-import { appSettings, instagramHighlights, socialAccountPosts, socialAccounts, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
+import { appSettings, instagramHighlights, storyImporters, socialAccountPosts, socialAccounts, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
 import {
   DEEP_LEVELS,
   INTEREST_LEVELS,
@@ -104,6 +104,41 @@ function jitteredDue(days: number | null): Date | null {
   return days == null ? null : new Date(Date.now() + days * (0.9 + Math.random() * 0.2) * DAY_MS);
 }
 
+// ── Quiet hours: no hourly tracking check starts inside them ──
+
+export const DEFAULT_QUIET_HOURS = "01:00-09:00";
+
+/** "01:00-09:00" → [start, end] in minutes after local midnight; the span may wrap midnight. Falls back to the default. */
+export function parseQuietHours(spec: string | null | undefined): [number, number] {
+  const m = /^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/.exec((spec ?? "").trim());
+  const a = m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+  const b = m ? Number(m[3]) * 60 + Number(m[4]) : NaN;
+  return a < 1440 && b < 1440 && a !== b ? [a, b] : parseQuietHours(DEFAULT_QUIET_HOURS);
+}
+
+export function inQuietHours(at: Date, [start, end]: [number, number]): boolean {
+  const m = at.getHours() * 60 + at.getMinutes();
+  return start < end ? m >= start && m < end : m >= start || m < end;
+}
+
+/** A random minute outside quiet hours on `day`'s local date. */
+function randomActiveMinute(day: Date, [start, end]: [number, number]): Date {
+  const active = 1440 - ((end - start + 1440) % 1440);
+  const at = new Date(day);
+  at.setHours(0, (end + Math.floor(Math.random() * active)) % 1440, 0, 0);
+  return at;
+}
+
+/** The quiet hours of the importer that runs scheduled checks (tracking-enabled first). */
+export async function trackingQuietHours(): Promise<[number, number]> {
+  const [importer] = await db
+    .select({ quiet: storyImporters.trackingQuietHours })
+    .from(storyImporters)
+    .orderBy(desc(storyImporters.trackingEnabled), storyImporters.createdAt)
+    .limit(1);
+  return parseQuietHours(importer?.quiet);
+}
+
 /** The sections a job can read; each stamps its own `*_checked_at`. */
 export type Section = Exclude<TrackingKind, "scan">;
 const CHECKED_COLUMN = { info: "infoCheckedAt", follows: "followsCheckedAt", posts: "postsCheckedAt", tagged: "taggedCheckedAt", highlights: "highlightsCheckedAt" } as const;
@@ -139,9 +174,12 @@ export async function markChecked(accountId: string, section: Section): Promise<
 export async function markScanned(accountId: string): Promise<void> {
   const [account] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, accountId));
   if (!account) return;
+  // A due time inside quiet hours would only pile up at their end: move it to an active minute that day.
+  const due = jitteredDue(scanCadence(account, await levelCadences()));
+  const quiet = await trackingQuietHours();
   await db
     .update(socialAccounts)
-    .set({ scanCheckedAt: new Date(), scanDueAt: jitteredDue(scanCadence(account, await levelCadences())) })
+    .set({ scanCheckedAt: new Date(), scanDueAt: due && inQuietHours(due, quiet) ? randomActiveMinute(due, quiet) : due })
     .where(eq(socialAccounts.id, accountId));
 }
 
@@ -163,6 +201,83 @@ export async function rollForwardDueDates(): Promise<void> {
     SET scan_due_at = scan_due_at + (floor(extract(epoch FROM now() - scan_due_at) / (${days} * 86400)) + 1) * ${days} * interval '1 day'
     WHERE scan_due_at <= now() AND ${days} >= 1
   `);
+}
+
+/** Per local day (YYYY-MM-DD) for the next REPORT_DAYS days: accounts due before and after a rebalance. */
+export type RebalanceReport = {
+  accounts: number;
+  days: { day: string; before: number; after: number }[];
+  /** Accounts due before day 0 that the rebalance counted into day 0's "before". */
+  overdue: number;
+};
+
+const REPORT_DAYS = 8;
+const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/**
+ * Even out the scan schedule: within each cadence, deal the scheduled accounts
+ * across the cadence's days so every day gets the same share — the account
+ * checked longest ago gets the first day. Each due time is a random minute
+ * outside quiet hours, so the hourly checks see an even trickle. Day 0 is
+ * tomorrow.
+ * Accounts with a job open are left alone; they reschedule when it finishes.
+ */
+export async function rebalanceScanSchedule(opts: { dryRun?: boolean } = {}): Promise<RebalanceReport> {
+  const defaults = await levelCadences();
+  const quiet = await trackingQuietHours();
+  const rows = await db.execute<{ id: string; interest_level: string; scan_every_days: number | null; scan_due_at: Date }>(sql`
+    SELECT sa.id, sa.interest_level, sa.scan_every_days, sa.scan_due_at
+    FROM social_accounts sa
+    WHERE sa.type_id = ${INSTAGRAM_TYPE_ID}
+      AND sa.scan_due_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
+      AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = sa.id AND i.kind = 'not_found' AND i.status = 'open')
+    ORDER BY sa.scan_checked_at ASC NULLS FIRST, sa.scan_due_at ASC
+  `);
+
+  const day0 = new Date();
+  day0.setDate(day0.getDate() + 1);
+  day0.setHours(0, 0, 0, 0);
+  const dayAt = (i: number) => new Date(day0.getFullYear(), day0.getMonth(), day0.getDate() + i);
+
+  const byCadence = new Map<number, string[]>();
+  for (const r of rows.rows) {
+    const days = scanCadence({ interestLevel: r.interest_level, scanEveryDays: r.scan_every_days }, defaults);
+    if (days == null || days < 1) continue;
+    byCadence.set(days, [...(byCadence.get(days) ?? []), r.id]);
+  }
+  const updates: { id: string; due: Date }[] = [];
+  for (const [days, ids] of Array.from(byCadence)) {
+    ids.forEach((id, i) => {
+      updates.push({ id, due: randomActiveMinute(dayAt(Math.floor((i * days) / ids.length)), quiet) });
+    });
+  }
+
+  const report: RebalanceReport = {
+    accounts: updates.length,
+    overdue: rows.rows.filter((r) => new Date(r.scan_due_at) < day0).length,
+    days: Array.from({ length: REPORT_DAYS }, (_, i) => ({ day: localDay(dayAt(i)), before: 0, after: 0 })),
+  };
+  const slot = (d: Date) => report.days.find((x) => x.day === localDay(d < day0 ? day0 : d));
+  const moved = new Set(updates.map((u) => u.id));
+  for (const r of rows.rows) if (moved.has(r.id)) { const s = slot(new Date(r.scan_due_at)); if (s) s.before++; }
+  for (const u of updates) { const s = slot(u.due); if (s) s.after++; }
+
+  if (!opts.dryRun && updates.length) {
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < updates.length; i += 1000) {
+        const values = sql.join(updates.slice(i, i + 1000).map((u) => sql`(${u.id}, ${u.due.toISOString()}::timestamp)`), sql`, `);
+        await tx.execute(sql`
+          UPDATE social_accounts sa SET scan_due_at = v.due
+          FROM (VALUES ${values}) v(id, due)
+          WHERE sa.id = v.id
+            AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
+        `);
+      }
+    });
+    sseManager.broadcast("tracking_job.updated", { action: "rebalanced", count: updates.length });
+  }
+  return report;
 }
 
 /** Accounts with a me person as owner — the ones whose network the "me" rule grades. */
@@ -365,6 +480,19 @@ function dueAt(at: SQL, skipRecent: boolean): SQL {
       ${notRecent}
       AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
       AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = sa.id AND i.kind = 'not_found' AND i.status = 'open')`;
+}
+
+/**
+ * What an hourly check weighs: how many scheduled scans the claim would take
+ * now, and whether any of them has waited more than a day (so a handful of
+ * stragglers below the minimum batch still get checked).
+ */
+export async function dueNow(): Promise<{ count: number; stale: boolean }> {
+  const rows = await db.execute<{ count: number; stale: boolean | null }>(sql`
+    SELECT count(*)::int AS count, bool_or(sa.scan_due_at < now() - interval '24 hours') AS stale
+    ${dueAt(sql`now()`, await skipRecentlyChecked())}
+  `);
+  return { count: rows.rows[0]?.count ?? 0, stale: Boolean(rows.rows[0]?.stale) };
 }
 
 /**

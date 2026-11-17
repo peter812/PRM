@@ -563,7 +563,7 @@ export default function EloRanking() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-4">
+      <div className="border-b px-3 py-3 md:px-6 md:py-4">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <Trophy className="h-6 w-6" />

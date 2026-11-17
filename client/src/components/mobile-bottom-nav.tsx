@@ -1,77 +1,60 @@
 import { Link, useLocation } from "wouter";
-import { Users, UsersRound, Plus, Box, AtSign } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import type { ComponentProps } from "react";
+import { Users, AtSign, CalendarDays, Menu, type LucideIcon } from "lucide-react";
+import { useSidebar } from "@/components/ui/sidebar";
+import { UniversalAddButton } from "@/components/universal-add-button";
 
-interface MobileBottomNavProps {
-  onAddPersonClick: () => void;
+type AddHandlers = Omit<ComponentProps<typeof UniversalAddButton>, "className" | "iconClassName" | "side" | "align" | "testId">;
+
+function NavTab({ href, label, icon: Icon, active }: { href: string; label: string; icon: LucideIcon; active: boolean }) {
+  return (
+    <Link
+      href={href}
+      className={`flex flex-1 flex-col items-center gap-0.5 py-1 text-[10px] font-medium ${active ? "text-primary" : "text-muted-foreground"}`}
+      data-testid={`nav-${href.slice(1)}`}
+    >
+      <Icon className="h-6 w-6" />
+      {label}
+    </Link>
+  );
 }
 
-export function MobileBottomNav({ onAddPersonClick }: MobileBottomNavProps) {
+/** Mobile-only bottom bar: main sections, the universal add menu, and "More" to open the sidebar. */
+export function MobileBottomNav(addHandlers: AddHandlers) {
   const [location] = useLocation();
+  const { setOpenMobile } = useSidebar();
 
-  const isActive = (path: string) => {
-    if (path === "/people" && (location === "/" || location === "/people")) {
-      return true;
-    }
-    return location === path || location.startsWith(path + "/");
-  };
+  const isActive = (path: string) =>
+    (path === "/people" && location === "/") || location === path || location.startsWith(path + "/");
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 md:hidden bg-background border-t z-50" data-testid="nav-mobile-bottom">
-      <div className="flex items-center justify-around py-1 px-1">
-        <Link href="/groups">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-11 w-11 ${isActive("/groups") ? "text-primary" : "text-muted-foreground"}`}
-            data-testid="nav-groups"
-          >
-            <UsersRound className="h-7 w-7" />
-          </Button>
-        </Link>
-
-        <Link href="/people">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-11 w-11 ${isActive("/people") ? "text-primary" : "text-muted-foreground"}`}
-            data-testid="nav-people"
-          >
-            <Users className="h-7 w-7" />
-          </Button>
-        </Link>
-
-        <Button
-          variant="default"
-          size="icon"
-          className="h-11 w-11 rounded-full"
-          onClick={onAddPersonClick}
-          data-testid="nav-add-person"
+    <nav
+      className="fixed bottom-0 left-0 right-0 md:hidden bg-background border-t z-50 pb-[env(safe-area-inset-bottom)]"
+      data-testid="nav-mobile-bottom"
+    >
+      <div className="flex items-center justify-around px-1 h-14">
+        <NavTab href="/people" label="People" icon={Users} active={isActive("/people")} />
+        <NavTab href="/social-accounts" label="Accounts" icon={AtSign} active={isActive("/social-accounts")} />
+        <div className="flex flex-1 justify-center">
+          <UniversalAddButton
+            {...addHandlers}
+            className="h-11 w-11"
+            iconClassName="h-6 w-6"
+            side="top"
+            align="center"
+            testId="nav-add"
+          />
+        </div>
+        <NavTab href="/daily-notes" label="Notes" icon={CalendarDays} active={isActive("/daily-notes")} />
+        <button
+          type="button"
+          onClick={() => setOpenMobile(true)}
+          className="flex flex-1 flex-col items-center gap-0.5 py-1 text-[10px] font-medium text-muted-foreground"
+          data-testid="nav-more"
         >
-          <Plus className="h-7 w-7" />
-        </Button>
-
-        <Link href="/social-graph-3d">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-11 w-11 ${isActive("/social-graph-3d") ? "text-primary" : "text-muted-foreground"}`}
-            data-testid="nav-social-graph-3d"
-          >
-            <Box className="h-7 w-7" />
-          </Button>
-        </Link>
-
-        <Link href="/social-accounts">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-11 w-11 ${isActive("/social-accounts") ? "text-primary" : "text-muted-foreground"}`}
-            data-testid="nav-social-accounts"
-          >
-            <AtSign className="h-7 w-7" />
-          </Button>
-        </Link>
+          <Menu className="h-6 w-6" />
+          More
+        </button>
       </div>
     </nav>
   );

@@ -29,7 +29,7 @@ export default function SuperSearchMediaPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="container mx-auto p-6 max-w-5xl">
+      <div className="container mx-auto p-3 md:p-6 max-w-5xl">
         <div className="flex items-center gap-3 mb-6">
           <Button variant="ghost" size="icon" onClick={() => navigate(`/super-search?q=${encodeURIComponent(searchQuery)}`)}>
             <ArrowLeft className="h-5 w-5" />

@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { ChevronDown, ChevronRight, Loader2, Play, Radar, RefreshCw, Search, XCircle } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronRight, Loader2, Play, Radar, RefreshCw, Search, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { AccountTracking, TrackingSchedule } from "@/components/account-tracking";
 import { InterestLevelBadge, InterestLevelChipPicker, InterestLevelSelect } from "@/components/interest-level-badge";
 import { IMPORTERS_KEY, RUNS_KEY, useImporters, type Importer } from "@/lib/instagram";
@@ -110,6 +111,65 @@ interface Upcoming {
   importerLabel: string | null;
   limit: number;
   checks: { accountId: string; username: string; nickname: string | null; interestLevel: string; kind: TrackingKind; scanMode: "lite" | "full" | null; origin: "manual" | "schedule"; at: string }[];
+}
+
+type ScanForecastResponse = { overdue: number; hours: { at: string; count: number }[] };
+
+/** Accounts whose scheduled scan comes due on each of the next 7 local days, plus those already overdue. */
+function ScanForecastCard() {
+  const { data } = useQuery<ScanForecastResponse>({ queryKey: ["/api/tracking/scan-forecast"], refetchInterval: 60000 });
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  // 8 local midnights bound the 7 days (DST-safe, unlike adding 24h).
+  const bounds = Array.from({ length: 8 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
+  const days = bounds.slice(0, 7);
+  const counts = days.map(() => 0);
+  for (const h of data?.hours ?? []) {
+    const t = new Date(h.at);
+    const i = days.findIndex((d, j) => t >= d && t < bounds[j + 1]);
+    if (i >= 0) counts[i] += h.count;
+  }
+  const max = Math.max(1, ...counts);
+
+  return (
+    <Card data-testid="card-scan-forecast">
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <CalendarDays className="h-4 w-4 text-primary" />
+          Scans — Next 7 Days
+        </CardTitle>
+        <CardDescription>How many accounts come due for a scheduled scan each day.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {data ? (
+          <>
+            <div className="grid grid-cols-7 gap-1.5 sm:gap-3">
+              {days.map((d, i) => (
+                <div key={i} className="flex flex-col items-center gap-1" data-testid={`scan-day-${i}`}>
+                  <span className="text-sm sm:text-lg font-semibold tabular-nums">{counts[i].toLocaleString()}</span>
+                  <div className="h-16 w-full flex items-end">
+                    <div className="w-full rounded-t bg-primary/70" style={{ height: `${(counts[i] / max) * 100}%` }} />
+                  </div>
+                  <span className="text-[10px] sm:text-xs text-muted-foreground text-center leading-tight">
+                    {i === 0 ? "Today" : d.toLocaleDateString([], { weekday: "short" })}
+                    <br />
+                    {d.toLocaleDateString([], { month: "short", day: "numeric" })}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="text-sm text-muted-foreground" data-testid="text-scan-overdue">
+              Overdue now: <span className="font-medium text-foreground tabular-nums">{data.overdue.toLocaleString()}</span>
+              {" · "}Next 7 days: <span className="font-medium text-foreground tabular-nums">{counts.reduce((a, b) => a + b, 0).toLocaleString()}</span>
+            </p>
+            <RebalanceSchedule />
+          </>
+        ) : (
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 /** On demand: the accounts the next morning run would check, in the order it takes them. */
@@ -320,7 +380,7 @@ const EVERY_DAYS_OPTIONS = [
 ];
 
 type ImporterPatch = Partial<Pick<Importer,
-  "runEveryDays" | "runWindow" | "enabled" | "skipDayProbability" | "downloadVideos" | "unseenOnly" | "runNowUnseenOnly" | "trackingEnabled" | "trackingWindow" | "trackingMaxJobs">>;
+  "runEveryDays" | "runWindow" | "enabled" | "skipDayProbability" | "downloadVideos" | "unseenOnly" | "runNowUnseenOnly" | "trackingEnabled" | "trackingQuietHours" | "trackingMaxJobs" | "trackingMinBatch">>;
 
 function useSaveImporter(id: string) {
   const { toast } = useToast();
@@ -335,10 +395,11 @@ function useSaveImporter(id: string) {
 }
 
 /** An "HH:MM-HH:MM" window as two time inputs, saved on blur when valid and changed. */
-function TimeWindow({ value, onSave, testId }: { value: string; onSave: (w: string) => void; testId: string }) {
+/** `wrap` lets the window cross midnight (quiet hours like 23:00-07:00). */
+function TimeWindow({ value, onSave, testId, wrap = false }: { value: string; onSave: (w: string) => void; testId: string; wrap?: boolean }) {
   const [start, setStart] = useState(value.split("-")[0] ?? "");
   const [end, setEnd] = useState(value.split("-")[1] ?? "");
-  const valid = Boolean(start && end && start < end);
+  const valid = Boolean(start && end && (wrap ? start !== end : start < end));
   const save = () => {
     if (valid && `${start}-${end}` !== value) onSave(`${start}-${end}`);
   };
@@ -349,7 +410,7 @@ function TimeWindow({ value, onSave, testId }: { value: string; onSave: (w: stri
         <span className="text-muted-foreground">to</span>
         <Input type="time" value={end} onChange={(e) => setEnd(e.target.value)} onBlur={save} aria-label="Latest" data-testid={`${testId}-end`} />
       </div>
-      {!valid && <p className="text-xs text-destructive">The latest time must be after the earliest.</p>}
+      {!valid && <p className="text-xs text-destructive">{wrap ? "Start and end must differ." : "The latest time must be after the earliest."}</p>}
     </>
   );
 }
@@ -371,11 +432,15 @@ function StorySchedule({ importer }: { importer: Importer }) {
     mutationFn: async () =>
       (await apiRequest("POST", `/api/stories/importers/${importer.id}/run-now`)).json() as Promise<{ status: string; error: string | null; username: string | null }>,
     onSuccess: (r) => {
-      toast({
-        title: r.status === "running" ? `Run started${r.username ? ` as @${r.username}` : ""}` : `Run not started: ${r.status}`,
-        description: r.error ?? "The scraper is logged in and watching the tray.",
-        variant: r.status === "running" ? "default" : "destructive",
-      });
+      toast(
+        r.status === "queued"
+          ? { title: "Run queued", description: "The importer is busy with another run; this one starts when it finishes." }
+          : {
+              title: r.status === "running" ? `Run started${r.username ? ` as @${r.username}` : ""}` : `Run not started: ${r.status}`,
+              description: r.error ?? "The scraper is logged in and watching the tray.",
+              variant: r.status === "running" ? "default" : "destructive",
+            },
+      );
       queryClient.invalidateQueries({ queryKey: RUNS_KEY });
       queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY });
     },
@@ -498,17 +563,83 @@ function StorySchedule({ importer }: { importer: Importer }) {
   );
 }
 
-/** The morning account-tracking run: on/off, window, checks per run, and a manual run. */
+type RebalanceReport = { accounts: number; overdue: number; days: { day: string; before: number; after: number }[] };
+
+/** Preview, then apply, an even spread of scan due dates across each cadence's days. */
+function RebalanceSchedule() {
+  const { toast } = useToast();
+  const [preview, setPreview] = useState<RebalanceReport | null>(null);
+  const rebalance = useMutation({
+    mutationFn: async (dryRun: boolean) => ({ dryRun, report: (await (await apiRequest("POST", `/api/tracking/rebalance${dryRun ? "?dryRun=1" : ""}`)).json()) as RebalanceReport }),
+    onSuccess: ({ dryRun, report }) => {
+      if (dryRun) return setPreview(report);
+      setPreview(null);
+      toast({ title: `Rebalanced ${report.accounts} accounts` });
+      queryClient.invalidateQueries({ queryKey: ["/api/tracking/scan-forecast"] });
+      queryClient.invalidateQueries({ queryKey: STATUS_KEY });
+    },
+    onError: (error: Error) => toast({ title: "Rebalance failed", description: error.message, variant: "destructive" }),
+  });
+  const weekday = (day: string) => new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" });
+
+  return (
+    <>
+      <Button variant="outline" className="self-start" onClick={() => rebalance.mutate(true)} disabled={rebalance.isPending} data-testid="button-rebalance-schedule">
+        {rebalance.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CalendarDays className="mr-2 h-4 w-4" />}
+        Rebalance schedule
+      </Button>
+      <AlertDialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rebalance the scan schedule?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Spreads {preview?.accounts} scheduled accounts evenly over their cadence; the ones checked longest ago come first.
+              {preview?.overdue ? ` ${preview.overdue} overdue accounts are counted on the first day.` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <table className="w-full text-sm" data-testid="table-rebalance-preview">
+            <thead><tr className="text-left text-muted-foreground"><th className="font-normal">Day</th><th className="text-right font-normal">Now</th><th className="text-right font-normal">After</th></tr></thead>
+            <tbody>
+              {preview?.days.map((d) => (
+                <tr key={d.day}><td>{weekday(d.day)}</td><td className="text-right tabular-nums">{d.before}</td><td className="text-right tabular-nums">{d.after}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); rebalance.mutate(false); }} disabled={rebalance.isPending} data-testid="button-rebalance-apply">
+              {rebalance.isPending ? "Rebalancing…" : "Rebalance"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+/** A 1-500 whole-number setting that saves on blur and snaps back when invalid. */
+function IntSetting({ id, label, value, onSave, hint, testId }: { id: string; label: string; value: number; onSave: (n: number) => void; hint: string; testId: string }) {
+  const [text, setText] = useState(String(value));
+  const commit = () => {
+    const n = Number(text);
+    if (Number.isInteger(n) && n >= 1 && n <= 500 && n !== value) onSave(n);
+    else setText(String(value));
+  };
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>{label}</Label>
+      <Input id={id} type="number" min={1} max={500} value={text} onChange={(e) => setText(e.target.value)} onBlur={commit} data-testid={testId} />
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+/** Hourly account tracking: on/off, quiet hours, per-hour cap, minimum batch, and a manual run. */
 function AccountSchedule({ importer }: { importer: Importer }) {
   const { toast } = useToast();
   const save = useSaveImporter(importer.id);
-  const [maxJobs, setMaxJobs] = useState(String(importer.trackingMaxJobs));
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const nextTrackingRunAt = importer.nextTrackingRunAt ? new Date(importer.nextTrackingRunAt) : null;
-  const saveMaxJobs = () => {
-    const n = Number(maxJobs);
-    if (Number.isInteger(n) && n >= 1 && n <= 500 && n !== importer.trackingMaxJobs) save.mutate({ trackingMaxJobs: n });
-    else setMaxJobs(String(importer.trackingMaxJobs));
-  };
 
   const trackNow = useMutation({
     mutationFn: async () =>
@@ -534,8 +665,8 @@ function AccountSchedule({ importer }: { importer: Importer }) {
           <Label htmlFor={`tracking-${importer.id}`} className="cursor-pointer">Enable auto tracking</Label>
           <p className="text-xs text-muted-foreground">
             {importer.trackingEnabled && nextTrackingRunAt
-              ? <>Next tracking run: <strong data-testid={`text-importer-next-tracking-${importer.id}`}>{nextTrackingRunAt.toLocaleString()}</strong></>
-              : importer.trackingEnabled ? "Planning the next tracking run…" : "Off — accounts are only checked when you queue them."}
+              ? <>Next check: <strong data-testid={`text-importer-next-tracking-${importer.id}`}>{nextTrackingRunAt.toLocaleString()}</strong></>
+              : importer.trackingEnabled ? "Planning the next check…" : "Off — accounts are only checked when you queue them."}
           </p>
         </div>
         <Switch
@@ -546,27 +677,42 @@ function AccountSchedule({ importer }: { importer: Importer }) {
           data-testid={`switch-importer-tracking-${importer.id}`}
         />
       </div>
+      <p className="text-xs text-muted-foreground">
+        Once an hour, if enough accounts are due, a run checks up to the per-hour cap, most overdue first. An account that has waited over a day is checked even when fewer are due.
+      </p>
       <div className="grid gap-4 md:grid-cols-2">
-        <div className="space-y-2">
-          <Label>Tracking window</Label>
-          <TimeWindow value={importer.trackingWindow} onSave={(trackingWindow) => save.mutate({ trackingWindow })} testId={`input-importer-track-${importer.id}`} />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor={`maxjobs-${importer.id}`}>Checks per run</Label>
-          <Input
-            id={`maxjobs-${importer.id}`}
-            type="number"
-            min={1}
-            max={500}
-            value={maxJobs}
-           
-            onChange={(e) => setMaxJobs(e.target.value)}
-            onBlur={saveMaxJobs}
-            data-testid={`input-importer-max-jobs-${importer.id}`}
-          />
-          <p className="text-xs text-muted-foreground">The run ends when the window does; whatever it didn't reach stays due.</p>
-        </div>
+        <IntSetting
+          id={`maxjobs-${importer.id}`}
+          label="Accounts per hour"
+          value={importer.trackingMaxJobs}
+          onSave={(trackingMaxJobs) => save.mutate({ trackingMaxJobs })}
+          hint="The most one hourly run checks; the rest wait for the next hour."
+          testId={`input-importer-max-jobs-${importer.id}`}
+        />
+        <IntSetting
+          id={`minbatch-${importer.id}`}
+          label="Minimum due to start a run"
+          value={importer.trackingMinBatch}
+          onSave={(trackingMinBatch) => save.mutate({ trackingMinBatch })}
+          hint="Fewer due than this and the hour is skipped."
+          testId={`input-importer-min-batch-${importer.id}`}
+        />
       </div>
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild>
+          <button type="button" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground" data-testid={`button-importer-tracking-advanced-${importer.id}`}>
+            {advancedOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            Advanced
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-3">
+          <div className="space-y-2 md:w-1/2">
+            <Label>Quiet hours</Label>
+            <TimeWindow wrap value={importer.trackingQuietHours} onSave={(trackingQuietHours) => save.mutate({ trackingQuietHours })} testId={`input-importer-quiet-${importer.id}`} />
+            <p className="text-xs text-muted-foreground">No runs start in this window; it may cross midnight.</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
       <Button variant="outline" className="self-start" onClick={() => trackNow.mutate()} disabled={trackNow.isPending || !importer.serviceUrl} data-testid={`button-importer-track-now-${importer.id}`}>
         {trackNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
         {trackNow.isPending ? "Starting…" : "Run tracking now"}
@@ -801,6 +947,7 @@ export default function SocialTrackingPage() {
         testId="card-account-schedule"
         render={(importer) => <AccountSchedule importer={importer} />}
       />
+      <ScanForecastCard />
       <UpcomingCard />
       <AccountTrackingCard />
       <MentionedAccountsCard />

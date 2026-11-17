@@ -46,7 +46,12 @@ function HistoryChip() {
 
 type SearchTypeFilter = 'all' | SearchCategory;
 
-export function GlobalSearch() {
+interface GlobalSearchProps {
+  /** Fires when the search gains/loses focus, so the header can give it the full row on mobile. */
+  onActiveChange?: (active: boolean) => void;
+}
+
+export function GlobalSearch({ onActiveChange }: GlobalSearchProps = {}) {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   useEffect(() => {
@@ -64,9 +69,23 @@ export function GlobalSearch() {
   const [isSuperSearchActive, setIsSuperSearchActive] = useState(false);
   const [typeFilter, setTypeFilter] = useState<SearchTypeFilter>('all');
   const [leadingWidth, setLeadingWidth] = useState(0);
+  // True while the user is engaged with search; the type filter only shows then (or when narrowed).
+  const [isActive, setIsActive] = useState(false);
+  const showTypeFilter = isActive || typeFilter !== 'all';
   const [, setLocation] = useLocation();
   const containerRef = useRef<HTMLDivElement>(null);
   const leadingRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    onActiveChange?.(isActive);
+  }, [isActive, onActiveChange]);
+
+  const deactivate = () => {
+    setIsOpen(false);
+    setIsActive(false);
+    inputRef.current?.blur();
+  };
 
   // Keep the input's left padding in sync with the width of the type dropdown + search icon.
   useLayoutEffect(() => {
@@ -79,11 +98,15 @@ export function GlobalSearch() {
     return () => observer.disconnect();
   }, []);
 
+  // A leading "@" searches social handles only, regardless of the type dropdown.
+  const isHandleQuery = searchQuery.trim().startsWith('@');
+  const onlyCategory: SearchCategory | null = isHandleQuery ? 'socialProfiles' : typeFilter === 'all' ? null : typeFilter;
+
   // An explicit type selection overrides the per-category preferences; "all" respects them.
-  const effectiveEnabled: Record<SearchCategory, boolean> = typeFilter === 'all'
+  const effectiveEnabled: Record<SearchCategory, boolean> = onlyCategory === null
     ? preferences.enabled
     : (Object.fromEntries(
-        preferences.order.map((category) => [category, category === typeFilter])
+        preferences.order.map((category) => [category, category === onlyCategory])
       ) as Record<SearchCategory, boolean>);
 
   const TypeFilterIcon = typeFilter === 'all' ? LayoutGrid : CATEGORY_ICONS[typeFilter];
@@ -128,9 +151,12 @@ export function GlobalSearch() {
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
+      const target = event.target as Element;
+      if (containerRef.current?.contains(target)) return;
+      // The type filter menu is portaled out of the container; clicking it isn't "outside".
+      if (target.closest?.("[data-radix-popper-content-wrapper]")) return;
+      setIsOpen(false);
+      setIsActive(false);
     };
 
     document.addEventListener("mousedown", handleClickOutside);
@@ -165,6 +191,7 @@ export function GlobalSearch() {
     setSearchQuery("");
     setIsOpen(false);
     setIsSuperSearchActive(false);
+    deactivate();
   };
 
   const handleSelect = (item: {
@@ -593,6 +620,7 @@ export function GlobalSearch() {
           ref={leadingRef}
           className="absolute left-1 top-1/2 -translate-y-1/2 flex items-center gap-1"
         >
+          {showTypeFilter && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -632,13 +660,15 @@ export function GlobalSearch() {
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+          )}
           <SearchIcon className="h-4 w-4 text-muted-foreground pointer-events-none" />
         </div>
         <Input
+          ref={inputRef}
           type="search"
           placeholder={isSuperSearchActive ? "Super Search..." : "Search..."}
           style={{ paddingLeft: leadingWidth ? leadingWidth + 12 : undefined }}
-          className={`pl-9 transition-all duration-300 ${isSuperSearchReady ? "pr-20" : "pr-10"} ${
+          className={`pl-9 transition-all duration-300 ${isSuperSearchReady ? (isActive ? "pr-28 md:pr-20" : "pr-20") : (isActive ? "pr-16 md:pr-10" : "pr-10")} ${
             isSuperSearchActive
               ? "border-red-500 focus-visible:ring-red-500 shadow-[0_0_10px_2px_rgba(239,68,68,0.3)] focus:shadow-[0_0_12px_3px_rgba(239,68,68,0.5)] dark:border-red-500/80 dark:focus-visible:ring-red-500 dark:shadow-[0_0_12px_rgba(239,68,68,0.4)]"
               : ""
@@ -647,6 +677,7 @@ export function GlobalSearch() {
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => {
             setHasEngaged(true);
+            setIsActive(true);
             if (searchQuery.length > 0 || history.length > 0) {
               setIsOpen(true);
             }
@@ -658,7 +689,7 @@ export function GlobalSearch() {
           }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
-              setIsOpen(false);
+              deactivate();
             } else if (e.key === "Enter" && searchQuery.trim()) {
               if (isSuperSearchActive && isSuperSearchReady) {
                 setIsOpen(false);
@@ -698,11 +729,26 @@ export function GlobalSearch() {
               </TooltipContent>
             </Tooltip>
           )}
+          {isActive && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 md:hidden"
+              onClick={() => {
+                setSearchQuery("");
+                deactivate();
+              }}
+              aria-label="Close search"
+              data-testid="btn-close-search"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
 
       {isOpen && (searchQuery.trim().length > 0 || history.length > 0) && (
-        <Card className="absolute top-full mt-1 w-full max-h-96 overflow-auto z-50" data-testid="card-search-results">
+        <Card className="absolute top-full mt-1 w-full max-h-[70vh] md:max-h-96 overflow-auto z-50" data-testid="card-search-results">
           {searchQuery.trim().length === 0 ? (
             <div className="py-1">
               <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground flex items-center justify-between border-b">

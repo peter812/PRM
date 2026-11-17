@@ -16,6 +16,7 @@
     "@googlemaps/markerclusterer": "^2.6.2",
     "@hookform/resolvers": "^3.10.0",
     "@maplibre/maplibre-gl-leaflet": "^0.1.4",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@qdrant/js-client-rest": "^1.18.0",
     "@radix-ui/react-alert-dialog": "^1.1.7",
     "@radix-ui/react-avatar": "^1.1.4",

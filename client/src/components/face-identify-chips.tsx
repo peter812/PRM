@@ -2,7 +2,7 @@
 // extra look-alikes, "Someone else…" search, and Skip / Unskip. Shared by Face review's face
 // rows and the post/story modals' face popover (photo-faces-plan.md §3).
 import { useState } from "react";
-import { Search, SkipForward } from "lucide-react";
+import { Hexagon, Search, SkipForward } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
 import { IdentitySearch, type IdentityTarget } from "@/components/identity-search";
@@ -37,6 +37,8 @@ export type FaceReviewFace = {
   color: string;
   identified: { socialAccountId?: string; personId?: string; username?: string; label: string } | null;
   dismissed: boolean;
+  /** In the honey pot (too blurry to name); also `dismissed`. */
+  honeypot: boolean;
   /** Set when PRM auto-assigned this face and nobody has confirmed it. */
   autoMatchScore: number | null;
   /** A quality-noise face (too small, low confidence or blurry); hidden unless "Show noise" is on. */
@@ -79,7 +81,7 @@ const ALSO_HERE = " (also in this photo)";
 const sameIdentity = (a: { socialAccountId?: string; personId?: string }, b: { socialAccountId?: string; personId?: string }) =>
   (!!a.socialAccountId && a.socialAccountId === b.socialAccountId) || (!!a.personId && a.personId === b.personId);
 
-export function FaceIdentifyChips({ face, kind, suggestions, placedIds, onAssign, onSkip, onUnskip }: {
+export function FaceIdentifyChips({ face, kind, suggestions, placedIds, onAssign, onSkip, onUnskip, onHoneypot }: {
   face: FaceReviewFace;
   kind: FaceReviewKind;
   suggestions: FaceReviewSuggestion[];
@@ -87,7 +89,10 @@ export function FaceIdentifyChips({ face, kind, suggestions, placedIds, onAssign
   /** `label` names the face until the server's reply arrives. */
   onAssign: (target: IdentityTarget, label: string) => void;
   onSkip: () => void;
+  /** Also takes a face back out of the honey pot. */
   onUnskip: () => void;
+  /** Send the face to the honey pot (too blurry to name). */
+  onHoneypot: () => void;
 }) {
   const [searching, setSearching] = useState(false);
   const isPlaced = (s: { socialAccountId?: string; personId?: string }) =>
@@ -142,14 +147,25 @@ export function FaceIdentifyChips({ face, kind, suggestions, placedIds, onAssign
           <Search className="h-3 w-3" /> Someone else…
         </button>
         {!face.dismissed ? (
-          <button
-            type="button"
-            className="text-xs px-2 py-1 rounded-full border border-dashed text-muted-foreground hover:bg-accent flex items-center gap-1"
-            onClick={(e) => { e.stopPropagation(); onSkip(); }}
-            data-testid={`button-dismiss-${face.faceUuid}`}
-          >
-            <SkipForward className="h-3 w-3" /> Skip
-          </button>
+          <>
+            <button
+              type="button"
+              className="text-xs px-2 py-1 rounded-full border border-dashed text-muted-foreground hover:bg-accent flex items-center gap-1"
+              onClick={(e) => { e.stopPropagation(); onSkip(); }}
+              data-testid={`button-dismiss-${face.faceUuid}`}
+            >
+              <SkipForward className="h-3 w-3" /> Skip
+            </button>
+            <button
+              type="button"
+              className="text-xs px-2 py-1 rounded-full border border-dashed text-muted-foreground hover:bg-accent flex items-center gap-1"
+              onClick={(e) => { e.stopPropagation(); onHoneypot(); }}
+              title="Too blurry to name: put it in the honey pot"
+              data-testid={`button-honeypot-${face.faceUuid}`}
+            >
+              <Hexagon className="h-3 w-3" /> Honey pot
+            </button>
+          </>
         ) : (
           <button
             type="button"
@@ -157,7 +173,7 @@ export function FaceIdentifyChips({ face, kind, suggestions, placedIds, onAssign
             onClick={(e) => { e.stopPropagation(); onUnskip(); }}
             data-testid={`button-undismiss-${face.faceUuid}`}
           >
-            Unskip
+            {face.honeypot ? "Out of honey pot" : "Unskip"}
           </button>
         )}
       </div>

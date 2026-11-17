@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban, Users, EyeOff, CheckCheck } from "lucide-react";
+import { ChevronLeft, ChevronRight, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban, Users, EyeOff, CheckCheck, Hexagon } from "lucide-react";
 import { useBannedActionToggle } from "@/components/banned-action-toggle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,12 +26,13 @@ import {
 } from "@/components/face-identify-chips";
 import { FaceClustersTab } from "@/components/face-clusters-tab";
 import { FaceVerifyTab } from "@/components/face-verify-tab";
+import { FaceHoneypotTab } from "@/components/face-honeypot-tab";
 import type { ImageTask } from "@shared/schema";
 
 const KINDS: FaceReviewKind[] = ["story", "profile", "post", "message"];
 const KIND_LABEL: Record<FaceReviewKind, string> = { story: "Stories", profile: "Profile images", post: "Posts", message: "Messages" };
 
-type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number; dismissed: number };
+type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number; dismissed: number; honeypot: number };
 
 type FaceState = Pick<FaceReviewFace, "identified" | "dismissed" | "autoMatchScore">;
 const faceState = (f: FaceReviewFace): FaceState => ({ identified: f.identified, dismissed: f.dismissed, autoMatchScore: f.autoMatchScore });
@@ -127,7 +128,7 @@ export default function FaceReviewPage() {
   // The Clusters tab is the default; `kind` is the per-photo queue the story/profile/post/message tabs show.
   const tabParam = params.get("tab");
   const queueTab = KINDS.includes(tabParam as FaceReviewKind);
-  const clustersTab = !queueTab && tabParam !== "verify";
+  const clustersTab = !queueTab && tabParam !== "verify" && tabParam !== "honeypot";
   const kind = (queueTab ? tabParam : "story") as FaceReviewKind;
   const dismissedFilter = params.get("dismissed") === "1";
   const showNoise = params.get("noise") === "1";
@@ -430,6 +431,28 @@ export default function FaceReviewPage() {
     onError: (err: Error, vars, ctx) => rollback(ctx, vars.faceUuids.length > 1 ? "Couldn't unskip those faces" : "Couldn't unskip that face", err),
   });
 
+  // Too blurry to name: out of the queue into the honey pot; Undo takes it back out.
+  const honeypotMutation = useMutation({
+    scope: queueScope,
+    mutationFn: async (vars: { photoId: string; faceUuids: string[] }) => {
+      const res = await apiRequest("POST", "/api/face-review/honeypot", { ...vars, kind });
+      return (await res.json()) as FaceReviewItem;
+    },
+    onMutate: (vars) => {
+      toast({
+        title: "Put in the honey pot",
+        action: (
+          <ToastAction altText="Undo" onClick={() => undismissMutation.mutate(vars)}>
+            Undo
+          </ToastAction>
+        ),
+      });
+      return applyOptimistic(vars.photoId, new Map(vars.faceUuids.map((u) => [u, { dismissed: true }])), true);
+    },
+    onSuccess: onSaved,
+    onError: (err: Error, _vars, ctx) => rollback(ctx, "Couldn't put that face in the honey pot", err),
+  });
+
   // The ✕ on a named face box: unlink it (the face comes back for review), with Undo re-assigning it.
   const unassignMutation = useMutation({
     scope: queueScope,
@@ -459,9 +482,9 @@ export default function FaceReviewPage() {
   const autoAssignMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/face-review/auto-assign");
-      return (await res.json()) as { scanned: number; assigned: number; verify: number };
+      return (await res.json()) as { scanned: number; assigned: number; verify: number; honeypot: number };
     },
-    onSuccess: async ({ scanned, assigned, verify }) => {
+    onSuccess: async ({ scanned, assigned, verify, honeypot }) => {
       // The refetch drops photos auto-assign finished, shifting positions: stay on the same photo
       // (or, if it left the queue, the one that followed it) rather than the same index.
       const ids = (d?: { pages: FaceReviewPage[] }) => d?.pages.flatMap((p) => p.items.map((it) => it.photoId)) ?? [];
@@ -472,7 +495,7 @@ export default function FaceReviewPage() {
       const after = ids(queryClient.getQueryData(queueKey));
       const next = before.slice(from).map((id) => after.indexOf(id)).find((i) => i >= 0);
       setIndex(next ?? Math.max(after.length - 1, 0));
-      toast({ title: `${assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces`}${verify ? `, ${verify} to verify` : ""}` });
+      toast({ title: `${assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces`}${verify ? `, ${verify} to verify` : ""}${honeypot ? `, ${honeypot} to the honey pot` : ""}` });
     },
     onError: () => toast({ title: "Auto-assign failed", variant: "destructive" }),
   });
@@ -509,7 +532,7 @@ export default function FaceReviewPage() {
     toast({ title: `Re-scan found ${updated.faces.length} face${updated.faces.length === 1 ? "" : "s"}` });
   }
 
-  // Keyboard shortcuts (§4.1): 1-9 focuses a face row, arrows prev/next image, D dismisses the focused face, Space skips all.
+  // Keyboard shortcuts (§4.1): 1-9 focuses a face row, arrows prev/next image, D dismisses the focused face, H sends it to the honey pot, Space skips all.
   const actionableFaces = useMemo(
     () => item?.faces.filter(actionable) ?? [],
     [item, dismissedFilter, showNoise],
@@ -534,6 +557,8 @@ export default function FaceReviewPage() {
         }
       } else if (e.key.toLowerCase() === "d" && focusedFace && item && !dismissedFilter) {
         dismissMutation.mutate({ photoId: item.photoId, faceUuids: [focusedFace] });
+      } else if (e.key.toLowerCase() === "h" && focusedFace && item && !dismissedFilter) {
+        honeypotMutation.mutate({ photoId: item.photoId, faceUuids: [focusedFace] });
       }
     }
     window.addEventListener("keydown", onKey);
@@ -557,13 +582,17 @@ export default function FaceReviewPage() {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-        <Tabs value={queueTab ? kind : clustersTab ? "clusters" : "verify"} onValueChange={(v) => setParam({ tab: v === "clusters" ? null : v, cluster: null })}>
+        <Tabs value={queueTab ? kind : clustersTab ? "clusters" : (tabParam as string)} onValueChange={(v) => setParam({ tab: v === "clusters" ? null : v, cluster: null })}>
           <TabsList>
             <TabsTrigger value="clusters" data-testid="tab-clusters">
               <Users className="h-4 w-4 mr-1.5" /> Clusters
             </TabsTrigger>
             <TabsTrigger value="verify" data-testid="tab-verify">
               <CheckCheck className="h-4 w-4 mr-1.5" /> Verify
+            </TabsTrigger>
+            <TabsTrigger value="honeypot" data-testid="tab-honeypot">
+              <Hexagon className="h-4 w-4 mr-1.5" /> Honey pot
+              {counts && counts.honeypot > 0 && <Badge variant="secondary" className="ml-1.5">{counts.honeypot}</Badge>}
             </TabsTrigger>
             {KINDS.map((k) => (
               <TabsTrigger key={k} value={k} data-testid={`tab-${k}`}>
@@ -609,6 +638,8 @@ export default function FaceReviewPage() {
 
       {clustersTab ? (
         <FaceClustersTab clusterId={params.get("cluster")} onOpenCluster={(id) => setParam({ cluster: id })} />
+      ) : tabParam === "honeypot" ? (
+        <FaceHoneypotTab />
       ) : !queueTab ? (
         <FaceVerifyTab />
       ) : queueQuery.isLoading ? (
@@ -814,6 +845,7 @@ export default function FaceReviewPage() {
                       onAssign={(target, label) => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label, ...target })}
                       onSkip={() => dismissMutation.mutate({ photoId: item.photoId, faceUuids: [face.faceUuid] })}
                       onUnskip={() => undismissMutation.mutate({ photoId: item.photoId, faceUuids: [face.faceUuid] })}
+                      onHoneypot={() => honeypotMutation.mutate({ photoId: item.photoId, faceUuids: [face.faceUuid] })}
                     />
                   </div>
                 );

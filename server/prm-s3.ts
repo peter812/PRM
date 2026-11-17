@@ -6,9 +6,9 @@ import { Readable } from "stream";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { storage } from "./storage";
+import { STORAGE_KEY_PREFIXES, allBuckets, bucketForKey, defaultBucket, parseBucketSettings, type BucketConfig } from "./prm-s3-buckets";
 
-/** The only key prefixes this app writes; deletes and sweeps never reach outside them. */
-export const STORAGE_KEY_PREFIXES = ["images/", "profiles/", "posts/", "stories/", "media/", "faces/", "references/"];
+export { STORAGE_KEY_PREFIXES };
 
 /** A referenced object that no longer exists in PRM-S3: dead, not retryable. */
 export class ObjectMissingError extends Error {}
@@ -22,6 +22,8 @@ export const PRM_S3_KEYS = {
   ENDPOINT: "prm_s3_endpoint",
   PUBLIC_ENDPOINT: "prm_s3_public_endpoint",
   BUCKET: "prm_s3_bucket",
+  BUCKET_MAP: "prm_s3_bucket_map",
+  BUCKET_PREFIX: "prm_s3_bucket_prefix",
   REGION: "prm_s3_region",
   ACCESS_KEY: "prm_s3_access_key",
   SECRET_KEY: "prm_s3_secret_key",
@@ -53,10 +55,9 @@ export const PRM_S3_PUBLIC_URL_TTL_SECONDS = 24 * 60 * 60;
 // URL we hand out stays valid for at least this long.
 export const PRM_S3_PRESIGN_WINDOW_SECONDS = PRM_S3_PUBLIC_URL_TTL_SECONDS / 2;
 
-export type PrmS3Config = {
+export type PrmS3Config = BucketConfig & {
   endpoint: string;
   publicEndpoint: string;
-  bucket: string;
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
@@ -96,18 +97,25 @@ async function loadPrmS3Config(): Promise<PrmS3Config> {
     console.warn(`[prm-s3] Ignoring invalid public endpoint URL: ${publicEndpoint}`);
     publicEndpoint = "";
   }
-  const bucket = ((await storage.getAppSetting(PRM_S3_KEYS.BUCKET)) || PRM_S3_DEFAULTS.BUCKET).trim();
+  const baseBucket = ((await storage.getAppSetting(PRM_S3_KEYS.BUCKET)) || PRM_S3_DEFAULTS.BUCKET).trim();
+  const { bucketMap, bucketPrefix } = parseBucketSettings(
+    baseBucket,
+    await storage.getAppSetting(PRM_S3_KEYS.BUCKET_MAP),
+    await storage.getAppSetting(PRM_S3_KEYS.BUCKET_PREFIX),
+  );
   const region = ((await storage.getAppSetting(PRM_S3_KEYS.REGION)) || PRM_S3_DEFAULTS.REGION).trim();
   const accessKeyId = ((await storage.getAppSetting(PRM_S3_KEYS.ACCESS_KEY)) || PRM_S3_DEFAULTS.ACCESS_KEY).trim();
   const secretAccessKey = ((await storage.getAppSetting(PRM_S3_KEYS.SECRET_KEY)) || PRM_S3_DEFAULTS.SECRET_KEY).trim();
   const deliveryMode: PrmS3DeliveryMode =
     (await storage.getAppSetting(PRM_S3_KEYS.DELIVERY_MODE)) === "proxy" ? "proxy" : PRM_S3_DEFAULTS.DELIVERY_MODE;
-  const isConfigured = !!(endpoint && bucket && accessKeyId && secretAccessKey);
+  const isConfigured = !!(endpoint && baseBucket && accessKeyId && secretAccessKey);
 
   const cfg: PrmS3Config = {
     endpoint,
     publicEndpoint,
-    bucket,
+    baseBucket,
+    bucketMap,
+    bucketPrefix,
     region,
     accessKeyId,
     secretAccessKey,
@@ -137,6 +145,8 @@ export async function setPrmS3Config(config: {
   endpoint?: string;
   publicEndpoint?: string;
   bucket?: string;
+  bucketMap?: Record<string, string>;
+  bucketPrefix?: string;
   region?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
@@ -145,6 +155,10 @@ export async function setPrmS3Config(config: {
   if (config.endpoint !== undefined) await storage.setAppSetting(PRM_S3_KEYS.ENDPOINT, config.endpoint.trim());
   if (config.publicEndpoint !== undefined) await storage.setAppSetting(PRM_S3_KEYS.PUBLIC_ENDPOINT, config.publicEndpoint.trim());
   if (config.bucket !== undefined) await storage.setAppSetting(PRM_S3_KEYS.BUCKET, config.bucket.trim());
+  if (config.bucketMap !== undefined) {
+    await storage.setAppSetting(PRM_S3_KEYS.BUCKET_MAP, Object.keys(config.bucketMap).length > 0 ? JSON.stringify(config.bucketMap) : "");
+  }
+  if (config.bucketPrefix !== undefined) await storage.setAppSetting(PRM_S3_KEYS.BUCKET_PREFIX, config.bucketPrefix.trim());
   if (config.region !== undefined) await storage.setAppSetting(PRM_S3_KEYS.REGION, config.region.trim());
   if (config.accessKeyId !== undefined) await storage.setAppSetting(PRM_S3_KEYS.ACCESS_KEY, config.accessKeyId.trim());
   if (config.secretAccessKey !== undefined) await storage.setAppSetting(PRM_S3_KEYS.SECRET_KEY, config.secretAccessKey.trim());
@@ -162,10 +176,26 @@ export async function setPrmS3Config(config: {
 }
 
 /**
- * Client for server-side traffic (uploads, deletes, reads). Talks to the
- * internal endpoint.
+ * Throws unless a save of these fields leaves readable bucket settings. Reads
+ * the rows rather than the config, so a save can replace a malformed row.
  */
-export async function getPrmS3Client(): Promise<{ client: S3Client; bucket: string; endpoint: string }> {
+export async function checkBucketSettings(change: { bucket?: unknown; bucketMap?: unknown; bucketPrefix?: unknown }): Promise<void> {
+  if (change.bucketPrefix !== undefined && typeof change.bucketPrefix !== "string") {
+    throw new Error("PRM-S3 bucket prefix must be text.");
+  }
+  const bucket = typeof change.bucket === "string" ? change.bucket.trim() : "";
+  parseBucketSettings(
+    bucket || ((await storage.getAppSetting(PRM_S3_KEYS.BUCKET)) || PRM_S3_DEFAULTS.BUCKET).trim(),
+    change.bucketMap !== undefined ? JSON.stringify(change.bucketMap) : await storage.getAppSetting(PRM_S3_KEYS.BUCKET_MAP),
+    change.bucketPrefix !== undefined ? change.bucketPrefix : await storage.getAppSetting(PRM_S3_KEYS.BUCKET_PREFIX),
+  );
+}
+
+/**
+ * Client for server-side traffic (uploads, deletes, reads). Talks to the
+ * internal endpoint. Bucket names come from `bucketForKey(cfg, key)`.
+ */
+export async function getPrmS3Client(): Promise<{ client: S3Client; cfg: PrmS3Config; endpoint: string }> {
   const cfg = await getPrmS3Config();
   const cacheKey = `${cfg.endpoint}|${cfg.region}|${cfg.accessKeyId}|${cfg.secretAccessKey}`;
 
@@ -186,7 +216,7 @@ export async function getPrmS3Client(): Promise<{ client: S3Client; bucket: stri
 
   return {
     client: cachedClient,
-    bucket: cfg.bucket,
+    cfg,
     endpoint: cfg.endpoint,
   };
 }
@@ -226,13 +256,19 @@ function getSigningKey(secretAccessKey: string, scopeDate: string, region: strin
  * e.g. the internal one for server-side fetches). The signing time is
  * rounded down to PRM_S3_PRESIGN_WINDOW_SECONDS, so the result is stable
  * within a window and valid for at least one more window (TTL - window).
- * An empty key signs the bucket itself; `opts.query` adds signed parameters
- * (e.g. `{ stats: "" }` for the PRM-S3 bucket stats extension).
+ * An empty key signs a bucket itself, which `opts.bucket` names; `opts.query`
+ * adds signed parameters (e.g. `{ stats: "" }` for the PRM-S3 bucket stats
+ * extension).
  */
 export function presignPrmS3PublicUrl(
   cfg: PrmS3Config,
   key: string,
-  { endpoint = cfg.publicEndpoint, nowMs = Date.now(), query: extraQuery = {} }: { endpoint?: string; nowMs?: number; query?: Record<string, string> } = {},
+  {
+    endpoint = cfg.publicEndpoint,
+    nowMs = Date.now(),
+    query: extraQuery = {},
+    bucket = bucketForKey(cfg, key),
+  }: { endpoint?: string; nowMs?: number; query?: Record<string, string>; bucket?: string } = {},
 ): string {
   const windowStart = Math.floor(nowMs / 1000 / PRM_S3_PRESIGN_WINDOW_SECONDS) * PRM_S3_PRESIGN_WINDOW_SECONDS;
   const amzDate = new Date(windowStart * 1000).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
@@ -241,7 +277,7 @@ export function presignPrmS3PublicUrl(
     presignedUrlCache.clear();
     presignedUrlCacheWindow = amzDate;
   }
-  const cacheKey = `${endpoint}|${key}|${JSON.stringify(extraQuery)}`;
+  const cacheKey = `${endpoint}|${bucket}|${key}|${JSON.stringify(extraQuery)}`;
   const cached = presignedUrlCache.get(cacheKey);
   if (cached) return cached;
 
@@ -250,7 +286,7 @@ export function presignPrmS3PublicUrl(
   const defaultScheme = endpoint && endpoint === cfg.publicEndpoint ? "https" : "http";
   const base = new URL(normalizeEndpointUrl(endpoint, defaultScheme));
   const basePath = base.pathname.replace(/\/+$/, "");
-  const canonicalUri = `${basePath}/${[cfg.bucket, ...(key ? key.split("/") : [])].map(uriEncode).join("/")}`;
+  const canonicalUri = `${basePath}/${[bucket, ...(key ? key.split("/") : [])].map(uriEncode).join("/")}`;
 
   const query = [
     ...Object.entries(extraQuery),
@@ -285,14 +321,27 @@ export type PrmS3BucketStats = {
   variantBytes: number;
 };
 
-/** Object and baked-variant counts for the whole bucket (PRM-S3 `?stats` extension). */
+/**
+ * Object and baked-variant counts across every bucket (PRM-S3 `?stats`
+ * extension). Fails if any bucket can't be read: a partial total would pass
+ * for the real one.
+ */
 export async function getPrmS3BucketStats(): Promise<PrmS3BucketStats> {
   const cfg = await getPrmS3Config();
-  const res = await fetch(presignPrmS3PublicUrl(cfg, "", { endpoint: cfg.endpoint, query: { stats: "" } }), {
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`PRM-S3 stats failed: ${res.status} ${await res.text()}`);
-  return (await res.json()) as PrmS3BucketStats;
+  const parts = await Promise.all(
+    allBuckets(cfg).map(async (bucket) => {
+      const res = await fetch(presignPrmS3PublicUrl(cfg, "", { endpoint: cfg.endpoint, query: { stats: "" }, bucket }), {
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) throw new Error(`PRM-S3 stats failed for ${bucket}: ${res.status} ${await res.text()}`);
+      return (await res.json()) as PrmS3BucketStats;
+    }),
+  );
+  const total: PrmS3BucketStats = { objects: 0, images: 0, videos: 0, variants: 0, objectBytes: 0, variantBytes: 0 };
+  for (const part of parts) {
+    for (const field of Object.keys(total) as (keyof PrmS3BucketStats)[]) total[field] += part[field];
+  }
+  return total;
 }
 
 // ── Backups (PRM-S3 `/_backup/*` extension) ──
@@ -407,7 +456,8 @@ export async function cancelPrmS3Backup(): Promise<void> {
 }
 
 export async function copyPrmS3ObjectInPlace(key: string, contentType: string = "image/jpeg"): Promise<void> {
-  const { client, bucket } = await getPrmS3Client();
+  const { client, cfg } = await getPrmS3Client();
+  const bucket = bucketForKey(cfg, key);
   await client.send(
     new CopyObjectCommand({
       Bucket: bucket,
@@ -441,6 +491,17 @@ export async function getPrmS3PublicUrl(keyOrUrl: string): Promise<string | null
   return presignPrmS3PublicUrl(cfg, normalizePrmS3Key(keyOrUrl));
 }
 
+/**
+ * Presigned GET URL PRM-Compute can fetch an image from, or null for an image
+ * outside PRM-S3. Signed for the internal endpoint: compute reads that same
+ * setting and refuses any other host.
+ */
+export async function getComputeImageUrl(location: string): Promise<string | null> {
+  const cfg = await getPrmS3Config();
+  if (!isPrmS3ImageUrl(location)) return null;
+  return presignPrmS3PublicUrl(cfg, normalizePrmS3Key(location), { endpoint: cfg.endpoint });
+}
+
 async function ensureBucketExists(client: S3Client, bucket: string): Promise<void> {
   try {
     await client.send(new HeadBucketCommand({ Bucket: bucket }));
@@ -453,29 +514,65 @@ async function ensureBucketExists(client: S3Client, bucket: string): Promise<voi
   }
 }
 
+/** Only the one unprefixed default bucket is PRM's to make: the rest are set up on PRM-S3. */
+function creatableBucket(cfg: BucketConfig): string | null {
+  return cfg.bucketPrefix ? null : defaultBucket(cfg);
+}
+
+/** The bucket for a write of `key`, made first if it is PRM's to make. */
+async function bucketForWrite(client: S3Client, cfg: PrmS3Config, key: string): Promise<string> {
+  const bucket = bucketForKey(cfg, key);
+  if (bucket === creatableBucket(cfg)) await ensureBucketExists(client, bucket);
+  return bucket;
+}
+
+/** Checks every bucket in `cfg`, for the settings page's connection test. */
+export async function probePrmS3Buckets(client: S3Client, cfg: BucketConfig): Promise<{ ok: boolean; message: string }> {
+  const buckets = allBuckets(cfg);
+  const creatable = creatableBucket(cfg);
+  const initialized: string[] = [];
+  const missing: string[] = [];
+  for (const bucket of buckets) {
+    try {
+      await client.send(new HeadBucketCommand({ Bucket: bucket }));
+      continue;
+    } catch {
+      // Make it if that's ours to do, then look for it by listing.
+    }
+    if (bucket === creatable) {
+      try {
+        await client.send(new CreateBucketCommand({ Bucket: bucket }));
+        initialized.push(bucket);
+        continue;
+      } catch {
+        // Fall through.
+      }
+    }
+    const listRes = await client.send(new ListBucketsCommand({}));
+    if (!listRes.Buckets?.some((b) => b.Name === bucket)) missing.push(bucket);
+  }
+  const names = (list: string[]) => list.map((b) => `'${b}'`).join(", ");
+  if (missing.length > 0) {
+    // A lone default bucket has always passed here, and an upload makes it.
+    return {
+      ok: buckets.length === 1 && creatable !== null,
+      message: `Connected to PRM-S3 server, but ${missing.length > 1 ? "buckets" : "bucket"} ${names(missing)} ${missing.length > 1 ? "were" : "was"} not found.`,
+    };
+  }
+  if (initialized.length > 0) {
+    return { ok: true, message: `Successfully connected to PRM-S3 and initialized bucket ${names(initialized)}.` };
+  }
+  return { ok: true, message: `Successfully connected to PRM-S3 ${buckets.length > 1 ? "buckets" : "bucket"} ${names(buckets)}.` };
+}
+
 export async function testPrmS3Connection(): Promise<{ ok: boolean; message: string }> {
   try {
     const cfg = await getPrmS3Config();
     if (!cfg.isConfigured) {
       return { ok: false, message: "PRM-S3 credentials (access key and secret key) are not configured." };
     }
-    const { client, bucket } = await getPrmS3Client();
-    try {
-      await client.send(new HeadBucketCommand({ Bucket: bucket }));
-      return { ok: true, message: `Successfully connected to PRM-S3 bucket '${bucket}'.` };
-    } catch (headErr: any) {
-      try {
-        await client.send(new CreateBucketCommand({ Bucket: bucket }));
-        return { ok: true, message: `Successfully connected to PRM-S3 and initialized bucket '${bucket}'.` };
-      } catch {
-        const listRes = await client.send(new ListBucketsCommand({}));
-        const bucketExists = listRes.Buckets?.some(b => b.Name === bucket);
-        if (bucketExists) {
-          return { ok: true, message: `Successfully connected to PRM-S3. Bucket '${bucket}' exists.` };
-        }
-        return { ok: true, message: `Connected to PRM-S3 server, but bucket '${bucket}' was not found.` };
-      }
-    }
+    const { client } = await getPrmS3Client();
+    return await probePrmS3Buckets(client, cfg);
   } catch (error: any) {
     return { ok: false, message: `Failed to connect to PRM-S3: ${error.message}` };
   }
@@ -487,7 +584,7 @@ const HEALTH_CACHE_MS = 10_000;
 const HEALTH_PROBE_TIMEOUT_MS = 5_000;
 let healthCache: { at: number; result: { ok: boolean; message: string } } | null = null;
 
-/** Cheap liveness probe of the configured PRM-S3 bucket for the UI's status indicator. */
+/** Cheap liveness probe of the configured PRM-S3 buckets for the UI's status indicator. */
 export async function checkPrmS3Health(): Promise<{ ok: boolean; message: string }> {
   if (healthCache && Date.now() - healthCache.at < HEALTH_CACHE_MS) return healthCache.result;
   let result: { ok: boolean; message: string };
@@ -496,8 +593,9 @@ export async function checkPrmS3Health(): Promise<{ ok: boolean; message: string
     if (!cfg.isConfigured) {
       result = { ok: false, message: "PRM-S3 credentials are not configured" };
     } else {
-      const { client, bucket, endpoint } = await getPrmS3Client();
-      await client.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS) });
+      const { client, endpoint } = await getPrmS3Client();
+      const abortSignal = AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS);
+      await Promise.all(allBuckets(cfg).map((Bucket) => client.send(new HeadBucketCommand({ Bucket }), { abortSignal })));
       result = { ok: true, message: `Connected to PRM-S3 at ${endpoint}` };
     }
   } catch (error: any) {
@@ -509,8 +607,8 @@ export async function checkPrmS3Health(): Promise<{ ok: boolean; message: string
 
 async function putObject(kind: UploadKind, buffer: Buffer, originalFilename: string, mimeType: string, category?: ImageCategory): Promise<string> {
   const { key } = newUploadName(kind, originalFilename, mimeType, category);
-  const { client, bucket } = await getPrmS3Client();
-  await ensureBucketExists(client, bucket);
+  const { client, cfg } = await getPrmS3Client();
+  const bucket = await bucketForWrite(client, cfg, key);
   await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: buffer, ContentType: mimeType }));
   return `/api/prm-s3/${key}`;
 }
@@ -541,8 +639,8 @@ export async function putPrmS3Object(keyOrUrl: string, buffer: Buffer, mimeType:
   if (key.includes("..") || !STORAGE_KEY_PREFIXES.some((p) => key.startsWith(p))) {
     throw new Error(`Access denied: Can only write objects under ${STORAGE_KEY_PREFIXES.join(", ")}`);
   }
-  const { client, bucket } = await getPrmS3Client();
-  await ensureBucketExists(client, bucket);
+  const { client, cfg } = await getPrmS3Client();
+  const bucket = await bucketForWrite(client, cfg, key);
   await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: buffer, ContentType: mimeType }));
   return `/api/prm-s3/${key}`;
 }
@@ -557,7 +655,8 @@ export async function syncFaceCropStorage(): Promise<void> {
   const apiKey = (await storage.getAppSetting("prm_compute_api_key")) || (await storage.getAppSetting("prm_face_api_key"));
   if (!apiUrl || !apiKey) return;
 
-  await setPrmS3Config(await getPrmS3Config());
+  const cfg = await getPrmS3Config();
+  await setPrmS3Config({ ...cfg, bucket: cfg.baseBucket });
 
   try {
     const response = await fetch(`${apiUrl.replace(/\/+$/, "")}/api/face/storage/reload`, {
@@ -588,9 +687,9 @@ export async function deleteImageFromPrmS3(imageUrl: string): Promise<void> {
   if (key.includes("..") || !STORAGE_KEY_PREFIXES.some(p => key.startsWith(p))) {
     throw new Error("Access denied: Can only delete objects in images/ or faces/ folder");
   }
-  const { client, bucket } = await getPrmS3Client();
+  const { client, cfg } = await getPrmS3Client();
   await client.send(new DeleteObjectCommand({
-    Bucket: bucket,
+    Bucket: bucketForKey(cfg, key),
     Key: key,
   }));
 }
@@ -600,21 +699,21 @@ export async function deleteMediaFromPrmS3(mediaUrl: string): Promise<void> {
   if (key.includes("..") || !key.startsWith("media/")) {
     throw new Error("Access denied: Can only delete objects in media/ folder");
   }
-  const { client, bucket } = await getPrmS3Client();
+  const { client, cfg } = await getPrmS3Client();
   await client.send(new DeleteObjectCommand({
-    Bucket: bucket,
+    Bucket: bucketForKey(cfg, key),
     Key: key,
   }));
 }
 
-/** Every object key in the PRM-S3 bucket under prefixes (defaults to STORAGE_KEY_PREFIXES). */
+/** Every object key in PRM-S3 under prefixes (defaults to STORAGE_KEY_PREFIXES), each read from its bucket. */
 export async function listPrmS3ObjectKeys(prefixes: readonly string[] | string[] = STORAGE_KEY_PREFIXES): Promise<string[]> {
-  const { client, bucket } = await getPrmS3Client();
+  const { client, cfg } = await getPrmS3Client();
   const keys: string[] = [];
   for (const Prefix of prefixes) {
     let ContinuationToken: string | undefined;
     do {
-      const res = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix, ContinuationToken }));
+      const res = await client.send(new ListObjectsV2Command({ Bucket: bucketForKey(cfg, Prefix), Prefix, ContinuationToken }));
       for (const obj of res.Contents || []) if (obj.Key) keys.push(obj.Key);
       ContinuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
     } while (ContinuationToken);
@@ -626,8 +725,8 @@ export async function deletePrmS3ObjectKey(key: string): Promise<void> {
   if (key.includes("..") || !STORAGE_KEY_PREFIXES.some(p => key.startsWith(p))) {
     throw new Error(`Access denied: Can only delete objects under ${STORAGE_KEY_PREFIXES.join(", ")}`);
   }
-  const { client, bucket } = await getPrmS3Client();
-  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  const { client, cfg } = await getPrmS3Client();
+  await client.send(new DeleteObjectCommand({ Bucket: bucketForKey(cfg, key), Key: key }));
 }
 
 export async function getPrmS3ObjectStream(keyOrUrl: string): Promise<{
@@ -636,13 +735,13 @@ export async function getPrmS3ObjectStream(keyOrUrl: string): Promise<{
   contentLength?: number;
   etag?: string;
 }> {
-  const { client, bucket } = await getPrmS3Client();
+  const { client, cfg } = await getPrmS3Client();
   const key = normalizePrmS3Key(keyOrUrl);
   if (key.includes("..") || !STORAGE_KEY_PREFIXES.some(p => key.startsWith(p))) {
     throw new Error(`Access denied: Can only access objects under ${STORAGE_KEY_PREFIXES.join(", ")}`);
   }
   const res = await client.send(new GetObjectCommand({
-    Bucket: bucket,
+    Bucket: bucketForKey(cfg, key),
     Key: key,
   })).catch((err) => {
     throw err?.name === "NoSuchKey" ? new ObjectMissingError(`PRM-S3 object no longer exists: ${key}`) : err;

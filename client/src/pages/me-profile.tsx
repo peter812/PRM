@@ -196,68 +196,68 @@ export default function MeProfile() {
       {/* Main Content Area with Left Sidebar Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Left Side Navigation Menu */}
-        <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-y-auto">
+        <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-x-auto md:overflow-x-visible md:overflow-y-auto">
           <div className="p-3">
-            <TabsList className="flex flex-col items-stretch justify-start h-auto bg-transparent p-0 gap-1">
+            <TabsList className="flex md:flex-col items-stretch justify-start h-auto bg-transparent p-0 gap-1 w-max md:w-auto">
               <TabsTrigger
                 value="home"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-home"
               >
                 Home
               </TabsTrigger>
               <TabsTrigger
                 value="flow"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-flow"
               >
                 Flow
               </TabsTrigger>
               <TabsTrigger
                 value="relationships"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-relationships"
               >
                 Relationships
               </TabsTrigger>
               <TabsTrigger
                 value="tree"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-tree"
               >
                 Tree
               </TabsTrigger>
               <TabsTrigger
                 value="groups"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-groups"
               >
                 Groups
               </TabsTrigger>
               <TabsTrigger
                 value="messages"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-messages"
               >
                 Messages
               </TabsTrigger>
               <TabsTrigger
                 value="education-career"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-education-career"
               >
                 Education & Career
               </TabsTrigger>
               <TabsTrigger
                 value="location"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-location"
               >
                 Location
               </TabsTrigger>
               <TabsTrigger
                 value="photos"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-photos"
               >
                 Photos
@@ -270,7 +270,7 @@ export default function MeProfile() {
         <div className="flex-1 flex flex-col min-h-0 bg-background overflow-hidden">
           <Suspense fallback={<Skeleton className="w-full h-[400px]" />}>
           {/* Home Tab Dashboard */}
-          <TabsContent value="home" className="mt-0 flex-1 overflow-y-auto p-6 space-y-6">
+          <TabsContent value="home" className="mt-0 flex-1 overflow-y-auto p-3 md:p-6 space-y-6">
             <div className="flex flex-col lg:flex-row gap-6 items-start">
               {/* Left/Main Column: Overview Summary Panels */}
               <div className="flex-1 space-y-6 w-full min-w-0">
@@ -524,7 +524,7 @@ export default function MeProfile() {
             />
           </TabsContent>
 
-          <TabsContent value="education-career" className="mt-0 flex-1 min-h-0 p-6 overflow-y-auto">
+          <TabsContent value="education-career" className="mt-0 flex-1 min-h-0 p-3 md:p-6 overflow-y-auto">
             <div className="max-w-3xl space-y-6">
               <div className="flex justify-end">
                 <Button
@@ -634,7 +634,7 @@ export default function MeProfile() {
             <MessagesTab personId={person.id} />
           </TabsContent>
 
-          <TabsContent value="location" className="mt-0 flex-1 min-h-0 p-6 overflow-y-auto">
+          <TabsContent value="location" className="mt-0 flex-1 min-h-0 p-3 md:p-6 overflow-y-auto">
             <PersonAddresses personId={person.id} />
           </TabsContent>
 

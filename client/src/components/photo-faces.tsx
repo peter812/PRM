@@ -41,7 +41,7 @@ export const postSlidesKey = (postId: string) => [`/api/social-account-posts/${p
 export const photoFacesKey = (photoId: string) => [`/api/photos/${photoId}/faces`];
 
 type FaceEdit = {
-  path: "assign" | "unassign" | "dismiss" | "undismiss";
+  path: "assign" | "unassign" | "dismiss" | "undismiss" | "honeypot";
   slide: PostSlide;
   face: FaceReviewFace;
   target?: IdentityTarget;
@@ -167,7 +167,12 @@ export function PhotoFaces({ slidesKey: key, slide, src, imgClassName, mentions,
     advanceFrom(face);
   };
   const unskip = (face: FaceReviewFace) =>
-    current && edit.mutate({ path: "undismiss", slide: current, face, patch: { dismissed: false }, failure: "Couldn't unskip that face" });
+    current && edit.mutate({ path: "undismiss", slide: current, face, patch: { dismissed: false, honeypot: false }, failure: "Couldn't unskip that face" });
+  const honeypot = (face: FaceReviewFace) => {
+    if (!current) return;
+    edit.mutate({ path: "honeypot", slide: current, face, patch: { dismissed: true, honeypot: true, identified: null }, failure: "Couldn't put that face in the honey pot" });
+    advanceFrom(face);
+  };
 
   // Re-scan: the global task SSE keeps ["/api/image-tasks", id] fresh; reload the slide when it ends.
   const [rescanTask, setRescanTask] = useState<string | null>(null);
@@ -264,6 +269,7 @@ export function PhotoFaces({ slidesKey: key, slide, src, imgClassName, mentions,
                         onAssign={(target, label) => assign(selectedFace, target, label)}
                         onSkip={() => skip(selectedFace)}
                         onUnskip={() => unskip(selectedFace)}
+                        onHoneypot={() => honeypot(selectedFace)}
                       />
                     }
                     onConfirm={() => {
@@ -327,7 +333,7 @@ export function PhotoFaces({ slidesKey: key, slide, src, imgClassName, mentions,
                       {f.autoMatchScore != null && <span className="text-white/60"> · Auto {Math.round(f.autoMatchScore * 100)}%</span>}
                     </span>
                   ) : (
-                    <span className="truncate italic text-white/60">{f.dismissed ? "Skipped" : "Who is this?"}</span>
+                    <span className="truncate italic text-white/60">{f.honeypot ? "Honey pot" : f.dismissed ? "Skipped" : "Who is this?"}</span>
                   )}
                 </button>
               ))}
@@ -476,7 +482,7 @@ function FaceActions({ face, nameLink, chips, onConfirm, onUnassign }: {
             ) : face.identified ? (
               nameLink
             ) : face.dismissed ? (
-              "Skipped"
+              face.honeypot ? "In the honey pot" : "Skipped"
             ) : (
               "Who is this?"
             )}

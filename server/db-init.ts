@@ -542,7 +542,9 @@ async function validateAndSyncSchema(): Promise<void> {
         service_secret: "TEXT NOT NULL DEFAULT ''",
         tracking_enabled: "BOOLEAN NOT NULL DEFAULT FALSE",
         tracking_window: "TEXT NOT NULL DEFAULT '07:00-10:00'",
-        tracking_max_jobs: "INTEGER NOT NULL DEFAULT 40",
+        tracking_max_jobs: "INTEGER NOT NULL DEFAULT 30",
+        tracking_quiet_hours: "TEXT NOT NULL DEFAULT '01:00-09:00'",
+        tracking_min_batch: "INTEGER NOT NULL DEFAULT 10",
         next_tracking_run_at: "TIMESTAMP",
         unseen_only: "BOOLEAN NOT NULL DEFAULT FALSE",
         run_now_unseen_only: "BOOLEAN NOT NULL DEFAULT FALSE",
@@ -1159,6 +1161,11 @@ async function validateAndSyncSchema(): Promise<void> {
     await addColumnIfNotExists("faces", "verify_personface_uuid", "VARCHAR");
     await addColumnIfNotExists("faces", "verify_score", "REAL");
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_verify_personface_uuid_idx ON faces (verify_personface_uuid) WHERE verify_personface_uuid IS NOT NULL`);
+    await addColumnIfNotExists("faces", "honeypot", "TEXT");
+    await addColumnIfNotExists("faces", "honeypot_at", "TIMESTAMPTZ");
+    await addColumnIfNotExists("faces", "honeypot_score", "REAL");
+    await pool.query(`DROP INDEX IF EXISTS faces_honeypot_at_idx`); // replaced by faces_honeypot_idx, which also covers 'auto'
+    await pool.query(`CREATE INDEX IF NOT EXISTS faces_honeypot_idx ON faces (honeypot_at) WHERE honeypot IN ('manual', 'auto')`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS face_clusters (
         id VARCHAR PRIMARY KEY,

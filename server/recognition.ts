@@ -9,7 +9,7 @@ import sharp from "sharp";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
-import { fetchImageBuffer } from "./prm-s3";
+import { fetchImageBuffer, getComputeImageUrl } from "./prm-s3";
 import { facePairDismissals, faces, imageTasks, people, photos, socialAccountPosts, socialAccounts, type Photo } from "@shared/schema";
 import { log } from "./vite";
 import { triggerImageTaskWorker } from "./task-worker";
@@ -22,6 +22,7 @@ import type { FaceBox } from "@shared/face-box";
 import {
   markFaceIdentitiesDirty, getLookalikeMinScore, setLookalikeMinScore, lookAlikesFor,
   getAutoAssignMinScore, setAutoAssignMinScore, AUTO_ASSIGN_MIN_MARGIN, getVerifyMinScore, setVerifyMinScore,
+  getHoneypotSettings, setHoneypotSettings, honeypotScoresFor, markHoneypotDirty,
 } from "./face-lookalikes";
 
 /** Spread into every update that decides a face's identity: its cluster and verify suggestions no longer apply (face-clustering-plan.md §1). */
@@ -132,14 +133,19 @@ export type FaceRecognitionResult = {
  * answers 400 for "no faces"; that still counts as a run so the photo isn't
  * picked up again by backfill. A profile picture with one face also links that
  * face to its account (see linkProfileFace).
+ *
+ * `viaUrl` has compute fetch the image from a presigned URL so PRM never holds
+ * it; a photo outside PRM-S3 is uploaded as usual.
  */
-export async function runFaceRecognition(photoId: string): Promise<FaceRecognitionResult> {
+export async function runFaceRecognition(photoId: string, { viaUrl = false }: { viaUrl?: boolean } = {}): Promise<FaceRecognitionResult> {
   const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
   if (!photo) throw new Error("Photo not found.");
 
-  const fetched = await fetchImageBuffer(photo.location);
+  const imageUrl = viaUrl ? await getComputeImageUrl(photo.location) : null;
+  const fetched = imageUrl ? null : await fetchImageBuffer(photo.location);
   const form = new FormData();
-  form.append("image", new Blob([fetched.buffer], { type: fetched.mimeType }), path.basename(photo.location) || "image.jpg");
+  if (fetched) form.append("image", new Blob([fetched.buffer], { type: fetched.mimeType }), path.basename(photo.location) || "image.jpg");
+  else form.append("image_url", imageUrl!);
   form.append("photo_id", photo.id);
   form.append("max_faces", "100");
 
@@ -157,10 +163,12 @@ export async function runFaceRecognition(photoId: string): Promise<FaceRecogniti
 
   // Face boxes are in this file's pixels. Ingestion may have stored the size the
   // source reported (e.g. Instagram's 1080px) for a smaller file, so record the real one.
-  const dims = getImageDimensions(fetched.buffer);
+  const dims = fetched
+    ? getImageDimensions(fetched.buffer)
+    : data.width && data.height ? { width: data.width as number, height: data.height as number } : null;
   const sized = dims ? { ...photo, widthPx: dims.width, heightPx: dims.height } : photo;
 
-  const profileLink = await linkProfileFace(sized, detected, async () => fetched.buffer);
+  const profileLink = await linkProfileFace(sized, detected, async () => (fetched ?? await fetchImageBuffer(photo.location)).buffer);
   const facialIds = await resolveFaceIdentities(detected);
 
   await db.update(photos)
@@ -542,11 +550,12 @@ export async function connectFace(input: ConnectFaceInput): Promise<ConnectFaceR
       ? (await tx.select({ id: faces.id }).from(faces).where(inArray(faces.personfaceUuid, Array.from(toFold)))).map((r) => r.id)
       : [];
     for (const group of Array.from(toFold)) await moveGroup(tx, target, group);
-    if (faceRow) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
+    if (faceRow) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, honeypot: null, honeypotAt: null, honeypotScore: null, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
     await linkIdentity(tx, target, identity);
     await refreshFacialIdsForGroups(targetRenamed ? [target] : [], tx, faceRow ? [...joining, faceRow.id] : joining);
   });
   markFaceIdentitiesDirty();
+  markHoneypotDirty(); // a named face is no longer a honey pot face
 
   const [resolvedAccount] = await db.select({ id: socialAccounts.id }).from(socialAccounts).where(eq(socialAccounts.personfaceUuid, target));
   return { personId: await groupPersonId(target), socialAccountId: resolvedAccount?.id ?? null, personfaceUuid: target };
@@ -580,11 +589,12 @@ export async function connectFaces(faceIds: string[], input: { personId?: string
 
   await db.transaction(async (tx) => {
     for (const group of Array.from(toFold)) await moveGroup(tx, target, group);
-    if (moving.length) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, ...clearedSuggestions }).where(inArray(faces.id, moving));
+    if (moving.length) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, honeypot: null, honeypotAt: null, honeypotScore: null, ...clearedSuggestions }).where(inArray(faces.id, moving));
     await linkIdentity(tx, target, identity);
     await refreshFacialIdsForGroups([target], tx, moving);
   });
   markFaceIdentitiesDirty();
+  markHoneypotDirty(); // a named face is no longer a honey pot face
   // The new faces sharpen the identity's centroid: let it sweep the rest now rather than within the hour.
   autoAssignFaces().catch((err) => log(`[FaceAutoAssign] after naming faces failed: ${err?.message ?? err}`));
   return { moved: moving.length };
@@ -704,7 +714,7 @@ export async function disassociateGroup(personfaceUuid: string): Promise<{ count
 
 // ── Auto-assign confident matches (face-review-plan.md §8.2) ─────────────────
 
-export type AutoAssignResult = { scanned: number; assigned: number; verify: number };
+export type AutoAssignResult = { scanned: number; assigned: number; verify: number; honeypot: number };
 
 /** The face's group has no person or social account (a null group counts as unnamed). */
 export const faceGroupUnnamed = sql`NOT EXISTS (SELECT 1 FROM ${people} WHERE ${people.personfaceUuid} = ${faces.personfaceUuid})
@@ -724,6 +734,8 @@ let fullAutoAssign: Promise<AutoAssignResult> | null = null;
  * one photo may go to the same identity (collage images).
  * `faceIds` limits the run to those faces (a freshly recognised photo);
  * without it every open face is scanned, one run at a time.
+ * With honey pot routing on, a face that looks more like a face a person put in the
+ * honey pot than like anyone named goes to the honey pot instead (honey-pot-plan.md §2.3).
  */
 export function autoAssignFaces(faceIds?: string[]): Promise<AutoAssignResult> {
   if (faceIds) return runAutoAssign(faceIds);
@@ -734,9 +746,9 @@ export function autoAssignFaces(faceIds?: string[]): Promise<AutoAssignResult> {
 }
 
 async function runAutoAssign(faceIds?: string[]): Promise<AutoAssignResult> {
-  if (faceIds && !faceIds.length) return { scanned: 0, assigned: 0, verify: 0 };
+  if (faceIds && !faceIds.length) return { scanned: 0, assigned: 0, verify: 0, honeypot: 0 };
   const candidates = await db
-    .select({ id: faces.id, personfaceUuid: faces.personfaceUuid })
+    .select({ id: faces.id, personfaceUuid: faces.personfaceUuid, released: sql<boolean>`${faces.honeypot} IS NOT DISTINCT FROM 'released'` })
     .from(faces)
     .where(and(
       isNull(faces.dismissedAt), isNotNull(faces.photoId), isNotNull(faces.embedding), faceGroupUnnamed,
@@ -749,13 +761,26 @@ async function runAutoAssign(faceIds?: string[]): Promise<AutoAssignResult> {
   type Pick = { faceId: string; oldGroup: string | null; group: string; score: number };
   const picks: Pick[] = [];
   const verify: { id: string; group: string; score: number }[] = [];
+  const honeypotSettings = await getHoneypotSettings();
+  const honeypotPicks: { id: string; old_group: string | null; score: number }[] = [];
+  const startedAt = Date.now();
   const BATCH = 500;
   for (let i = 0; i < candidates.length; i += BATCH) {
     const batch = candidates.slice(i, i + BATCH);
     // Scoring a margin below the threshold keeps a just-under runner-up in the list, so near ties are seen.
     const scores = await lookAlikesFor(batch.map((c) => c.id), { minScore: Math.min(verifyMin, minScore - AUTO_ASSIGN_MIN_MARGIN) });
+    // A face a person took out of the honey pot is never routed back into it.
+    const routable = honeypotSettings.auto ? batch.filter((c) => !c.released).map((c) => c.id) : [];
+    const hpScores = routable.length
+      ? await honeypotScoresFor(await db.select({ id: faces.id, embedding: faces.embedding }).from(faces).where(inArray(faces.id, routable)))
+      : new Map<string, number>();
     for (const c of batch) {
       const [top, runnerUp] = scores.get(c.id) ?? [];
+      const hp = hpScores.get(c.id);
+      if (hp !== undefined && hp >= honeypotSettings.minScore && hp > (top?.score ?? 0)) {
+        honeypotPicks.push({ id: c.id, old_group: c.personfaceUuid, score: hp });
+        continue;
+      }
       if (!top) continue;
       if (top.score >= minScore && !(runnerUp && top.score - runnerUp.score < AUTO_ASSIGN_MIN_MARGIN)) {
         picks.push({ faceId: c.id, oldGroup: c.personfaceUuid, group: top.personfaceUuid, score: top.score });
@@ -798,10 +823,28 @@ async function runAutoAssign(faceIds?: string[]): Promise<AutoAssignResult> {
       `);
       await refreshFacialIdsForGroups([], tx, picks.map((a) => a.faceId));
     }
+    if (honeypotPicks.length) {
+      await tx.execute(sql`
+        UPDATE faces
+        SET dismissed_at = now(),
+            honeypot = 'auto',
+            honeypot_score = v.score,
+            honeypot_at = now(),
+            auto_match_score = NULL,
+            cluster_id = NULL,
+            verify_personface_uuid = NULL,
+            verify_score = NULL
+        FROM jsonb_to_recordset(${JSON.stringify(honeypotPicks)}::jsonb) AS v(id varchar, old_group varchar, score real)
+        WHERE faces.id = v.id
+          AND faces.dismissed_at IS NULL
+          AND faces.personface_uuid IS NOT DISTINCT FROM v.old_group
+      `);
+    }
   });
 
-  log(`[FaceAutoAssign] ${picks.length} of ${candidates.length} open faces assigned (min ${minScore}), ${verify.length} to verify (min ${verifyMin})`);
-  return { scanned: candidates.length, assigned: picks.length, verify: verify.length };
+  const honeypotNote = honeypotSettings.auto ? `, ${honeypotPicks.length} to the honey pot (min ${honeypotSettings.minScore})` : "";
+  log(`[FaceAutoAssign] ${picks.length} of ${candidates.length} open faces assigned (min ${minScore}), ${verify.length} to verify (min ${verifyMin})${honeypotNote} in ${Date.now() - startedAt}ms`);
+  return { scanned: candidates.length, assigned: picks.length, verify: verify.length, honeypot: honeypotPicks.length };
 }
 
 const AUTO_ASSIGN_INTERVAL_MS = 60 * 60 * 1000;
@@ -1030,10 +1073,8 @@ export async function recognizeProfilePhotos(accountId: string, includePrevious:
 
 export type OcrOptions = { min_score?: unknown; model?: unknown; photo_id?: string };
 
-/** OCR on raw bytes. With `photo_id`, compute writes photos.ocr_data / ocr_at itself. */
-export async function runOcrOnBuffer(buffer: Buffer, mimeType: string, fileName: string, opts: OcrOptions): Promise<any> {
-  const form = new FormData();
-  form.append("image", new Blob([buffer], { type: mimeType || "image/jpeg" }), fileName || "image.jpg");
+/** Sends `form`, which already holds the image. */
+async function postOcr(form: FormData, opts: OcrOptions): Promise<any> {
   if (opts.min_score !== undefined && opts.min_score !== "") form.append("min_score", String(opts.min_score));
   // Optional preset override ("v5-mobile" | "v5-server"); defaults to the configured one.
   if (opts.model) form.append("model", String(opts.model));
@@ -1044,9 +1085,23 @@ export async function runOcrOnBuffer(buffer: Buffer, mimeType: string, fileName:
   return response.json();
 }
 
-export async function runOcr(photoId: string, opts: Omit<OcrOptions, "photo_id"> = {}): Promise<any> {
+/** OCR on raw bytes. With `photo_id`, compute writes photos.ocr_data / ocr_at itself. */
+export async function runOcrOnBuffer(buffer: Buffer, mimeType: string, fileName: string, opts: OcrOptions): Promise<any> {
+  const form = new FormData();
+  form.append("image", new Blob([buffer], { type: mimeType || "image/jpeg" }), fileName || "image.jpg");
+  return postOcr(form, opts);
+}
+
+/** `viaUrl`: as in runFaceRecognition. */
+export async function runOcr(photoId: string, { viaUrl = false, ...opts }: Omit<OcrOptions, "photo_id"> & { viaUrl?: boolean } = {}): Promise<any> {
   const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
   if (!photo) throw new Error("Photo not found.");
+  const imageUrl = viaUrl ? await getComputeImageUrl(photo.location) : null;
+  if (imageUrl) {
+    const form = new FormData();
+    form.append("image_url", imageUrl);
+    return postOcr(form, { ...opts, photo_id: photoId });
+  }
   const fetched = await fetchImageBuffer(photo.location);
   return runOcrOnBuffer(fetched.buffer, fetched.mimeType, path.basename(photo.location) || "image.jpg", { ...opts, photo_id: photoId });
 }
@@ -1142,6 +1197,7 @@ export type AutoRecognitionSettings = {
   profileLink: { minFacePct: number };
   lookalike: { minScore: number };
   autoAssign: { minScore: number; verifyMinScore: number };
+  honeypot: { auto: boolean; minScore: number };
 };
 
 const AUTO_RECOGNITION_KEYS: Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, string>>> = {
@@ -1200,6 +1256,7 @@ export async function getAutoRecognitionSettings(): Promise<AutoRecognitionSetti
   out.profileLink = { minFacePct: await getProfileLinkMinFacePct() };
   out.lookalike = { minScore: await getLookalikeMinScore() };
   out.autoAssign = { minScore: await getAutoAssignMinScore(), verifyMinScore: await getVerifyMinScore() };
+  out.honeypot = await getHoneypotSettings();
   return out;
 }
 
@@ -1208,6 +1265,7 @@ export async function setAutoRecognitionSettings(
     profileLink?: { minFacePct?: unknown };
     lookalike?: { minScore?: unknown };
     autoAssign?: { minScore?: unknown; verifyMinScore?: unknown };
+    honeypot?: { auto?: unknown; minScore?: unknown };
   },
 ): Promise<void> {
   for (const kind of Object.keys(AUTO_RECOGNITION_KEYS) as AutoRecognitionKind[]) {
@@ -1222,6 +1280,7 @@ export async function setAutoRecognitionSettings(
   if (update.lookalike?.minScore !== undefined) await setLookalikeMinScore(Number(update.lookalike.minScore));
   if (update.autoAssign?.minScore !== undefined) await setAutoAssignMinScore(Number(update.autoAssign.minScore));
   if (update.autoAssign?.verifyMinScore !== undefined) await setVerifyMinScore(Number(update.autoAssign.verifyMinScore));
+  if (update.honeypot) await setHoneypotSettings(update.honeypot);
 }
 
 /** Ids among `ids` (photoId or payload postId) that already have a live task of `type`. */

@@ -25,6 +25,7 @@ import {
   Activity,
   AlertTriangle,
   StickyNote,
+  BarChart3,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -243,7 +244,8 @@ export function AppSidebar() {
                     <Collapsible
                       key={item.title}
                       asChild
-                      defaultOpen={isActive}
+                      // Controlled by the route: open only while on the item's own page or one of its sub-pages.
+                      open={isActive}
                       className="group/collapsible"
                     >
                       <SidebarMenuItem>
@@ -336,15 +338,26 @@ export function AppSidebar() {
                   <span>Settings</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
-              <SidebarMenuItem>
+              <SidebarMenuItem className="flex items-center gap-1">
                 <SidebarMenuButton
                   onClick={handleLogout}
                   disabled={logoutMutation.isPending}
                   tooltip="Log out"
+                  className="flex-1"
                   data-testid="sidebar-button-logout"
                 >
                   <LogOut />
                   <span>Log out</span>
+                </SidebarMenuButton>
+                <SidebarMenuButton
+                  asChild
+                  isActive={location === "/stats" || location.startsWith("/stats/")}
+                  tooltip="Stats"
+                  className="w-8 shrink-0 justify-center"
+                >
+                  <Link href="/stats" aria-label="Stats" data-testid="sidebar-button-stats">
+                    <BarChart3 />
+                  </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>

@@ -6,7 +6,7 @@ import { db } from "../db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccountPostTags, socialAccounts, socialFollows, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, isNull, and, inArray, desc, or } from "drizzle-orm";
+import { eq, ne, sql, isNotNull, isNull, and, inArray, desc, or } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -29,8 +29,9 @@ import {
   type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
-import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats, listPrmS3Backups, startPrmS3Backup, normalizeEndpointUrl } from "../prm-s3";
-import { S3Client, HeadBucketCommand, CreateBucketCommand, ListBucketsCommand } from "@aws-sdk/client-s3";
+import { getPrmS3Config, setPrmS3Config, checkBucketSettings, probePrmS3Buckets, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats, listPrmS3Backups, startPrmS3Backup, normalizeEndpointUrl, STORAGE_KEY_PREFIXES } from "../prm-s3";
+import { parseBucketSettings } from "../prm-s3-buckets";
+import { S3Client } from "@aws-sdk/client-s3";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, resolveScrapedAccounts, trackPrmS3BackupTask } from "../task-worker";
 import { extractHandles } from "@shared/connection-strength";
@@ -1095,9 +1096,9 @@ export function registerRoutes(app: Express) {
         if (!includeDeleted) {
           conditions.push(eq(socialAccountPosts.isDeleted, false));
         }
-        if (postType) {
-          conditions.push(eq(socialAccountPosts.postType, postType));
-        }
+        // No postType means feed posts: stories share the table but are fetched
+        // on their own, and left in they would crowd posts out of the limit.
+        conditions.push(postType ? eq(socialAccountPosts.postType, postType) : ne(socialAccountPosts.postType, "story"));
         if (cursorDate) {
           conditions.push(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt}) < ${cursorDate}`);
         }
@@ -2197,7 +2198,10 @@ export function registerRoutes(app: Express) {
           endpoint: config.endpoint,
           publicEndpoint: config.publicEndpoint,
           deliveryMode: config.deliveryMode,
-          bucket: config.bucket,
+          bucket: config.baseBucket,
+          bucketMap: config.bucketMap,
+          bucketPrefix: config.bucketPrefix,
+          bucketFolders: STORAGE_KEY_PREFIXES,
           region: config.region,
           hasAccessKey: !!config.accessKeyId,
           hasSecretKey: !!config.secretAccessKey,
@@ -2211,7 +2215,7 @@ export function registerRoutes(app: Express) {
 
     app.post("/api/image-storage/prm-s3/settings", requireAuth, async (req, res) => {
       try {
-        const { endpoint, publicEndpoint, deliveryMode, bucket, region, accessKeyId, secretAccessKey } = req.body;
+        const { endpoint, publicEndpoint, deliveryMode, bucket, bucketMap, bucketPrefix, region, accessKeyId, secretAccessKey } = req.body;
         if (deliveryMode !== undefined && deliveryMode !== "direct" && deliveryMode !== "proxy") {
           return res.status(400).json({ error: "deliveryMode must be 'direct' or 'proxy'" });
         }
@@ -2221,7 +2225,12 @@ export function registerRoutes(app: Express) {
         if (typeof publicEndpoint === "string" && publicEndpoint.trim() && !isValidEndpointUrl(publicEndpoint.trim(), "https")) {
           return res.status(400).json({ error: "publicEndpoint must be a valid http(s) URL" });
         }
-        const toSave: any = { endpoint, publicEndpoint, deliveryMode, bucket, region, accessKeyId };
+        try {
+          await checkBucketSettings({ bucket, bucketMap, bucketPrefix });
+        } catch (error: any) {
+          return res.status(400).json({ error: error.message });
+        }
+        const toSave: any = { endpoint, publicEndpoint, deliveryMode, bucket, bucketMap, bucketPrefix, region, accessKeyId };
         if (secretAccessKey && !secretAccessKey.includes("••")) {
           toSave.secretAccessKey = secretAccessKey;
         }
@@ -2251,7 +2260,7 @@ export function registerRoutes(app: Express) {
           : (savedConfig.region || "us-east-1");
         const bucket = (typeof body.bucket === "string" && body.bucket.trim())
           ? body.bucket.trim()
-          : savedConfig.bucket;
+          : savedConfig.baseBucket;
         const accessKeyId = (typeof body.accessKeyId === "string" && body.accessKeyId.trim())
           ? body.accessKeyId.trim()
           : savedConfig.accessKeyId;
@@ -2269,6 +2278,17 @@ export function registerRoutes(app: Express) {
           return res.json({ ok: false, message: "PRM-S3 bucket name is required." });
         }
 
+        let buckets;
+        try {
+          buckets = parseBucketSettings(
+            bucket,
+            JSON.stringify(body.bucketMap ?? savedConfig.bucketMap),
+            typeof body.bucketPrefix === "string" ? body.bucketPrefix : savedConfig.bucketPrefix,
+          );
+        } catch (error: any) {
+          return res.json({ ok: false, message: error.message });
+        }
+
         const endpointUrl = normalizeEndpointUrl(endpoint, "http");
         const client = new S3Client({
           endpoint: endpointUrl,
@@ -2281,22 +2301,7 @@ export function registerRoutes(app: Express) {
         });
 
         try {
-          try {
-            await client.send(new HeadBucketCommand({ Bucket: bucket }));
-            return res.json({ ok: true, message: `Successfully connected to PRM-S3 bucket '${bucket}'.` });
-          } catch (headErr: any) {
-            try {
-              await client.send(new CreateBucketCommand({ Bucket: bucket }));
-              return res.json({ ok: true, message: `Successfully connected to PRM-S3 and initialized bucket '${bucket}'.` });
-            } catch {
-              const listRes = await client.send(new ListBucketsCommand({}));
-              const bucketExists = listRes.Buckets?.some(b => b.Name === bucket);
-              if (bucketExists) {
-                return res.json({ ok: true, message: `Successfully connected to PRM-S3. Bucket '${bucket}' exists.` });
-              }
-              return res.json({ ok: true, message: `Connected to PRM-S3 server, but bucket '${bucket}' was not found.` });
-            }
-          }
+          return res.json(await probePrmS3Buckets(client, { baseBucket: bucket, ...buckets }));
         } finally {
           client.destroy();
         }

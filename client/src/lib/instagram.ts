@@ -44,8 +44,9 @@ export interface Importer {
   nextRunAt: string | null;
   lastUsername: string | null;
   trackingEnabled: boolean;
-  trackingWindow: string;
+  trackingQuietHours: string;
   trackingMaxJobs: number;
+  trackingMinBatch: number;
   nextTrackingRunAt: string | null;
   createdAt: string;
 }

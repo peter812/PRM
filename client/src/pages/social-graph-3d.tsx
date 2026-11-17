@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { GraphInfoPanel } from "@/components/graph-info-panel";
 import type { SocialAccount, SocialAccountType, SocialAccountWithCurrentProfile, SocialGraphData, Group, Person } from "@shared/schema";
 import PersonGraphView from "./person-graph-view";
 import {
@@ -1715,9 +1716,21 @@ function SocialGraphContent({
 
       <div className="flex-1 relative overflow-hidden">
         {selectedAccount && (
-          <div className="absolute top-4 left-4 w-72 max-h-[calc(100%-2rem)] overflow-y-auto bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg z-50" data-testid="sidebar-account-info">
+          <GraphInfoPanel
+            key={selectedAccount.id}
+            testId="sidebar-account-info"
+            imageUrl={selectedAccount.currentProfile?.imageUrl ? withImageSize(selectedAccount.currentProfile.imageUrl, 150) : null}
+            fallback={(selectedAccount.currentProfile?.nickname || selectedAccount.username).slice(0, 2).toUpperCase()}
+            avatarStyle={selectedAccountType?.color ? { boxShadow: `0 0 0 2px ${selectedAccountType.color}` } : undefined}
+            title={`@${selectedAccount.username}`}
+            subtitle={selectedAccount.currentProfile?.nickname}
+            followers={selectedAccount.latestState?.followerCount || 0}
+            following={selectedAccount.latestState?.followingCount || 0}
+            viewHref={`/social-accounts/${selectedAccount.id}`}
+            onClose={() => setSelectedAccountId(null)}
+          >
             <div className="p-4 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="hidden md:flex items-center justify-between">
                 <h3 className="font-semibold text-sm">Account Info</h3>
                 <Button
                   variant="ghost"
@@ -1728,7 +1741,7 @@ function SocialGraphContent({
                   <X className="h-4 w-4" />
                 </Button>
               </div>
-              <div className="flex flex-col items-center gap-3">
+              <div className="hidden md:flex flex-col items-center gap-3">
                 <Avatar
                   className="h-20 w-20"
                   style={selectedAccountType?.color ? { boxShadow: `0 0 0 2px ${selectedAccountType.color}` } : undefined}
@@ -1852,7 +1865,7 @@ function SocialGraphContent({
                 </Button>
               </div>
             </div>
-          </div>
+          </GraphInfoPanel>
         )}
           <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 

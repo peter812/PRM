@@ -15,6 +15,7 @@ import { faceClusterRejections, faceClusters, facePairDismissals, faces, photos,
 import { log } from "./vite";
 import { clearedSuggestions, computeFetch, connectFaces, faceGroupUnnamed, getComputeConnection, RecognitionRequestError, type FacialId } from "./recognition";
 import { lookAlikesFor } from "./face-lookalikes";
+import { sendToHoneypot } from "./face-honeypot";
 import { buildIdentityCache, photoSuggestions, type FaceReviewSuggestion } from "./face-review";
 
 const MIN_SIMILARITY_KEY = "face_cluster_min_similarity";
@@ -377,4 +378,9 @@ export async function dismissClusterFaces(id: string, faceIds?: string[]): Promi
   const ids = await clusterFaceIds(id, faceIds);
   await db.update(faces).set({ dismissedAt: new Date(), ...clearedSuggestions }).where(and(inArray(faces.id, ids), eq(faces.clusterId, id)));
   return { dismissed: ids.length };
+}
+
+/** Honey pot: put the cluster's faces (minus any excluded) out of the way as too blurry to name (honey-pot-plan.md). */
+export async function honeypotCluster(id: string, faceIds?: string[]): Promise<{ sent: number }> {
+  return sendToHoneypot(await clusterFaceIds(id, faceIds));
 }

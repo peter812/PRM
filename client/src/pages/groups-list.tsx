@@ -84,7 +84,7 @@ export default function GroupsList() {
 
   return (
     <div className="flex flex-col h-full overflow-auto">
-      <div className="border-b px-6 py-6 bg-background/50 backdrop-blur-xl sticky top-0 z-10">
+      <div className="border-b px-3 py-4 md:px-6 md:py-6 bg-background/50 backdrop-blur-xl sticky top-0 z-10">
         <div className="flex items-center justify-between">
           <h1 className="text-3xl font-semibold flex items-center gap-3" data-testid="heading-groups">
             Groups
@@ -118,7 +118,7 @@ export default function GroupsList() {
             <Link href="/groups/potential">
               <Button variant="outline" className="flex items-center gap-2" data-testid="button-find-potential-groups">
                 <Sparkles className="h-4 w-4 text-primary animate-pulse" />
-                Find Potential Groups
+                Find Groups
               </Button>
             </Link>
             <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-group">
@@ -129,7 +129,7 @@ export default function GroupsList() {
         </div>
       </div>
 
-      <div className="flex-1 px-6 py-6">
+      <div className="flex-1 px-3 py-4 md:px-6 md:py-6">
         {isLoading ? (
           <div className={viewMode === "list" ? "flex flex-col gap-[5px]" : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"}>
             {[1, 2, 3, 4].map((i) => (

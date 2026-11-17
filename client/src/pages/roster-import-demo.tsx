@@ -153,7 +153,7 @@ export default function RosterImportDemo() {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="container mx-auto p-6 max-w-6xl space-y-6">
+      <div className="container mx-auto p-3 md:p-6 max-w-6xl space-y-6">
         <div>
           <h1 className="text-3xl font-bold flex items-center gap-2"><BookUser className="h-7 w-7" />Yearbook &amp; Playbill Import</h1>
           <p className="text-muted-foreground">

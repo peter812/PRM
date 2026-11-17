@@ -11,6 +11,7 @@ const AppOptionsPage = lazy(() => import("@/pages/app-options"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
 const DataTypesPage = lazy(() => import("@/pages/data-types"));
 const ApiSettingsPage = lazy(() => import("@/pages/api-settings"));
+const McpSettingsPage = lazy(() => import("@/pages/mcp-settings"));
 const ChromeExtensionSettingsPage = lazy(() => import("@/pages/chrome-extension-settings"));
 const ApiDocs = lazy(() => import("@/pages/api-docs"));
 const DeleteOptionsPage = lazy(() => import("@/pages/delete-options"));
@@ -44,7 +45,7 @@ const NotFound = lazy(() => import("@/pages/not-found"));
 
 export default function SettingsLayout() {
   return (
-    <div className="flex-1 overflow-auto h-full">
+    <div className="relative flex-1 overflow-auto h-full">
       <Suspense fallback={
         <div className="flex items-center justify-center h-full w-full">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -97,6 +98,7 @@ export default function SettingsLayout() {
           <Route path="/import-export" component={ImportExportHome} />
           <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
           <Route path="/api/settings" component={ApiSettingsPage} />
+          <Route path="/api/mcp" component={McpSettingsPage} />
           <Route path="/api" component={ApiDocs} />
           <Route path="/delete" component={DeleteOptionsPage} />
           <Route path="/social-accounts/:uuid*">

@@ -347,11 +347,9 @@ export default function SocialAccountProfile() {
     return isNaN(time) ? 0 : time;
   };
 
-  // Stories share the table with posts (post_type "story") but get their own tab.
-  // By default, posts are ordered newest first.
+  // Feed posts only (the endpoint leaves stories out), newest first.
   const posts = useMemo(() => {
-    const raw = allPosts?.filter((p) => p.postType !== "story") ?? [];
-    return [...raw].sort((a, b) => {
+    return [...(allPosts ?? [])].sort((a, b) => {
       const diff = getPostTime(b) - getPostTime(a);
       if (diff !== 0) return diff;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
@@ -644,7 +642,7 @@ export default function SocialAccountProfile() {
           </div>
 
           {/* Account tab */}
-          <div className="flex-1 overflow-y-auto p-6">
+          <div className="flex-1 overflow-y-auto p-3 md:p-6">
             <div className="flex flex-col lg:flex-row gap-6 items-start">
               <div className="flex-1 space-y-6 w-full min-w-0">
                 <div className="space-y-2">
@@ -950,15 +948,14 @@ export default function SocialAccountProfile() {
               </DropdownMenuSub>
               {accountType?.name?.toLowerCase() === "instagram" && (
                 <DropdownMenuSub>
-                  <DropdownMenuSubTrigger data-testid="button-update-menu">
+                  <DropdownMenuSubTrigger
+                    onClick={() => { if (!queueTracking.isPending) queueTracking.mutate("scan"); }}
+                    data-testid="button-update-menu"
+                  >
                     <RefreshCw className="h-4 w-4 mr-2" />
                     Update
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-52">
-                    <DropdownMenuItem disabled={queueTracking.isPending} onClick={() => queueTracking.mutate("scan")} data-testid="button-update-general">
-                      <Info className="h-4 w-4 mr-2" />
-                      General
-                    </DropdownMenuItem>
                     <DropdownMenuItem disabled={queueTracking.isPending} onClick={() => queueTracking.mutate("highlights")} data-testid="button-update-stories">
                       <Layers className="h-4 w-4 mr-2" />
                       Stories
@@ -989,47 +986,47 @@ export default function SocialAccountProfile() {
       {/* Main Content Area with Left Sidebar Tabs */}
       <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Left Side Navigation Menu */}
-        <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-y-auto">
+        <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-x-auto md:overflow-x-visible md:overflow-y-auto">
           <div className="p-3">
-            <TabsList className="flex flex-col items-stretch justify-start h-auto bg-transparent p-0 gap-1" data-testid="tabs-social-account">
+            <TabsList className="flex md:flex-col items-stretch justify-start h-auto bg-transparent p-0 gap-1 w-max md:w-auto" data-testid="tabs-social-account">
               <TabsTrigger
                 value="account"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-account"
               >
                 Account
               </TabsTrigger>
               <TabsTrigger
                 value="follow"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-follow"
               >
                 Follow
               </TabsTrigger>
               <TabsTrigger
                 value="posts"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-posts"
               >
                 Posts
               </TabsTrigger>
               <TabsTrigger
                 value="tagged"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-tagged"
               >
                 Tagged
               </TabsTrigger>
               <TabsTrigger
                 value="stories"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-stories"
               >
                 Stories
               </TabsTrigger>
               <TabsTrigger
                 value="faces"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0 flex items-center justify-between"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0 flex items-center justify-between"
                 data-testid="tab-faces"
               >
                 <span>Faces</span>
@@ -1039,42 +1036,42 @@ export default function SocialAccountProfile() {
               </TabsTrigger>
               <TabsTrigger
                 value="messages"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-messages"
               >
                 Messages
               </TabsTrigger>
               <TabsTrigger
                 value="notes"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-notes"
               >
                 Notes
               </TabsTrigger>
               <TabsTrigger
                 value="connections"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-connections"
               >
                 Connections
               </TabsTrigger>
               <TabsTrigger
                 value="history"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-history"
               >
                 History
               </TabsTrigger>
               <TabsTrigger
                 value="insights"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-insights"
               >
                 Insights
               </TabsTrigger>
               <TabsTrigger
                 value="summary"
-                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0 flex items-center justify-between"
+                className="shrink-0 justify-start px-3 py-2 text-left rounded-md md:w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0 flex items-center justify-between"
                 data-testid="tab-summary"
               >
                 <span>Summary</span>
@@ -1089,7 +1086,7 @@ export default function SocialAccountProfile() {
         {/* Selected Tab Content Pane */}
         <div className="flex-1 flex flex-col min-h-0 bg-background overflow-hidden">
           {/* Account Tab Dashboard */}
-          <TabsContent value="account" className="mt-0 flex-1 overflow-y-auto p-6 space-y-6">
+          <TabsContent value="account" className="mt-0 flex-1 overflow-y-auto p-3 md:p-6 space-y-6">
             <div className="flex flex-col lg:flex-row gap-6 items-start">
               {/* Left/Main Column: Overview Summary Panels */}
               <div className="flex-1 space-y-6 w-full min-w-0">
@@ -1569,7 +1566,7 @@ export default function SocialAccountProfile() {
 
           {/* Follow Tab */}
           <TabsContent value="follow" className="mt-0 flex-1 min-h-0 overflow-y-auto">
-            <div className="px-6 py-6 space-y-6">
+            <div className="px-3 py-4 md:px-6 md:py-6 space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Followers Column */}
               <Card className="p-4">
@@ -1805,7 +1802,7 @@ export default function SocialAccountProfile() {
             <MessagesTab socialAccountId={account.id} />
           </TabsContent>
 
-          <TabsContent value="notes" className="mt-0 flex-1 min-h-0 overflow-y-auto p-6">
+          <TabsContent value="notes" className="mt-0 flex-1 min-h-0 overflow-y-auto p-3 md:p-6">
             <NotesList socialAccountId={account.id} />
           </TabsContent>
           <TabsContent value="connections" className="mt-0 flex-1 min-h-0 overflow-y-auto">

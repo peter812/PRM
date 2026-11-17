@@ -133,7 +133,7 @@ export default function DailyNoteDetail() {
   if (isLoading) {
     return (
       <div className="h-full overflow-y-auto">
-        <div className="max-w-3xl mx-auto p-6 space-y-4">
+        <div className="max-w-3xl mx-auto p-3 md:p-6 space-y-4">
           <div className="h-8 w-32 bg-muted rounded animate-pulse" />
           <div className="h-6 w-64 bg-muted rounded animate-pulse" />
           <div className="h-48 bg-muted rounded animate-pulse" />
@@ -165,7 +165,7 @@ export default function DailyNoteDetail() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto p-6 space-y-6">
+      <div className="max-w-3xl mx-auto p-3 md:p-6 space-y-6">
         {/* Back link and actions */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <Link href="/daily-notes" data-testid="link-back-to-daily-notes">

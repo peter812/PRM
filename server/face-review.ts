@@ -58,6 +58,8 @@ export type FaceReviewFace = {
   color: string;
   identified: { socialAccountId?: string; personId?: string; username?: string; label: string } | null;
   dismissed: boolean;
+  /** In the honey pot (honey-pot-plan.md); also `dismissed`. */
+  honeypot: boolean;
   /** Set when PRM auto-assigned this face (face-review-plan.md §8) and nobody has confirmed it. */
   autoMatchScore: number | null;
   /** A machine quality reject (faces.noise_reason small/low_conf/blurry): not asked about unless noise is shown. */
@@ -85,7 +87,7 @@ export type FaceReviewItem = {
   profileLinkReason?: ProfileLinkReason;
 };
 
-export type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number; dismissed: number };
+export type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number; dismissed: number; honeypot: number };
 
 // ── Face condition (§1) ──────────────────────────────────────────────────────
 
@@ -97,7 +99,8 @@ export type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number;
  * noise (face-clustering-plan.md §3.1) doesn't count unless `showNoise`.
  */
 function faceQualifies(dismissed: boolean, showNoise: boolean): SQL {
-  const dismissedClause = dismissed ? sql`f.dismissed_at IS NOT NULL` : sql`f.dismissed_at IS NULL`;
+  // Honey pot faces are dismissed too but have their own tab (honey-pot-plan.md), so the Dismissed filter skips them.
+  const dismissedClause = dismissed ? sql`f.dismissed_at IS NOT NULL AND (f.honeypot IS NULL OR f.honeypot = 'released')` : sql`f.dismissed_at IS NULL`;
   return sql`EXISTS (
     SELECT 1 FROM jsonb_array_elements(${photos.facialIds}) AS fid
     JOIN faces f ON f.id = (fid->>'faceUuid')
@@ -199,12 +202,13 @@ export async function getFaceReviewCounts(showNoise: boolean): Promise<FaceRevie
       profileDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", true, showNoise)})::int`,
       postDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", true, showNoise)})::int`,
       messageDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", true, showNoise)})::int`,
+      honeypot: sql<number>`(SELECT count(*) FROM faces WHERE honeypot IN ('manual', 'auto'))::int`,
     })
     .from(photos);
 
   const story = row?.story ?? 0, profile = row?.profile ?? 0, post = row?.post ?? 0, message = row?.message ?? 0;
   const dismissed = (row?.storyDismissed ?? 0) + (row?.profileDismissed ?? 0) + (row?.postDismissed ?? 0) + (row?.messageDismissed ?? 0);
-  return { story, profile, post, message, total: story + profile + post + message, dismissed };
+  return { story, profile, post, message, total: story + profile + post + message, dismissed, honeypot: row?.honeypot ?? 0 };
 }
 
 // ── Queue (§3.1) ──────────────────────────────────────────────────────────────
@@ -563,6 +567,7 @@ function buildFacesFromCache(photo: Photo, caches: PageCaches): FaceReviewFace[]
       color: faceColor(index),
       identified,
       dismissed: !!row.dismissedAt,
+      honeypot: row.honeypot === "manual" || row.honeypot === "auto",
       autoMatchScore: row.autoMatchScore,
       noise: !!row.noiseReason && row.noiseReason !== "singleton",
       cluster: row.clusterId ? { id: row.clusterId, size: caches.clusterSizeById.get(row.clusterId) ?? 0 } : null,

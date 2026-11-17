@@ -12,6 +12,7 @@ import { registerRoutes as registerOsint } from "./routes/osint";
 import { registerRoutes as registerInsights } from "./routes/insights";
 import { registerRoutes as registerEvents } from "./routes/events";
 import { registerRoutes as registerTps } from "./routes/tps";
+import { registerMcp } from "./routes/mcp";
 import { registerPendingImportsRoutes } from "./routes/pending-imports";
 import { registerStories } from "./routes/stories";
 import { registerTracking } from "./routes/tracking";
@@ -23,6 +24,7 @@ import { registerRoutes as registerBackups } from "./routes/backups";
 import { registerRoutes as registerDescribeMe } from "./routes/describe-me";
 import { registerRoutes as registerDemosMap } from "./routes/demos-map";
 import { registerRoutes as registerDemosWordCloud } from "./routes/demos-word-cloud";
+import { registerRoutes as registerStats } from "./routes/stats";
 import { registerRoutes as registerRosterImport } from "./routes/roster-import";
 import { registerRoutes as registerReferences } from "./routes/references";
 import { registerRoutes as registerRecog } from "./routes/recog";
@@ -40,11 +42,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerPeopleGroups(app);
   registerAddresses(app);
   registerSocialMedia(app);
-  // TPS and pending-imports use extension-token auth (no browser session), so they MUST be registered
+  // TPS, MCP and pending-imports use token auth (no browser session), so they MUST be registered
   // before registerMessages — that module mounts a catch-all router at
   // app.use("/api", ...) whose gate rejects any non-session request with 401
   // "Unauthorized", which would otherwise shadow every /api/v1/* route.
   registerTps(app);
+  registerMcp(app);
   registerPendingImportsRoutes(app);
   registerStories(app);
   registerTracking(app);
@@ -64,6 +67,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerDescribeMe(app);
   registerDemosMap(app);
   registerDemosWordCloud(app);
+  registerStats(app);
   registerRosterImport(app);
   registerReferences(app);
   registerRecog(app);

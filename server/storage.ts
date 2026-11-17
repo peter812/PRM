@@ -4755,9 +4755,6 @@ export class DatabaseStorage implements IStorage {
     includeDailyNotes?: boolean;
     includeChats?: boolean;
   }): Promise<MegaSearchResult> {
-    const searchPattern = `%${query}%`;
-    const startPattern = `${query}%`;
-    
     const results: MegaSearchResult = {
       people: [],
       groups: [],
@@ -4767,6 +4764,17 @@ export class DatabaseStorage implements IStorage {
       dailyNotes: [],
       chats: [],
     };
+
+    // A leading "@" means "find a social handle": match usernames only (stored without "@").
+    const isHandleQuery = query.startsWith("@");
+    if (isHandleQuery) {
+      query = query.replace(/^@+/, "").trim();
+      if (!query) return results;
+      options = { includeSocialProfiles: true, includePeople: false, includeGroups: false, includeInteractions: false, includeNotes: false, includeDailyNotes: false, includeChats: false };
+    }
+
+    const searchPattern = `%${query}%`;
+    const startPattern = `${query}%`;
 
     const searchPromises: Promise<void>[] = [];
 
@@ -4839,13 +4847,15 @@ export class DatabaseStorage implements IStorage {
             account: socialAccounts,
           })
           .from(socialAccounts)
-          .where(or(
+          .where(isHandleQuery ? ilike(socialAccounts.username, searchPattern) : or(
             ilike(socialAccounts.username, searchPattern),
             ilike(socialAccounts.nickname, searchPattern),
             ilike(socialAccounts.bio, searchPattern),
             ilike(socialAccounts.accountUrl, searchPattern)
           ))
           .orderBy(
+            // Accounts linked to a person or tracked come first, then prefix matches.
+            sql`CASE WHEN ${socialAccounts.ownerUuid} IS NOT NULL OR ${socialAccounts.interestLevel} <> 'none' THEN 0 ELSE 1 END`,
             sql`CASE WHEN ${socialAccounts.username} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
             socialAccounts.username
           )

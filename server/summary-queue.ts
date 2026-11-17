@@ -331,16 +331,22 @@ async function enqueueAccountChains(accountFilter: SQL): Promise<{ accountsQueue
 // ── Job Execution ────────────────────────────────────────────────────────────
 
 // A person or account a summary can name, and that ai_backend_notes can be written to.
-type NoteEntity = { kind: "person" | "account"; id: string; name: string };
+// `label` is the one name the prompt uses for a face several people/accounts share, so the model sees one individual.
+type NoteEntity = { kind: "person" | "account"; id: string; name: string; label?: string };
 
 const entityKey = (e: NoteEntity) => `${e.kind}:${e.id}`;
+const promptName = (e: NoteEntity) => e.label ?? e.name;
 
 function uniqueEntities(list: NoteEntity[]): NoteEntity[] {
   return Array.from(new Map(list.map((e) => [entityKey(e), e])).values());
 }
 
+const uniqueNames = (list: NoteEntity[]) => Array.from(new Set(list.map(promptName)));
+
+const ONE_PERSON_NOTE = "Each recognized name is one distinct individual; refer to them only by that name.";
+
 // Keyed by photo location (the media URL in post.content), so each image only names the faces found in it.
-async function resolveRecognizedPeopleForPost(postId: string): Promise<Map<string, NoteEntity[]>> {
+async function resolveRecognizedPeopleForPost(postId: string, postAccountId: string): Promise<Map<string, NoteEntity[]>> {
   const byUrl = new Map<string, NoteEntity[]>();
   const postFaces = await db
     .select({ location: photos.location, personfaceUuid: faces.personfaceUuid })
@@ -355,10 +361,16 @@ async function resolveRecognizedPeopleForPost(postId: string): Promise<Map<strin
     db.select({ id: people.id, firstName: people.firstName, lastName: people.lastName, personfaceUuid: people.personfaceUuid })
       .from(people)
       .where(inArray(people.personfaceUuid, groupUuids)),
-    db.select({ id: socialAccounts.id, username: socialAccounts.username, personfaceUuid: socialAccounts.personfaceUuid })
+    db.select({ id: socialAccounts.id, username: socialAccounts.username, personfaceUuid: socialAccounts.personfaceUuid, ownerUuid: socialAccounts.ownerUuid })
       .from(socialAccounts)
-      .where(inArray(socialAccounts.personfaceUuid, groupUuids)),
+      .where(inArray(socialAccounts.personfaceUuid, groupUuids))
+      .orderBy(socialAccounts.username),
   ]);
+  const ownerIds = Array.from(new Set(matchedAccounts.map((a) => a.ownerUuid).filter((u): u is string => !!u)));
+  const owners = ownerIds.length
+    ? await db.select({ id: people.id, firstName: people.firstName, lastName: people.lastName }).from(people).where(inArray(people.id, ownerIds))
+    : [];
+  const ownerName = new Map(owners.map((p) => [p.id, `${p.firstName} ${p.lastName}`.trim()]));
 
   const byUuid = new Map<string, NoteEntity[]>();
   const add = (uuid: string | null, entity: NoteEntity) => {
@@ -366,6 +378,18 @@ async function resolveRecognizedPeopleForPost(postId: string): Promise<Map<strin
   };
   for (const p of matchedPeople) add(p.personfaceUuid, { kind: "person", id: p.id, name: `${p.firstName} ${p.lastName}`.trim() });
   for (const a of matchedAccounts) add(a.personfaceUuid, { kind: "account", id: a.id, name: `@${a.username}` });
+
+  // One name per face: a linked person, else an account's owner, else the posting account, else the first account by username.
+  for (const [uuid, group] of Array.from(byUuid.entries())) {
+    const accounts = matchedAccounts.filter((a) => a.personfaceUuid === uuid);
+    const owner = accounts.map((a) => (a.ownerUuid ? ownerName.get(a.ownerUuid) : undefined)).find(Boolean);
+    const label =
+      group.find((e) => e.kind === "person")?.name ??
+      owner ??
+      group.find((e) => e.kind === "account" && e.id === postAccountId)?.name ??
+      group[0].name;
+    byUuid.set(uuid, group.map((e) => ({ ...e, label })));
+  }
 
   for (const f of postFaces) {
     const found = f.personfaceUuid ? byUuid.get(f.personfaceUuid) : undefined;
@@ -414,7 +438,7 @@ async function loadBackendNotes(entities: NoteEntity[]): Promise<Map<string, AiB
 async function knownFactsBlock(entities: NoteEntity[]): Promise<string> {
   const notes = await loadBackendNotes(entities);
   const lines = uniqueEntities(entities).flatMap((e) =>
-    (notes.get(entityKey(e)) ?? []).slice(-KNOWN_FACTS_PER_ENTITY).map((n) => `- ${e.name}: ${n.text}`),
+    (notes.get(entityKey(e)) ?? []).slice(-KNOWN_FACTS_PER_ENTITY).map((n) => `- ${promptName(e)}: ${n.text}`),
   );
   return lines.length > 0
     ? `Known facts from the user (treat as true; they override what the content seems to show):\n${lines.join("\n")}`
@@ -444,9 +468,9 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
     mediaUrls = [];
   }
 
-  const peopleByUrl = await resolveRecognizedPeopleForPost(post.id);
+  const peopleByUrl = await resolveRecognizedPeopleForPost(post.id, post.socialAccountId);
   const recognized = uniqueEntities(Array.from(peopleByUrl.values()).flat());
-  const recognizedPeople = recognized.map((e) => e.name);
+  const recognizedPeople = uniqueNames(recognized);
   const ownEntities = await accountEntities(post.socialAccountId);
   // A fix job (POST .../images/:imageIndex/append) re-describes only the fixed image and reuses the rest.
   const fix = job.options?.append as { imageIndex: number; text: string } | undefined;
@@ -482,7 +506,7 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
       let prompt = settings.scenePrompt;
       const imagePeople = peopleByUrl.get(img.url) ?? [];
       if (imagePeople.length > 0) {
-        prompt += `\n\nRecognized people in this image: ${imagePeople.map((e) => e.name).join(", ")}`;
+        prompt += `\n\nRecognized people in this image: ${uniqueNames(imagePeople).join(", ")}\n${ONE_PERSON_NOTE}`;
       }
       const facts = await knownFactsBlock([...ownEntities, ...imagePeople]);
       if (facts) prompt += `\n\n${facts}`;
@@ -528,7 +552,7 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
     [`Image ${s.imageIndex + 1}: ${s.description}`, ...(s.appended ?? []).map((t) => `  User correction: ${t}`)].join("\n");
   const contextParts: string[] = [
     await knownFactsBlock([...ownEntities, ...recognized]),
-    recognizedPeople.length > 0 ? `Recognized People: ${recognizedPeople.join(", ")}` : "",
+    recognizedPeople.length > 0 ? `Recognized People: ${recognizedPeople.join(", ")}\n${ONE_PERSON_NOTE}` : "",
     transcript ? `Video Transcript:\n${asData("transcript", transcript)}` : "",
     imageSummaries.length > 0
       ? `Image Scene Descriptions:\n${asData("image_descriptions", imageSummaries.map(imageLine).join("\n"))}`
@@ -732,7 +756,7 @@ async function runStorySummary(
   const contextParts = [
     await knownFactsBlock(entities),
     appended.length > 0 ? `Corrections from the user about this story (treat as true):\n${appended.map((t) => `- ${t}`).join("\n")}` : "",
-    recognizedPeople.length > 0 ? `Recognized People: ${recognizedPeople.join(", ")}` : "",
+    recognizedPeople.length > 0 ? `Recognized People: ${recognizedPeople.join(", ")}\n${ONE_PERSON_NOTE}` : "",
     transcript ? `Video Transcript:\n${asData("transcript", transcript)}` : "",
   ].filter(Boolean);
   const think = thinkFlag(settings.storyNoThink);

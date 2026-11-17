@@ -32,6 +32,7 @@ import {
   History,
   Globe,
   ScrollText,
+  Cable,
 } from "lucide-react";
 import {
   Sidebar,
@@ -159,6 +160,7 @@ export const settingsMenuItems: MenuItem[] = [
     icon: Book,
     subItems: [
       { title: "API Settings", url: "/settings/api/settings", icon: Key },
+      { title: "MCP Server", url: "/settings/api/mcp", icon: Cable },
     ],
   },
 ];

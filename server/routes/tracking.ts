@@ -42,6 +42,7 @@ import {
   queueAccountsRefresh,
   queueFollowingRefresh,
   queueManualJob,
+  rebalanceScanSchedule,
   requeueJob,
   resolveMentionedAccounts,
   startTrackingJob,
@@ -1338,6 +1339,38 @@ export function registerTracking(app: Express) {
       });
     } catch (error) {
       fail(res, "read upcoming checks", error);
+    }
+  });
+
+  // Scheduled scans for the Summaries page's 7-day card: overdue now, plus counts per hour
+  // for the next 8 days (the client buckets hours into its own local days).
+  app.get("/api/tracking/scan-forecast", requireAuth, async (_req, res) => {
+    try {
+      // scan_due_at is a UTC timestamp without zone (Drizzle writes toISOString), so tag it Z for the client.
+      const rows = await db.execute<{ hour: string | null; count: number }>(sql`
+        SELECT CASE WHEN sa.scan_due_at > now() THEN to_char(date_trunc('hour', sa.scan_due_at), 'YYYY-MM-DD"T"HH24":00:00Z"') END AS hour,
+          count(*)::int AS count
+        FROM social_accounts sa
+        WHERE sa.type_id = ${INSTAGRAM_TYPE_ID}
+          AND sa.scan_due_at < now() + interval '8 days'
+          AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = sa.id AND i.kind = 'not_found' AND i.status = 'open')
+        GROUP BY 1
+      `);
+      res.json({
+        overdue: rows.rows.find((r) => r.hour === null)?.count ?? 0,
+        hours: rows.rows.filter((r) => r.hour !== null).map((r) => ({ at: r.hour, count: r.count })),
+      });
+    } catch (error) {
+      fail(res, "read scan forecast", error);
+    }
+  });
+
+  // Even out scan_due_at across each cadence's days. ?dryRun=1 reports without writing.
+  app.post("/api/tracking/rebalance", requireAuth, async (req, res) => {
+    try {
+      res.json(await rebalanceScanSchedule({ dryRun: req.query.dryRun === "1" }));
+    } catch (error) {
+      fail(res, "rebalance scan schedule", error);
     }
   });
 

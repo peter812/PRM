@@ -17,10 +17,17 @@ interface SocialJob {
   status: string;
 }
 
+interface StoryRun {
+  id: string;
+  status: string;
+  importerLabel: string | null;
+  scrapedFrom: string | null;
+}
+
 interface TrackedTask {
   key: string;
   id: string;
-  source: "general" | "social";
+  source: "general" | "social" | "story";
   accountId?: string;
   status: string;
   name: string;
@@ -73,10 +80,17 @@ const STATUS_STYLE: Record<string, { label: string; className: string }> = {
   failed: { label: "error", className: "bg-red-500/15 text-red-600 dark:text-red-400" },
   cancelled: { label: "cancelled", className: "bg-muted text-muted-foreground" },
   skipped: { label: "skipped", className: "bg-muted text-muted-foreground" },
+  starting: { label: "starting", className: "bg-blue-500/15 text-blue-600 dark:text-blue-400" },
 };
 
+/** A stories run's status in the tracker's terms: its own failure reasons (needs_login, rate_limited, …) read as an error. */
+const storyRunStatus = (status: string) =>
+  status === "queued" || status === "starting" || status === "running" || status === "completed" || status === "skipped"
+    ? status
+    : "failed";
+
 const isActive = (status: string) =>
-  status === "pending" || status === "in_progress" || status === "queued" || status === "running";
+  status === "pending" || status === "in_progress" || status === "queued" || status === "running" || status === "starting";
 
 // "Show scheduled social checks" is shared with Settings Home, since the panel
 // (and its switch) disappears when it has nothing to show.
@@ -110,6 +124,7 @@ export function useShowScheduledTasks() {
 
 const EMPTY_TASKS: Task[] = [];
 const EMPTY_JOBS: SocialJob[] = [];
+const EMPTY_STORY_RUNS: StoryRun[] = [];
 
 function useTaskSSE() {
   useEffect(() => {
@@ -140,6 +155,7 @@ function useTaskSSE() {
         void queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
         void queryClient.invalidateQueries({ queryKey: ["/api/tracking-jobs/current"] });
         void queryClient.invalidateQueries({ queryKey: ["/api/image-tasks"] });
+        void queryClient.invalidateQueries({ queryKey: ["/api/stories/runs/current"] });
       }
       hasConnectedOnce = true;
     });
@@ -202,6 +218,11 @@ function useTaskSSE() {
       scheduleTrackingInvalidate();
     });
 
+    es.addEventListener("story_run.updated", () => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/stories/runs/current"] });
+      void queryClient.invalidateQueries({ queryKey: ["/api/stories/runs"] });
+    });
+
     es.addEventListener("worker.status", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
@@ -245,6 +266,11 @@ export function TaskTrackerModal() {
     queryKey: ["/api/tracking-jobs/current", { scheduled: showScheduled }],
     queryFn: async () =>
       (await apiRequest("GET", `/api/tracking-jobs/current?scheduled=${showScheduled ? 1 : 0}`)).json(),
+  });
+
+  // Instagram stories runs, manual or scheduled (updated via SSE)
+  const { data: storyRuns = EMPTY_STORY_RUNS } = useQuery<StoryRun[]>({
+    queryKey: ["/api/stories/runs/current"],
   });
 
   const socialJobs = socialData?.jobs ?? EMPTY_JOBS;
@@ -298,10 +324,25 @@ export function TaskTrackerModal() {
       });
     }
 
+    for (const r of storyRuns) {
+      const status = storyRunStatus(r.status);
+      processTask({
+        id: r.id,
+        source: "story",
+        status,
+        name: "Stories run",
+        sub: status === "failed" ? r.status.replace(/_/g, " ") : r.scrapedFrom ? `@${r.scrapedFrom}` : r.importerLabel,
+      });
+    }
+
     // Active social jobs the server no longer returns (cancelled elsewhere, or hidden by the toggle) drop out
     const socialKeys = new Set(socialJobs.map((j) => `social:${j.id}`));
+    const storyKeys = new Set(storyRuns.map((r) => `story:${r.id}`));
     for (const t of Object.values(next)) {
-      if (t.source === "social" && isActive(t.status) && !socialKeys.has(t.key)) {
+      if (
+        (t.source === "social" && isActive(t.status) && !socialKeys.has(t.key)) ||
+        (t.source === "story" && isActive(t.status) && !storyKeys.has(t.key))
+      ) {
         delete next[t.key];
         changed = true;
       }
@@ -317,7 +358,7 @@ export function TaskTrackerModal() {
     if (timeoutsToSchedule.length > 0) {
       setTimeout(() => dismiss(timeoutsToSchedule), 8000);
     }
-  }, [tasks, socialJobs]);
+  }, [tasks, socialJobs, storyRuns]);
 
   const dismiss = (keys: string[]) => {
     if (keys.length === 0) return;
@@ -359,10 +400,22 @@ export function TaskTrackerModal() {
     },
   });
 
-  // Trash: cancel what can be cancelled; a running social job just leaves the panel and finishes in the background
+  const cancelStoryRunMutation = useMutation({
+    mutationFn: async (task: TrackedTask) => (await apiRequest("DELETE", `/api/stories/runs/${task.id}`)).json(),
+    onSuccess: (_, task) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/stories/runs/current"] });
+      dismiss([task.key]);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to cancel stories run", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Trash: cancel what can be cancelled; a running social job or stories run just leaves the panel and finishes in the background
   const handleTrash = (task: TrackedTask) => {
     if (task.source === "general" && isActive(task.status)) cancelGeneralMutation.mutate(task);
     else if (task.source === "social" && task.status === "queued") cancelSocialMutation.mutate(task);
+    else if (task.source === "story" && task.status === "queued") cancelStoryRunMutation.mutate(task);
     else dismiss([task.key]);
   };
 
@@ -459,7 +512,7 @@ export function TaskTrackerModal() {
                     variant="ghost"
                     className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                     onClick={() => handleTrash(task)}
-                    disabled={cancelGeneralMutation.isPending || cancelSocialMutation.isPending}
+                    disabled={cancelGeneralMutation.isPending || cancelSocialMutation.isPending || cancelStoryRunMutation.isPending}
                     title={isActive(task.status) ? "Cancel" : "Dismiss"}
                   >
                     <Trash2 className="h-3 w-3" />

@@ -23,12 +23,16 @@ type ImageStats = {
 };
 
 type PrmS3DeliveryMode = "direct" | "proxy";
+type PrmS3StorageMode = "standard" | "scale";
 
 type PrmS3ConfigResponse = {
   endpoint: string;
   publicEndpoint: string;
   deliveryMode: PrmS3DeliveryMode;
   bucket: string;
+  bucketMap: Record<string, string>;
+  bucketPrefix: string;
+  bucketFolders: string[]; // every storage folder, e.g. "posts/"
   region: string;
   hasAccessKey: boolean;
   hasSecretKey: boolean;
@@ -66,6 +70,30 @@ type DeleteOrphansResult = {
   filesDeleted: number;
 };
 
+type PrmS3Form = {
+  endpoint: string;
+  publicEndpoint: string;
+  deliveryMode: PrmS3DeliveryMode;
+  storageMode: PrmS3StorageMode;
+  bucket: string;
+  bucketPrefix: string;
+  folderBuckets: Record<string, string>; // folder -> name without the prefix
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+};
+
+// Scale maps every folder, so it has no bucket of its own: the images bucket stands in as the main one.
+function prmS3Payload({ storageMode, folderBuckets, ...fields }: PrmS3Form) {
+  return storageMode === "scale"
+    ? { ...fields, bucket: folderBuckets["images/"] ?? "", bucketMap: folderBuckets }
+    : { ...fields, bucketMap: {}, bucketPrefix: "" };
+}
+
+function folderLabel(folder: string): string {
+  return folder.charAt(0).toUpperCase() + folder.slice(1, -1);
+}
+
 export default function ImageStorageSettingsPage() {
   const { toast } = useToast();
 
@@ -73,11 +101,14 @@ export default function ImageStorageSettingsPage() {
   const [maintenanceConfirm, setMaintenanceConfirm] = useState<"backfill" | "delete-instagram" | "delete-orphans" | null>(null);
 
   // PRM-S3 form state
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<PrmS3Form>({
     endpoint: "http://localhost:9000",
     publicEndpoint: "",
-    deliveryMode: "direct" as PrmS3DeliveryMode,
+    deliveryMode: "direct",
+    storageMode: "standard",
     bucket: "images",
+    bucketPrefix: "",
+    folderBuckets: {},
     region: "us-east-1",
     accessKeyId: "",
     secretAccessKey: "",
@@ -94,11 +125,20 @@ export default function ImageStorageSettingsPage() {
 
   useEffect(() => {
     if (prmS3Config) {
+      const bucket = prmS3Config.bucket || "images";
+      const bucketMap = prmS3Config.bucketMap ?? {};
+      const scale = !!prmS3Config.bucketPrefix || Object.keys(bucketMap).length > 0;
       setForm({
         endpoint: prmS3Config.endpoint || "http://localhost:9000",
         publicEndpoint: prmS3Config.publicEndpoint || "",
         deliveryMode: prmS3Config.deliveryMode === "proxy" ? "proxy" : "direct",
-        bucket: prmS3Config.bucket || "images",
+        storageMode: scale ? "scale" : "standard",
+        bucket,
+        bucketPrefix: prmS3Config.bucketPrefix || "",
+        // An unmapped folder lives in the main bucket; a first switch to Scale starts from the folder's own name.
+        folderBuckets: Object.fromEntries(
+          prmS3Config.bucketFolders.map((folder) => [folder, bucketMap[folder] ?? (scale ? bucket : folder.slice(0, -1))]),
+        ),
         region: prmS3Config.region || "us-east-1",
         accessKeyId: prmS3Config.accessKeyId || "",
         secretAccessKey: prmS3Config.secretAccessKey || "",
@@ -108,7 +148,7 @@ export default function ImageStorageSettingsPage() {
 
   const savePrmS3ConfigMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/image-storage/prm-s3/settings", form);
+      const res = await apiRequest("POST", "/api/image-storage/prm-s3/settings", prmS3Payload(form));
       return res.json();
     },
     onSuccess: () => {
@@ -124,8 +164,8 @@ export default function ImageStorageSettingsPage() {
   });
 
   const testPrmS3Mutation = useMutation({
-    mutationFn: async (payload?: typeof form) => {
-      const res = await apiRequest("POST", "/api/image-storage/prm-s3/test", payload ?? form);
+    mutationFn: async (payload?: PrmS3Form) => {
+      const res = await apiRequest("POST", "/api/image-storage/prm-s3/test", prmS3Payload(payload ?? form));
       return res.json() as Promise<{ ok: boolean; message?: string }>;
     },
     onSuccess: (data) => {
@@ -324,15 +364,79 @@ export default function ImageStorageSettingsPage() {
               </p>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="prm-bucket">Bucket Name</Label>
-              <Input
-                id="prm-bucket"
-                value={form.bucket}
-                onChange={(e) => setForm((prev) => ({ ...prev, bucket: e.target.value }))}
-                placeholder="images"
-              />
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="prm-storage-mode">Storage Mode</Label>
+              <Select value={form.storageMode} onValueChange={(val) => setForm((prev) => ({ ...prev, storageMode: val as PrmS3StorageMode }))}>
+                <SelectTrigger id="prm-storage-mode" className="w-[260px]" data-testid="select-prm-s3-storage-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="standard" data-testid="option-storage-standard">Standard</SelectItem>
+                  <SelectItem value="scale" data-testid="option-storage-scale">Scale</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {form.storageMode === "standard"
+                  ? "Standard: Everything is stored in one bucket."
+                  : "Scale: Each type of file gets its own bucket. These buckets must already exist on PRM-S3."}{" "}
+                Changing buckets does not move files already stored.
+              </p>
             </div>
+
+            {form.storageMode === "standard" ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="prm-bucket">Bucket Name</Label>
+                <Input
+                  id="prm-bucket"
+                  value={form.bucket}
+                  onChange={(e) => setForm((prev) => ({ ...prev, bucket: e.target.value }))}
+                  placeholder="images"
+                  data-testid="input-prm-s3-bucket"
+                />
+              </div>
+            ) : (
+              <>
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label htmlFor="prm-bucket-prefix">Bucket Prefix</Label>
+                  <Input
+                    id="prm-bucket-prefix"
+                    className="md:max-w-[calc(50%-0.5rem)]"
+                    value={form.bucketPrefix}
+                    onChange={(e) => setForm((prev) => ({ ...prev, bucketPrefix: e.target.value }))}
+                    placeholder="prod-"
+                    data-testid="input-prm-s3-bucket-prefix"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Goes in front of every bucket name, so several instances can share one PRM-S3.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label>Buckets</Label>
+                  <div className="rounded-md border divide-y" data-testid="list-prm-s3-buckets">
+                    {Object.entries(form.folderBuckets).map(([folder, name]) => (
+                      <div key={folder} className="flex items-center gap-3 px-3 py-2">
+                        <Label htmlFor={`prm-bucket-${folder}`} className="w-24 shrink-0 font-normal">{folderLabel(folder)}</Label>
+                        <div className="flex flex-1 min-w-0 items-center">
+                          {form.bucketPrefix.trim() && (
+                            <span className="flex h-9 max-w-[50%] items-center truncate rounded-l-md border border-r-0 bg-muted px-3 text-sm text-muted-foreground">
+                              {form.bucketPrefix.trim()}
+                            </span>
+                          )}
+                          <Input
+                            id={`prm-bucket-${folder}`}
+                            className={form.bucketPrefix.trim() ? "rounded-l-none" : undefined}
+                            value={name}
+                            onChange={(e) => setForm((prev) => ({ ...prev, folderBuckets: { ...prev.folderBuckets, [folder]: e.target.value } }))}
+                            data-testid={`input-prm-s3-bucket-${folder.slice(0, -1)}`}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
 
             <div className="space-y-1.5">
               <Label htmlFor="prm-region">Region</Label>

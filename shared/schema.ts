@@ -987,11 +987,15 @@ export const faces = pgTable("faces", {
   noiseReason: text("noise_reason"), // 'small' | 'low_conf' | 'blurry' (machine quality judgements) | 'singleton' (in no cluster); null = not noise
   verifyPersonfaceUuid: varchar("verify_personface_uuid"), // auto-assign's verify tier: the named group this face probably is, not moved until confirmed; null = none
   verifyScore: real("verify_score"), // look-alike score for verifyPersonfaceUuid
+  honeypot: text("honeypot"), // 'manual' (sent by a person) | 'auto' (matched a manual one) | 'released' (taken back out); null = never in it. In the honey pot = also dismissed_at (honey-pot-plan.md)
+  honeypotAt: timestamp("honeypot_at", { withTimezone: true }), // when it entered the honey pot
+  honeypotScore: real("honeypot_score"), // 'auto' only: best similarity to a manual honey pot face
 }, (t) => [
   index("faces_photo_id_idx").on(t.photoId),
   index("faces_personface_uuid_idx").on(t.personfaceUuid),
   index("faces_cluster_id_idx").on(t.clusterId).where(sql`${t.clusterId} IS NOT NULL`),
   index("faces_verify_personface_uuid_idx").on(t.verifyPersonfaceUuid).where(sql`${t.verifyPersonfaceUuid} IS NOT NULL`),
+  index("faces_honeypot_idx").on(t.honeypotAt).where(sql`${t.honeypot} IN ('manual', 'auto')`),
   index("faces_review_queue_idx").on(t.createdAt).where(sql`${t.personfaceUuid} IS NULL AND ${t.dismissedAt} IS NULL`),
 ]);
 
@@ -1270,11 +1274,13 @@ export const storyImporters = pgTable("story_importers", {
   runNowUnseenOnly: boolean("run_now_unseen_only").notNull().default(false), // the same for "Run now"; the page's checkbox, kept here
   nextRunAt: timestamp("next_run_at"), // the scheduler's only state per importer
   lastUsername: text("last_username"), // the @username the service reported on its last run
-  // Morning tracking runs (account-tracking-plan.md §2.3), scheduled apart from stories.
+  // Hourly tracking checks (account-tracking-plan.md §2.3), scheduled apart from stories.
   trackingEnabled: boolean("tracking_enabled").notNull().default(false),
-  trackingWindow: text("tracking_window").notNull().default("07:00-10:00"),
-  trackingMaxJobs: integer("tracking_max_jobs").notNull().default(40),
-  nextTrackingRunAt: timestamp("next_tracking_run_at"),
+  trackingWindow: text("tracking_window").notNull().default("07:00-10:00"), // unused since hourly checks; kept so old backups load
+  trackingQuietHours: text("tracking_quiet_hours").notNull().default("01:00-09:00"), // "HH:MM-HH:MM", may wrap midnight; no checks start inside it
+  trackingMaxJobs: integer("tracking_max_jobs").notNull().default(30), // per hourly run
+  trackingMinBatch: integer("tracking_min_batch").notNull().default(10), // due accounts needed before a check starts a run
+  nextTrackingRunAt: timestamp("next_tracking_run_at"), // the next hourly check
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

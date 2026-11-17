@@ -53,7 +53,9 @@ assert.equal(withImageSize("https://example.org/photo.png?v=2", "max"), "https:/
 const mockConfig: PrmS3Config = {
   endpoint: "http://localhost:9000",
   publicEndpoint: "https://prm-cdn.example.com",
-  bucket: "images",
+  baseBucket: "images",
+  bucketMap: {},
+  bucketPrefix: "",
   region: "us-east-1",
   accessKeyId: "key",
   secretAccessKey: "secret",

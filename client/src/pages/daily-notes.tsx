@@ -31,6 +31,12 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Trash2 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 function getTodayDate(): string {
   return format(new Date(), "yyyy-MM-dd");
@@ -132,12 +138,12 @@ export default function DailyNotesList() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto p-6 space-y-6">
+      <div className="max-w-3xl mx-auto p-3 md:p-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div>
-            <h1 className="text-2xl font-semibold">Daily Notes</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">
+            <h1 className="text-xl md:text-2xl font-semibold">Daily Notes</h1>
+            <p className="hidden md:block text-sm text-muted-foreground mt-0.5">
               Date-anchored journal entries. Editable for 2 days, then requires PIN.
             </p>
           </div>
@@ -152,19 +158,38 @@ export default function DailyNotesList() {
                 setPinDialogOpen(true);
               }}
               data-testid="button-set-pin"
+              aria-label={pinStatus?.pinSet ? "Change PIN" : "Set PIN"}
+              title={pinStatus?.pinSet ? "Change PIN" : "Set PIN"}
             >
-              <KeyRound className="h-4 w-4 mr-1.5" />
-              {pinStatus?.pinSet ? "Change PIN" : "Set PIN"}
+              <KeyRound className="h-4 w-4 md:mr-1.5" />
+              <span className="hidden md:inline">{pinStatus?.pinSet ? "Change PIN" : "Set PIN"}</span>
             </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button className="md:hidden" data-testid="button-new-note-mobile">
+                  <Plus className="h-4 w-4 mr-2" />
+                  New Note
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleOpenToday} data-testid="menu-note-today">
+                  {todayNote ? "Open today's note" : "Today"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleOpenYesterday} data-testid="menu-note-yesterday">
+                  {yesterdayNote ? "Open yesterday's note" : "Yesterday"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               variant="outline"
+              className="hidden md:inline-flex"
               onClick={handleOpenYesterday}
               data-testid="button-open-yesterday"
             >
               <CalendarDays className="h-4 w-4 mr-2" />
               {yesterdayNote ? "Open Yesterday's Note" : "New Note for Yesterday"}
             </Button>
-            <Button onClick={handleOpenToday} data-testid="button-open-today">
+            <Button className="hidden md:inline-flex" onClick={handleOpenToday} data-testid="button-open-today">
               <CalendarDays className="h-4 w-4 mr-2" />
               {todayNote ? "Open Today's Note" : "New Note for Today"}
             </Button>

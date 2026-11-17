@@ -132,7 +132,7 @@ export default function AccountMatching() {
   if (isLoading) {
     return (
       <div className="h-full overflow-auto">
-        <div className="max-w-3xl mx-auto p-6 space-y-6">
+        <div className="max-w-3xl mx-auto p-3 md:p-6 space-y-6">
           <div className="text-center space-y-2 flex flex-col items-center">
             <Skeleton className="h-8 w-48" />
             <Skeleton className="h-4 w-32" />
@@ -181,7 +181,7 @@ export default function AccountMatching() {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-3xl mx-auto p-6 space-y-6">
+      <div className="max-w-3xl mx-auto p-3 md:p-6 space-y-6">
         <div className="text-center space-y-1">
           <h1
             className="text-2xl font-bold"

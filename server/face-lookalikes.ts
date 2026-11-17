@@ -69,6 +69,25 @@ export async function setVerifyMinScore(score: number): Promise<void> {
   if (Number.isFinite(score) && score > 0 && score <= 1) await storage.setAppSetting(VERIFY_MIN_SCORE_KEY, String(score));
 }
 
+const HONEYPOT_AUTO_KEY = "face_honeypot_auto";
+const HONEYPOT_MIN_SCORE_KEY = "face_honeypot_min_score";
+const HONEYPOT_MIN_SCORE_DEFAULT = 0.6;
+
+/** Auto-assign sends faces that look like a honey pot face to the honey pot (honey-pot-plan.md §2.3). Off by default. */
+export async function getHoneypotSettings(): Promise<{ auto: boolean; minScore: number }> {
+  const raw = Number(await storage.getAppSetting(HONEYPOT_MIN_SCORE_KEY));
+  return {
+    auto: (await storage.getAppSetting(HONEYPOT_AUTO_KEY)) === "true",
+    minScore: Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : HONEYPOT_MIN_SCORE_DEFAULT,
+  };
+}
+
+export async function setHoneypotSettings(update: { auto?: unknown; minScore?: unknown }): Promise<void> {
+  if (typeof update.auto === "boolean") await storage.setAppSetting(HONEYPOT_AUTO_KEY, String(update.auto));
+  const score = Number(update.minScore);
+  if (update.minScore !== undefined && Number.isFinite(score) && score > 0 && score <= 1) await storage.setAppSetting(HONEYPOT_MIN_SCORE_KEY, String(score));
+}
+
 // ── Centroid cache ────────────────────────────────────────────────────────────
 
 let dirty = true;
@@ -212,6 +231,53 @@ function topCentroids(embedding: number[], threshold: number, skip: (group: stri
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, 3);
+}
+
+// ── Honey pot faces (honey-pot-plan.md §2.2) ─────────────────────────────────
+// Each face a person put in the honey pot is matched on its own, not averaged: blurry
+// crops of different people have nothing in common worth a centroid.
+
+let honeypotDirty = true;
+let honeypotFaces: Float32Array[] = [];
+
+/** Call after faces enter or leave the honey pot as 'manual'. */
+export function markHoneypotDirty(): void {
+  honeypotDirty = true;
+}
+
+async function ensureHoneypotFaces(): Promise<void> {
+  if (!honeypotDirty) return;
+  honeypotDirty = false;
+  try {
+    const rows = await db.select({ embedding: faces.embedding }).from(faces).where(sql`${faces.honeypot} = 'manual'`);
+    honeypotFaces = rows
+      .map((r) => r.embedding as number[] | null)
+      .filter((e): e is number[] => Array.isArray(e) && e.length > 0)
+      .map((e) => Float32Array.from(e));
+  } catch (err) {
+    honeypotDirty = true;
+    throw err;
+  }
+}
+
+/** Best similarity of each face (by embedding) to any manual honey pot face; faces with none aren't in the map. */
+export async function honeypotScoresFor(rows: { id: string; embedding: unknown }[]): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  await ensureHoneypotFaces();
+  if (!honeypotFaces.length) return result;
+  for (const row of rows) {
+    const embedding = row.embedding as number[] | null;
+    if (!Array.isArray(embedding) || !embedding.length) continue;
+    let best = -1;
+    for (const hp of honeypotFaces) {
+      if (hp.length !== embedding.length) continue;
+      let dot = 0;
+      for (let i = 0; i < embedding.length; i++) dot += embedding[i] * hp[i];
+      if (dot > best) best = dot;
+    }
+    if (best > -1) result.set(row.id, best);
+  }
+  return result;
 }
 
 export type LikelySameCandidate = {

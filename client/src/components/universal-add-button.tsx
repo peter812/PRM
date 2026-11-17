@@ -1,5 +1,6 @@
 import { Plus, User, AtSign, Heart, BookOpen, MessageSquare, StickyNote, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,6 +16,12 @@ interface UniversalAddButtonProps {
   onAddInteraction: () => void;
   onAddNote: () => void;
   onAddPhoto: () => void;
+  /** Overrides for the trigger, e.g. the larger bottom-nav version. */
+  className?: string;
+  iconClassName?: string;
+  side?: "top" | "bottom";
+  align?: "start" | "center" | "end";
+  testId?: string;
 }
 
 export function UniversalAddButton({
@@ -25,15 +32,20 @@ export function UniversalAddButton({
   onAddInteraction,
   onAddNote,
   onAddPhoto,
+  className,
+  iconClassName,
+  side,
+  align = "end",
+  testId = "button-universal-add",
 }: UniversalAddButtonProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="default" size="icon" className="h-8 w-8 rounded-full" data-testid="button-universal-add">
-          <Plus className="h-4 w-4" />
+        <Button variant="default" size="icon" className={cn("h-8 w-8 rounded-full", className)} data-testid={testId} aria-label="Add">
+          <Plus className={cn("h-4 w-4", iconClassName)} />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" data-testid="dropdown-universal-add">
+      <DropdownMenuContent side={side} align={align} data-testid="dropdown-universal-add">
         <DropdownMenuItem onClick={onAddPerson} data-testid="add-menu-person">
           <User className="h-4 w-4 mr-2" />
           Person

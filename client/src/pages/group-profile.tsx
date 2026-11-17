@@ -68,7 +68,7 @@ export default function GroupProfile() {
   if (isLoading) {
     return (
       <div className="flex flex-col h-full">
-        <div className="border-b px-6 py-4">
+        <div className="border-b px-3 py-3 md:px-6 md:py-4">
           <Skeleton className="h-8 w-32 mb-6" />
           <div className="flex items-start gap-6">
             <Skeleton className="w-24 h-24 rounded-full" />
@@ -121,7 +121,7 @@ export default function GroupProfile() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-6">
+      <div className="border-b px-3 py-4 md:px-6 md:py-6">
         <Button
           variant="ghost"
           size="sm"
@@ -217,7 +217,7 @@ export default function GroupProfile() {
         }}
         className="flex-1 flex flex-col overflow-hidden"
       >
-        <div className="border-b px-6">
+        <div className="border-b px-3 md:px-6">
           <TabsList className="h-12 bg-transparent p-0">
             <TabsTrigger
               value="members"

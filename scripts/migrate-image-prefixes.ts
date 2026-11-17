@@ -11,13 +11,14 @@ import { CopyObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { sql } from "drizzle-orm";
 import { db } from "../server/db";
 import { getPrmS3Client } from "../server/prm-s3";
+import { bucketForKey } from "../server/prm-s3-buckets";
 
 const isDryRun = process.argv.includes("--dry-run");
 
 async function main() {
   console.log(`\n=== PRM Image Prefix Migration ${isDryRun ? "(DRY RUN)" : ""} ===\n`);
 
-  const { client: s3Client, bucket } = await getPrmS3Client();
+  const { client: s3Client, cfg } = await getPrmS3Client();
 
   // Find all images currently stored under images/ prefix
   const queryResult = await db.execute(sql`
@@ -104,8 +105,8 @@ async function main() {
       try {
         // 1. Copy original object to new prefix (PRM-s3 bakes the new folder's WebP proxies on write)
         await s3Client.send(new CopyObjectCommand({
-          Bucket: bucket,
-          CopySource: bucket + "/" + oldKey,
+          Bucket: bucketForKey(cfg, newKey),
+          CopySource: bucketForKey(cfg, oldKey) + "/" + oldKey,
           Key: newKey,
         }));
 
@@ -125,7 +126,7 @@ async function main() {
 
         // 3. Delete old object from images/ (cleans up old key and any old proxies)
         await s3Client.send(new DeleteObjectCommand({
-          Bucket: bucket,
+          Bucket: bucketForKey(cfg, oldKey),
           Key: oldKey,
         }));
 

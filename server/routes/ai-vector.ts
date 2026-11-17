@@ -107,6 +107,47 @@ async function setPrmFaceSetting(key: string, value: string): Promise<void> {
 }
 
 
+/** Read a per-tool toggle map (JSON in app_settings); any unspecified tool defaults to enabled. */
+async function readPerTool(key: string): Promise<Record<string, boolean>> {
+  const raw = await storage.getAppSetting(key);
+  const perTool: Record<string, boolean> = {};
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        for (const k of Object.keys(parsed)) {
+          perTool[k] = parsed[k] !== false;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  for (const t of AI_TOOLS) {
+    if (!(t.name in perTool)) perTool[t.name] = true;
+  }
+  return perTool;
+}
+
+/** Merge boolean entries from a request body into a stored per-tool map. */
+async function patchPerTool(key: string, patch: Record<string, unknown>): Promise<void> {
+  const next = await readPerTool(key);
+  for (const k of Object.keys(patch)) {
+    if (typeof patch[k] === "boolean") next[k] = patch[k] as boolean;
+  }
+  await storage.setAppSetting(key, JSON.stringify(next));
+}
+
+/** Tools that need the in-app chat stream (askUser) and can't run over MCP. */
+export const MCP_EXCLUDED_TOOLS = new Set(["ask_user"]);
+
+export async function readMcpSettings() {
+  return {
+    enabled: (await storage.getAppSetting("mcp_enabled")) === "true",
+    allowWrites: (await storage.getAppSetting("mcp_allow_writes")) === "true",
+    perTool: await readPerTool("mcp_per_tool"),
+    tools: listAiToolMetadata().filter((t) => !MCP_EXCLUDED_TOOLS.has(t.name)),
+  };
+}
+
 export function registerRoutes(app: Express) {
     // ── PRM Compute integration ──────────────────────────────────────────────────
   
@@ -738,7 +779,7 @@ export function registerRoutes(app: Express) {
         if (!photo) return res.status(404).json({ error: "Photo not found." });
         if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM Compute service is not configured." });
 
-        const { facesDetected } = await runFaceRecognition(id);
+        const { facesDetected } = await runFaceRecognition(id, { viaUrl: req.body?.viaUrl === true });
         res.json({ success: true, facesDetected });
       } catch (error: any) {
         if (error instanceof ComputeUnreachableError) {
@@ -1380,22 +1421,7 @@ export function registerRoutes(app: Express) {
     }> {
       const enabledRaw = await storage.getAppSetting("ai_tools_enabled");
       const enabled = enabledRaw === null || enabledRaw === undefined ? true : enabledRaw === "true";
-      const perToolRaw = await storage.getAppSetting("ai_tools_per_tool");
-      let perTool: Record<string, boolean> = {};
-      if (perToolRaw) {
-        try {
-          const parsed = JSON.parse(perToolRaw);
-          if (parsed && typeof parsed === "object") {
-            for (const k of Object.keys(parsed)) {
-              perTool[k] = parsed[k] !== false;
-            }
-          }
-        } catch { /* ignore */ }
-      }
-      // Default any unspecified tool to enabled.
-      for (const t of AI_TOOLS) {
-        if (!(t.name in perTool)) perTool[t.name] = true;
-      }
+      const perTool = await readPerTool("ai_tools_per_tool");
       const modeRaw = await storage.getAppSetting("ai_tools_execution_mode");
       // Default to the most restrictive mode (off) so writes are opt-in.
       const executionMode = parseExecutionMode(modeRaw ?? "off");
@@ -1442,16 +1468,40 @@ export function registerRoutes(app: Express) {
           await storage.setAppSetting("ai_tools_execution_mode", mode);
         }
         if (req.body.perTool && typeof req.body.perTool === "object") {
-          const current = (await readAiToolSettings()).perTool;
-          const patch = req.body.perTool as Record<string, unknown>;
-          const next: Record<string, boolean> = { ...current };
-          for (const k of Object.keys(patch)) {
-            if (typeof patch[k] === "boolean") next[k] = patch[k] as boolean;
-          }
-          await storage.setAppSetting("ai_tools_per_tool", JSON.stringify(next));
+          await patchPerTool("ai_tools_per_tool", req.body.perTool);
         }
         const settings = await readAiToolSettings();
         res.json(settings);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // ── MCP server settings (see Guides/mcp-server-plan.md) ─────────────────
+    // The MCP server exposes the same AI_TOOLS registry to external clients,
+    // with its own switches so chat and MCP can be configured independently.
+    // MCP clients run their own per-call approval, so writes are just on/off.
+
+    app.get("/api/mcp/settings", async (req, res) => {
+      try {
+        res.json(await readMcpSettings());
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/mcp/settings", async (req, res) => {
+      try {
+        if (typeof req.body.enabled === "boolean") {
+          await storage.setAppSetting("mcp_enabled", String(req.body.enabled));
+        }
+        if (typeof req.body.allowWrites === "boolean") {
+          await storage.setAppSetting("mcp_allow_writes", String(req.body.allowWrites));
+        }
+        if (req.body.perTool && typeof req.body.perTool === "object") {
+          await patchPerTool("mcp_per_tool", req.body.perTool);
+        }
+        res.json(await readMcpSettings());
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -3756,7 +3806,7 @@ Respond with ONLY a JSON array, no other text.`;
     });
 
     // OCR on an existing photo. PRM-Compute persists the result on the photos
-    // row (ocr_data / ocr_at); this route only supplies the bytes and photo_id.
+    // row (ocr_data / ocr_at); this route only supplies the image and photo_id.
     app.post("/api/photos/:id/run-ocr", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const { id } = req.params;
