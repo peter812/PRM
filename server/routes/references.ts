@@ -4,6 +4,7 @@ import multer from "multer";
 import { z } from "zod";
 import { ComputeBusyError, ComputeUnreachableError } from "../recognition";
 import { deleteAllReferences, listReferences, searchReferences } from "../references";
+import { hasValidMagicBytes } from "../upload-names";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -41,6 +42,9 @@ export function registerRoutes(app: Express) {
   /** Multipart `image`, or JSON { faceUuid } | { personId } | { referenceId }. */
   app.post("/api/references/search", upload.single("image"), async (req, res) => {
     try {
+      if (req.file && !hasValidMagicBytes("image", req.file.buffer)) {
+        return res.status(400).json({ error: "Invalid image file signature" });
+      }
       const probe = req.file
         ? { image: req.file.buffer, mimeType: req.file.mimetype, fileName: req.file.originalname }
         : searchSchema.parse(req.body);

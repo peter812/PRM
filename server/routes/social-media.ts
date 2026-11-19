@@ -6,7 +6,8 @@ import { db } from "../db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccountPostTags, socialAccounts, socialFollows, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, ne, sql, isNotNull, isNull, and, inArray, desc, or } from "drizzle-orm";
+import { isSafeHttpUrl, sanitizeHttpUrl } from "../url-validation";
+import { eq, ne, sql, isNotNull, isNull, and, inArray, notInArray, desc, or } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -114,7 +115,14 @@ export function registerRoutes(app: Express) {
       try {
         const searchQuery = req.query.search as string | undefined;
         const typeId = req.query.typeId as string | undefined;
-        const accounts = await storage.getAllSocialAccounts(searchQuery, typeId);
+        const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
+        const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string, 10) || 100));
+        const accounts = await storage.getSocialAccountsPaginated({
+          offset,
+          limit,
+          searchQuery: searchQuery || undefined,
+          typeId: typeId || undefined,
+        });
         res.json(accounts);
       } catch (error) {
         console.error("Error fetching social accounts:", error);
@@ -226,33 +234,56 @@ export function registerRoutes(app: Express) {
         }
         const includeHistory = req.query.includeHistory === "true";
   
-        const allSocialAccountTypes = await storage.getAllSocialAccountTypes();
-  
+        const [allSocialAccountTypes, fetchedAccounts, relevantFollows, networkChangesRows] = await Promise.all([
+          storage.getAllSocialAccountTypes(),
+          storage.getSocialAccountsByIds(accountIds),
+          db
+            .select({
+              followerId: socialFollows.followerId,
+              followedId: socialFollows.followedId,
+            })
+            .from(socialFollows)
+            .where(or(inArray(socialFollows.followerId, accountIds), inArray(socialFollows.followedId, accountIds))),
+          includeHistory
+            ? db
+                .select()
+                .from(socialNetworkChanges)
+                .where(inArray(socialNetworkChanges.socialAccountId, accountIds))
+                .orderBy(desc(socialNetworkChanges.detectedAt))
+            : Promise.resolve([] as Array<typeof socialNetworkChanges.$inferSelect>),
+        ]);
 
-        let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
-        xml += '<social_accounts_export>\n';
-  
+        const accountById = new Map(fetchedAccounts.map(a => [a.id, a]));
         const typeIdsUsed = new Set<string>();
         const accounts: SocialAccountWithCurrentProfile[] = [];
-  
+
         for (const id of accountIds) {
-          const account = await storage.getSocialAccountById(id);
+          const account = accountById.get(id);
           if (account) {
             accounts.push(account);
             if (account.typeId) typeIdsUsed.add(account.typeId);
           }
         }
-  
-        const allFollows = await storage.getAllFollows();
+
+        let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+        xml += '<social_accounts_export>\n';
+
         const followersMap = new Map<string, string[]>();
         const followingMap = new Map<string, string[]>();
-        for (const edge of allFollows) {
+        for (const edge of relevantFollows) {
           const followers = followersMap.get(edge.followedId);
           if (followers) followers.push(edge.followerId);
           else followersMap.set(edge.followedId, [edge.followerId]);
           const following = followingMap.get(edge.followerId);
           if (following) following.push(edge.followedId);
           else followingMap.set(edge.followerId, [edge.followedId]);
+        }
+
+        const changesByAccount = new Map<string, typeof networkChangesRows>();
+        for (const change of networkChangesRows) {
+          const list = changesByAccount.get(change.socialAccountId);
+          if (list) list.push(change);
+          else changesByAccount.set(change.socialAccountId, [change]);
         }
   
         xml += '  <social_account_types>\n';
@@ -276,8 +307,7 @@ export function registerRoutes(app: Express) {
           xml += `      <id>${escapeXml(account.id)}</id>\n`;
           xml += `      <username>${escapeXml(account.username)}</username>\n`;
           xml += `      <nickname>${escapeXml(account.currentProfile?.nickname || "")}</nickname>\n`;
-          xml += `      <bio>${escapeXml(account.currentProfile?.bio || "")}</bio>
-`;
+          xml += `      <bio>${escapeXml(account.currentProfile?.bio || "")}</bio>\n`;
           xml += `      <account_url>${escapeXml(account.currentProfile?.accountUrl || "")}</account_url>\n`;
           xml += `      <owner_uuid>${escapeXml(account.ownerUuid || "")}</owner_uuid>\n`;
           xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
@@ -314,7 +344,7 @@ export function registerRoutes(app: Express) {
   
           xml += '  <social_network_changes>\n';
           for (const account of accounts) {
-            const changes = await storage.getNetworkChanges(account.id);
+            const changes = changesByAccount.get(account.id) || [];
             for (const change of changes) {
               xml += '    <social_network_change>\n';
               xml += `      <id>${escapeXml(change.id)}</id>\n`;
@@ -438,7 +468,7 @@ export function registerRoutes(app: Express) {
               // rather than as a second write against a separate table.
               nickname: nickname || null,
               bio: bio || null,
-              accountUrl: accountUrl || null,
+              accountUrl: sanitizeHttpUrl(accountUrl),
               imageUrl: imageUrl || null,
             });
             socialAccountIdMap.set(id, id);
@@ -476,7 +506,7 @@ export function registerRoutes(app: Express) {
             await storage.updateSocialAccount(mappedAccountId, {
               nickname: pvNickname || null,
               bio: pvBio || null,
-              accountUrl: pvAccountUrl || null,
+              accountUrl: sanitizeHttpUrl(pvAccountUrl),
               imageUrl: pvImageUrl || null,
               externalImageUrl: pvExternalImageUrl || null,
             });
@@ -619,7 +649,12 @@ export function registerRoutes(app: Express) {
         if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;
         // Profile fields live on the account row now, so they go in the same update.
         if (body.nickname !== undefined) registryFields.nickname = body.nickname;
-        if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
+        if (body.accountUrl !== undefined) {
+          if (body.accountUrl !== null && (typeof body.accountUrl !== "string" || !isSafeHttpUrl(body.accountUrl))) {
+            return res.status(400).json({ error: "accountUrl must use http: or https: scheme" });
+          }
+          registryFields.accountUrl = body.accountUrl === null ? null : (body.accountUrl.trim() || null);
+        }
         if (body.bio !== undefined) registryFields.bio = body.bio;
         if (typeof body.skipStories === "boolean") registryFields.skipStories = body.skipStories;
         if (typeof body.isStarred === "boolean") registryFields.isStarred = body.isStarred;
@@ -1045,12 +1080,14 @@ export function registerRoutes(app: Express) {
         await storage.addFollows(edgesToAdd);
         void queueOsintScansForMeAccount(id, edgesToAdd.filter(e => e.followerId === id).map(e => e.followedId));
 
+        const removals: Promise<unknown>[] = [];
         for (const f of Array.from(oldFollowers)) {
-          if (!newFollowers.has(f)) await storage.removeFollow(f, id);
+          if (!newFollowers.has(f)) removals.push(storage.removeFollow(f, id));
         }
         for (const g of Array.from(oldFollowing)) {
-          if (!newFollowing.has(g)) await storage.removeFollow(id, g);
+          if (!newFollowing.has(g)) removals.push(storage.removeFollow(id, g));
         }
+        await Promise.all(removals);
 
         const state = await storage.getNetworkState(id);
         res.status(201).json(state);
@@ -1442,13 +1479,19 @@ export function registerRoutes(app: Express) {
         const skipParam = req.query.skip as string | undefined;
         const skipIds = skipParam ? skipParam.split(",").filter(Boolean) : [];
   
-        const allPeople = await storage.getAllPeople();
-        const unmatchedPerson = allPeople.find(
-          (p) =>
-            (!p.socialAccountUuids || p.socialAccountUuids.length === 0) &&
-            p.noSocialMedia === 0 &&
-            !skipIds.includes(p.id)
-        );
+        const unmatchedConditions = [
+          eq(people.noSocialMedia, 0),
+          or(isNull(people.socialAccountUuids), sql`coalesce(array_length(${people.socialAccountUuids}, 1), 0) = 0`),
+        ];
+        if (skipIds.length > 0) {
+          unmatchedConditions.push(notInArray(people.id, skipIds));
+        }
+
+        const [unmatchedPerson] = await db
+          .select()
+          .from(people)
+          .where(and(...unmatchedConditions))
+          .limit(1);
   
         if (!unmatchedPerson) {
           return res.json({ person: null, candidates: [] });
@@ -1458,13 +1501,15 @@ export function registerRoutes(app: Express) {
         const firstName = unmatchedPerson.firstName.toLowerCase();
         const lastName = unmatchedPerson.lastName.toLowerCase();
   
-        const allAccounts = await storage.getAllSocialAccounts();
-        const unownedAccounts = allAccounts.filter((a) => !a.ownerUuid);
+        const [unownedAccounts, accountTypes] = await Promise.all([
+          db.select().from(socialAccounts).where(isNull(socialAccounts.ownerUuid)),
+          storage.getAllSocialAccountTypes(),
+        ]);
   
         const scored = unownedAccounts.map((account) => {
           let score = 0;
           const username = (account.username || "").toLowerCase();
-          const nickname = (account.currentProfile?.nickname || "").toLowerCase();
+          const nickname = (account.nickname || "").toLowerCase();
   
           if (nickname === fullName || username === fullName.replace(/\s+/g, "")) {
             score += 100;
@@ -1492,21 +1537,37 @@ export function registerRoutes(app: Express) {
         const candidates = scored.filter((s) => s.score > 0).slice(0, 8);
   
         if (candidates.length < 5) {
+          const pickedIds = new Set(candidates.map((c) => c.account.id));
           const remaining = unownedAccounts
-            .filter((a) => !candidates.find((c) => c.account.id === a.id))
+            .filter((a) => !pickedIds.has(a.id))
             .slice(0, 8 - candidates.length);
           for (const account of remaining) {
             candidates.push({ account, score: 0 });
           }
         }
   
-        const accountTypes = await storage.getAllSocialAccountTypes();
-        const candidatesWithType = candidates.slice(0, 8).map((c) => ({
-          ...c.account,
-          typeName: accountTypes.find((t) => t.id === c.account.typeId)?.name || null,
-          typeColor: accountTypes.find((t) => t.id === c.account.typeId)?.color || null,
-          matchScore: c.score,
-        }));
+        const typeById = new Map(accountTypes.map((t) => [t.id, t]));
+        const candidatesWithType = candidates.slice(0, 8).map((c) => {
+          const t = c.account.typeId ? typeById.get(c.account.typeId) : undefined;
+          return {
+            ...c.account,
+            currentProfile: {
+              id: `derived:${c.account.id}`,
+              socialAccountId: c.account.id,
+              nickname: c.account.nickname,
+              bio: c.account.bio,
+              accountUrl: c.account.accountUrl,
+              imageUrl: c.account.imageUrl,
+              isHqImage: c.account.isHqImage ?? false,
+              externalImageUrl: c.account.externalImageUrl,
+              detectedAt: c.account.lastScrapedAt ?? c.account.internalAccountCreationDate,
+              isCurrent: true,
+            },
+            typeName: t?.name || null,
+            typeColor: t?.color || null,
+            matchScore: c.score,
+          };
+        });
   
         res.json({ person: unmatchedPerson, candidates: candidatesWithType });
       } catch (error) {
@@ -1534,18 +1595,20 @@ export function registerRoutes(app: Express) {
   
         await storage.updatePerson(personId, { socialAccountUuids: newUuids });
   
-        for (const accountId of socialAccountIds) {
-          await storage.updateSocialAccount(accountId, { ownerUuid: personId });
-          void queueOsintScansForMeAccount(accountId);
-        }
+        await Promise.all(
+          socialAccountIds.map((accountId) => {
+            void queueOsintScansForMeAccount(accountId);
+            return storage.updateSocialAccount(accountId, { ownerUuid: personId });
+          }),
+        );
   
         if (!person.imageUrl) {
-          for (const accountId of socialAccountIds) {
-            const account = await storage.getSocialAccountById(accountId);
-            if (account?.currentProfile?.imageUrl) {
-              await storage.updatePerson(personId, { imageUrl: account.currentProfile.imageUrl });
-              break;
-            }
+          const accounts = await Promise.all(
+            socialAccountIds.map((accountId) => storage.getSocialAccountById(accountId)),
+          );
+          const firstWithImage = accounts.find((account) => account?.currentProfile?.imageUrl);
+          if (firstWithImage?.currentProfile?.imageUrl) {
+            await storage.updatePerson(personId, { imageUrl: firstWithImage.currentProfile.imageUrl });
           }
         }
   
@@ -2242,6 +2305,13 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    const blockedMetadataHosts = new Set([
+      "169.254.169.254",
+      "metadata.google.internal",
+      "fd00:ec2::254",
+      "::ffff:a9fe:a9fe",
+    ]);
+
     app.post("/api/image-storage/prm-s3/test", requireAuth, async (req, res) => {
       try {
         const body = req.body;
@@ -2252,27 +2322,62 @@ export function registerRoutes(app: Express) {
         }
 
         const savedConfig = await getPrmS3Config();
-        const endpoint = (typeof body.endpoint === "string" && body.endpoint.trim())
-          ? body.endpoint.trim()
-          : savedConfig.endpoint;
+        const rawBodyEndpoint = typeof body.endpoint === "string" ? body.endpoint.trim() : "";
+        const endpoint = rawBodyEndpoint || savedConfig.endpoint;
         const region = (typeof body.region === "string" && body.region.trim())
           ? body.region.trim()
           : (savedConfig.region || "us-east-1");
         const bucket = (typeof body.bucket === "string" && body.bucket.trim())
           ? body.bucket.trim()
           : savedConfig.baseBucket;
-        const accessKeyId = (typeof body.accessKeyId === "string" && body.accessKeyId.trim())
+
+        if (!endpoint || !isValidEndpointUrl(endpoint, "http")) {
+          return res.status(400).json({ ok: false, message: "PRM-S3 endpoint must be a valid http(s) URL." });
+        }
+
+        const endpointUrl = normalizeEndpointUrl(endpoint, "http");
+        const parsedEndpoint = new URL(endpointUrl);
+        if (parsedEndpoint.protocol !== "http:" && parsedEndpoint.protocol !== "https:") {
+          return res.status(400).json({ ok: false, message: "PRM-S3 endpoint must use http or https." });
+        }
+        const normalizedHost = parsedEndpoint.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+        if (blockedMetadataHosts.has(normalizedHost)) {
+          return res.status(400).json({ ok: false, message: "PRM-S3 endpoint host is not allowed." });
+        }
+
+        const normalizedBodyEndpoint = rawBodyEndpoint
+          ? `${parsedEndpoint.origin}${parsedEndpoint.pathname.replace(/\/+$/, "")}`
+          : "";
+        let normalizedSavedEndpoint = "";
+        if (savedConfig.endpoint) {
+          try {
+            const savedParsed = new URL(normalizeEndpointUrl(savedConfig.endpoint.trim(), "http"));
+            normalizedSavedEndpoint = `${savedParsed.origin}${savedParsed.pathname.replace(/\/+$/, "")}`;
+          } catch {
+            normalizedSavedEndpoint = "";
+          }
+        }
+        const endpointChanged = Boolean(rawBodyEndpoint) && normalizedBodyEndpoint !== normalizedSavedEndpoint;
+
+        const explicitAccessKeyId = (typeof body.accessKeyId === "string" && body.accessKeyId.trim())
           ? body.accessKeyId.trim()
-          : savedConfig.accessKeyId;
-        const secretAccessKey = (typeof body.secretAccessKey === "string" && body.secretAccessKey.trim() && !body.secretAccessKey.includes("••"))
+          : "";
+        const explicitSecretAccessKey = (typeof body.secretAccessKey === "string" && body.secretAccessKey.trim() && !body.secretAccessKey.includes("••"))
           ? body.secretAccessKey.trim()
-          : savedConfig.secretAccessKey;
+          : "";
+
+        if (endpointChanged && (!explicitAccessKeyId || !explicitSecretAccessKey)) {
+          return res.status(400).json({
+            ok: false,
+            message: "Explicit accessKeyId and secretAccessKey are required when testing a different endpoint.",
+          });
+        }
+
+        const accessKeyId = explicitAccessKeyId || (endpointChanged ? "" : savedConfig.accessKeyId);
+        const secretAccessKey = explicitSecretAccessKey || (endpointChanged ? "" : savedConfig.secretAccessKey);
 
         if (!accessKeyId || !secretAccessKey) {
           return res.json({ ok: false, message: "PRM-S3 credentials (access key and secret key) are not configured." });
-        }
-        if (!endpoint || !isValidEndpointUrl(endpoint, "http")) {
-          return res.json({ ok: false, message: "PRM-S3 endpoint must be a valid http(s) URL." });
         }
         if (!bucket) {
           return res.json({ ok: false, message: "PRM-S3 bucket name is required." });
@@ -2289,7 +2394,6 @@ export function registerRoutes(app: Express) {
           return res.json({ ok: false, message: error.message });
         }
 
-        const endpointUrl = normalizeEndpointUrl(endpoint, "http");
         const client = new S3Client({
           endpoint: endpointUrl,
           region: region || "us-east-1",
@@ -2768,7 +2872,12 @@ export function registerRoutes(app: Express) {
         if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;
         // Profile fields live on the account row now, so they go in the same update.
         if (body.nickname !== undefined) registryFields.nickname = body.nickname;
-        if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
+        if (body.accountUrl !== undefined) {
+          if (body.accountUrl !== null && (typeof body.accountUrl !== "string" || !isSafeHttpUrl(body.accountUrl))) {
+            return sendApiError(res, 400, ErrorCodes.VALIDATION_ERROR, "accountUrl must use http: or https: scheme", {}, (req as any).requestId);
+          }
+          registryFields.accountUrl = body.accountUrl === null ? null : (body.accountUrl.trim() || null);
+        }
         if (body.bio !== undefined) registryFields.bio = body.bio;
         // A hand-picked picture goes through the same tiering as a scraped one.
         const changes: Parameters<typeof recordAccountProfileChanges>[1] = registryFields;

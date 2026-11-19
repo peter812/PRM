@@ -38,7 +38,10 @@ export async function getLikelySameMinScore(): Promise<number> {
 }
 
 export async function setLikelySameMinScore(score: number): Promise<void> {
-  if (Number.isFinite(score) && score > 0 && score <= 1) await storage.setAppSetting(LIKELY_SAME_MIN_SCORE_KEY, String(score));
+  if (Number.isFinite(score) && score > 0 && score <= 1) {
+    await storage.setAppSetting(LIKELY_SAME_MIN_SCORE_KEY, String(score));
+    invalidateCandidatePairsCache();
+  }
 }
 
 const AUTO_ASSIGN_MIN_SCORE_KEY = "face_auto_assign_min_score";
@@ -100,6 +103,7 @@ let rebuildPromise: Promise<void> | null = null;
 /** Call after any connect, disassociate or merge that could change a group's membership or naming. */
 export function markFaceIdentitiesDirty(): void {
   dirty = true;
+  invalidateCandidatePairsCache();
 }
 
 /**
@@ -149,29 +153,35 @@ async function loadCentroids(): Promise<void> {
   const next = new Map<string, Float32Array>();
 
   if (rows.length) {
-    const sums = new Map<string, { sum: number[]; count: number }>();
+    const sums = new Map<string, { sum: Float64Array; count: number }>();
     for (const row of rows) {
       const group = row.personfaceUuid;
       const embedding = row.embedding;
       if (!group || !Array.isArray(embedding) || !embedding.length) continue;
       let acc = sums.get(group);
       if (!acc) {
-        acc = { sum: new Array(embedding.length).fill(0), count: 0 };
+        acc = { sum: new Float64Array(embedding.length), count: 0 };
         sums.set(group, acc);
       }
-      for (let i = 0; i < embedding.length && i < acc.sum.length; i++) acc.sum[i] += embedding[i];
+      const len = Math.min(embedding.length, acc.sum.length);
+      for (let i = 0; i < len; i++) acc.sum[i] += embedding[i];
       acc.count++;
     }
     for (const [group, { sum, count }] of sums) {
       if (!count) continue;
-      const mean = sum.map((v) => v / count);
-      const norm = Math.sqrt(mean.reduce((s, v) => s + v * v, 0));
+      let normSq = 0;
+      for (let i = 0; i < sum.length; i++) normSq += sum[i] * sum[i];
+      const norm = Math.sqrt(normSq);
       if (!norm) continue;
-      next.set(group, Float32Array.from(mean.map((v) => v / norm)));
+      const invNorm = 1 / norm;
+      const vec = new Float32Array(sum.length);
+      for (let i = 0; i < sum.length; i++) vec[i] = sum[i] * invNorm;
+      next.set(group, vec);
     }
   }
   centroids = next;
   builtAt = Date.now();
+  invalidateCandidatePairsCache();
 }
 
 export type LookAlike = { personfaceUuid: string; score: number };
@@ -222,15 +232,21 @@ export async function lookAlikesForEmbeddings(embeddings: number[][], minScore: 
 
 /** Top 3 centroids an L2-normalised embedding scores at least `threshold` against, best first. */
 function topCentroids(embedding: number[], threshold: number, skip: (group: string) => boolean): LookAlike[] {
-  const scored: LookAlike[] = [];
+  const K = 3;
+  const top: LookAlike[] = [];
   for (const [group, centroid] of centroids) {
     if (centroid.length !== embedding.length || skip(group)) continue;
     let dot = 0;
     for (let i = 0; i < embedding.length; i++) dot += embedding[i] * centroid[i];
-    if (dot >= threshold) scored.push({ personfaceUuid: group, score: dot });
+    if (dot < threshold) continue;
+    if (top.length === K && dot <= top[K - 1].score) continue;
+    const entry: LookAlike = { personfaceUuid: group, score: dot };
+    let pos = top.length;
+    while (pos > 0 && top[pos - 1].score < dot) pos--;
+    top.splice(pos, 0, entry);
+    if (top.length > K) top.pop();
   }
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, 3);
+  return top;
 }
 
 // ── Honey pot faces (honey-pot-plan.md §2.2) ─────────────────────────────────
@@ -250,10 +266,20 @@ async function ensureHoneypotFaces(): Promise<void> {
   honeypotDirty = false;
   try {
     const rows = await db.select({ embedding: faces.embedding }).from(faces).where(sql`${faces.honeypot} = 'manual'`);
-    honeypotFaces = rows
-      .map((r) => r.embedding as number[] | null)
-      .filter((e): e is number[] => Array.isArray(e) && e.length > 0)
-      .map((e) => Float32Array.from(e));
+    const next: Float32Array[] = [];
+    for (const r of rows) {
+      const e = r.embedding as number[] | null;
+      if (!Array.isArray(e) || !e.length) continue;
+      let normSq = 0;
+      for (let i = 0; i < e.length; i++) normSq += e[i] * e[i];
+      const norm = Math.sqrt(normSq);
+      if (!norm) continue;
+      const invNorm = 1 / norm;
+      const vec = new Float32Array(e.length);
+      for (let i = 0; i < e.length; i++) vec[i] = e[i] * invNorm;
+      next.push(vec);
+    }
+    honeypotFaces = next;
   } catch (err) {
     honeypotDirty = true;
     throw err;
@@ -286,16 +312,25 @@ export type LikelySameCandidate = {
   score: number;
 };
 
-/**
- * Searches pairwise cosine similarity across all known identity centroids,
- * returning candidates >= threshold, filtered by previously dismissed pairs.
- */
-export async function findLikelySameCandidatePairs(opts?: { minScore?: number; limit?: number }): Promise<LikelySameCandidate[]> {
+const CANDIDATE_PAIRS_MAX_AGE_MS = CENTROID_MAX_AGE_MS;
+let cachedCandidatePairs: { pairs: LikelySameCandidate[]; threshold: number; builtAt: number } | null = null;
+let inflightPairsPromise: Promise<LikelySameCandidate[]> | null = null;
+let inflightPairsThreshold = 0;
+let candidatePairsGeneration = 0;
+
+function invalidateCandidatePairsCache(): void {
+  candidatePairsGeneration++;
+  cachedCandidatePairs = null;
+}
+
+function sliceCandidatePairs(pairs: LikelySameCandidate[], cachedThreshold: number, threshold: number, limit: number): LikelySameCandidate[] {
+  const filtered = cachedThreshold === threshold ? pairs : pairs.filter((c) => c.score >= threshold);
+  return filtered.slice(0, limit);
+}
+
+async function computeLikelySameCandidatePairs(threshold: number): Promise<LikelySameCandidate[]> {
   await ensureCentroids();
   if (centroids.size < 2) return [];
-
-  const threshold = opts?.minScore ?? (await getLikelySameMinScore());
-  const limit = opts?.limit ?? 50;
 
   // Load all dismissed pairs
   const dismissedRows = await db.select({ a: facePairDismissals.groupAUuid, b: facePairDismissals.groupBUuid }).from(facePairDismissals);
@@ -305,34 +340,80 @@ export async function findLikelySameCandidatePairs(opts?: { minScore?: number; l
     dismissedSet.add(`${minG}:${maxG}`);
   }
 
-  const groupList = Array.from(centroids.keys());
+  // Sort entries by UUID so gA < gB holds for all i < j, avoiding per-pair min/max sorting
+  const entries = Array.from(centroids.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const groups = entries.map((e) => e[0]);
+  const vecs = entries.map((e) => e[1]);
   const candidates: LikelySameCandidate[] = [];
+  const checkDismissals = dismissedSet.size > 0;
 
-  for (let i = 0; i < groupList.length; i++) {
-    // Yield every 100 iterations so we don't lock Node's event loop
+  for (let i = 0; i < groups.length; i++) {
+    // Yield every 100 outer iterations so we don't lock Node's event loop
     if (i > 0 && i % 100 === 0) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    const gA = groupList[i];
-    const cA = centroids.get(gA)!;
-    for (let j = i + 1; j < groupList.length; j++) {
-      const gB = groupList[j];
-      const [minG, maxG] = gA < gB ? [gA, gB] : [gB, gA];
-      if (dismissedSet.has(`${minG}:${maxG}`)) continue;
-
-      const cB = centroids.get(gB)!;
-      if (cA.length !== cB.length) continue;
+    const gA = groups[i];
+    const cA = vecs[i];
+    const len = cA.length;
+    for (let j = i + 1; j < groups.length; j++) {
+      const cB = vecs[j];
+      if (cB.length !== len) continue;
 
       let dot = 0;
-      for (let k = 0; k < cA.length; k++) dot += cA[k] * cB[k];
-      if (dot >= threshold) {
-        candidates.push({ groupA: gA, groupB: gB, score: dot });
-      }
+      for (let k = 0; k < len; k++) dot += cA[k] * cB[k];
+      if (dot < threshold) continue;
+
+      const gB = groups[j];
+      if (checkDismissals && dismissedSet.has(`${gA}:${gB}`)) continue;
+      candidates.push({ groupA: gA, groupB: gB, score: dot });
     }
   }
 
   candidates.sort((x, y) => y.score - x.score);
-  return candidates.slice(0, limit);
+  return candidates;
+}
+
+/**
+ * Searches pairwise cosine similarity across all known identity centroids,
+ * returning candidates >= threshold, filtered by previously dismissed pairs.
+ */
+export async function findLikelySameCandidatePairs(opts?: { minScore?: number; limit?: number }): Promise<LikelySameCandidate[]> {
+  const threshold = opts?.minScore ?? (await getLikelySameMinScore());
+  const limit = opts?.limit ?? 50;
+
+  if (
+    !dirty &&
+    cachedCandidatePairs &&
+    cachedCandidatePairs.threshold <= threshold &&
+    Date.now() - cachedCandidatePairs.builtAt <= CANDIDATE_PAIRS_MAX_AGE_MS &&
+    Date.now() - builtAt <= CENTROID_MAX_AGE_MS
+  ) {
+    return sliceCandidatePairs(cachedCandidatePairs.pairs, cachedCandidatePairs.threshold, threshold, limit);
+  }
+
+  if (inflightPairsPromise && inflightPairsThreshold <= threshold) {
+    const pairs = await inflightPairsPromise;
+    return sliceCandidatePairs(pairs, inflightPairsThreshold, threshold, limit);
+  }
+
+  const gen = candidatePairsGeneration;
+  const run = computeLikelySameCandidatePairs(threshold)
+    .then((pairs) => {
+      if (gen === candidatePairsGeneration && !dirty) {
+        cachedCandidatePairs = { pairs, threshold, builtAt: Date.now() };
+      }
+      return pairs;
+    })
+    .finally(() => {
+      if (inflightPairsPromise === run) {
+        inflightPairsPromise = null;
+      }
+    });
+
+  inflightPairsPromise = run;
+  inflightPairsThreshold = threshold;
+  const pairs = await run;
+  return pairs.slice(0, limit);
 }
 
 /**
@@ -347,4 +428,5 @@ export async function dismissLikelySamePair(groupA: string, groupB: string): Pro
       groupBUuid: maxG,
     })
     .onConflictDoNothing();
+  invalidateCandidatePairsCache();
 }

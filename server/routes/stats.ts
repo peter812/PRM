@@ -3,8 +3,9 @@
  * Response shapes live in shared/stats.ts.
  */
 import type { Express, Request, Response } from "express";
-import { sql, type SQL } from "drizzle-orm";
-import type { StatsOverview, PeopleStats, MessagesStats, GroupsFacesStats, SummariesStats, MonthCount, LabelCount, TopContact, LargestGroup, TopStoryAccount } from "@shared/stats";
+import { and, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { storyScrapeRuns } from "@shared/schema";
+import type { StatsOverview, PeopleStats, MessagesStats, GroupsFacesStats, SummariesStats, MonthCount, LabelCount, TopContact, LargestGroup, TopStoryAccount, InstagramRun } from "@shared/stats";
 import { db } from "../db";
 import { requireAuth } from "../auth";
 import { storage } from "../storage";
@@ -12,11 +13,31 @@ import { storage } from "../storage";
 const rows = async <T>(query: SQL) => (await db.execute(query)).rows as T[];
 const one = async <T>(query: SQL) => (await rows<T>(query))[0];
 
-/** Wraps a stats handler with the shared auth check and error response. */
+const STATS_CACHE_TTL_MS = 60_000;
+
+/** Wraps a stats handler with the shared auth check, 60s TTL cache, in-flight deduplication, and error response. */
 function statsRoute(app: Express, path: string, name: string, load: (req: Request) => Promise<unknown>) {
+  let cached: { data: unknown; expiresAt: number } | null = null;
+  let inFlight: Promise<unknown> | null = null;
+
   app.get(path, requireAuth, async (req: Request, res: Response) => {
     try {
-      res.json(await load(req));
+      if (cached && Date.now() < cached.expiresAt) {
+        return res.json(cached.data);
+      }
+
+      if (!inFlight) {
+        inFlight = load(req)
+          .then((data) => {
+            cached = { data, expiresAt: Date.now() + STATS_CACHE_TTL_MS };
+            return data;
+          })
+          .finally(() => {
+            inFlight = null;
+          });
+      }
+
+      res.json(await inFlight);
     } catch (error) {
       console.error(`Error fetching ${name} stats:`, error);
       res.status(500).json({ error: `Failed to fetch ${name} stats` });
@@ -242,5 +263,24 @@ export function registerRoutes(app: Express) {
       storiesPerMonth,
       topStoryAccounts,
     };
+  });
+
+  // GET /api/stats/instagram-runs?from=ISO&to=ISO — story and account (tracking) runs that ran, for the calendar.
+  // Not cached through statsRoute: the range changes per request.
+  app.get("/api/stats/instagram-runs", requireAuth, async (req: Request, res: Response) => {
+    const from = new Date(String(req.query.from));
+    const to = new Date(String(req.query.to));
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) return res.status(400).json({ error: "from and to must be dates" });
+    try {
+      const runs: InstagramRun[] = await db
+        .select({ kind: sql<InstagramRun["kind"]>`${storyScrapeRuns.kind}`, startedAt: storyScrapeRuns.startedAt })
+        .from(storyScrapeRuns)
+        .where(and(inArray(storyScrapeRuns.status, ["completed", "running"]), gte(storyScrapeRuns.startedAt, from), lt(storyScrapeRuns.startedAt, to)))
+        .then((r) => r.map((x) => ({ kind: x.kind, startedAt: x.startedAt.toISOString() })));
+      res.json(runs);
+    } catch (error) {
+      console.error("Error fetching instagram-runs stats:", error);
+      res.status(500).json({ error: "Failed to fetch instagram-runs stats" });
+    }
   });
 }

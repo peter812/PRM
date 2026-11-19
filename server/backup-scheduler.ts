@@ -51,7 +51,11 @@ export async function saveBackupSchedule(schedule: BackupSchedule): Promise<void
 }
 
 function atTime(day: Date, time: string): Date {
-  const [h, m] = time.split(":").map(Number);
+  const safeTime =
+    typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(time)
+      ? time
+      : DEFAULT_SCHEDULE.time;
+  const [h, m] = safeTime.split(":").map(Number);
   const d = new Date(day);
   d.setHours(h, m, 0, 0);
   return d;

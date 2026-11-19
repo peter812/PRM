@@ -22,7 +22,7 @@ import {
   type OsintConfig,
 } from "../osint-client";
 import { z } from "zod";
-import { cancelOsintScan, queueOsintScansForAllMeAccounts, queueOsintScansForLevel, queueOsintScansForTarget, wakeOsintRunner } from "../osint-scan-queue";
+import { cancelOsintScan, queueOsintScansForAllMeAccounts, queueOsintScansForLevel, queueOsintScansForTarget, validateOsintTarget, wakeOsintRunner } from "../osint-scan-queue";
 import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
 import { OSINT_TOOLS, mergeOsintScans, type OsintResults, type OsintTargetType } from "@shared/osint-tools";
 import type { OsintScan } from "@shared/schema";
@@ -95,13 +95,32 @@ export function registerRoutes(app: Express) {
   // user can test before saving), otherwise falls back to stored settings.
   app.post("/api/osint/test", requireAuth, async (req, res) => {
     const stored = await loadConfig();
-    // Stored address is already normalized; an unsaved one from the form is not.
-    const apiUrl = (typeof req.body?.apiUrl === "string" && req.body.apiUrl.trim())
-      ? normalizeOsintUrl(req.body.apiUrl)
-      : stored.apiUrl;
-    const apiKey = (typeof req.body?.apiKey === "string" && req.body.apiKey.trim())
-      ? req.body.apiKey.trim()
-      : stored.apiKey;
+    const rawSuppliedUrl = typeof req.body?.apiUrl === "string" ? req.body.apiUrl.trim() : "";
+    const rawSuppliedKey = typeof req.body?.apiKey === "string" ? req.body.apiKey.trim() : "";
+
+    let apiUrl: string | null;
+    let apiKey: string;
+
+    if (rawSuppliedUrl) {
+      apiUrl = normalizeOsintUrl(rawSuppliedUrl);
+      if (!apiUrl) {
+        return res.status(400).json({ error: "Invalid or missing address. Use http(s)://<ip or host>(:port)." });
+      }
+      // Never fall back to the stored API key when testing a different URL,
+      // otherwise an attacker could exfiltrate stored.apiKey to an arbitrary host.
+      const normalizedStoredUrl = stored.apiUrl ? normalizeOsintUrl(stored.apiUrl) : null;
+      if (apiUrl === normalizedStoredUrl) {
+        apiKey = rawSuppliedKey || stored.apiKey;
+      } else {
+        if (!rawSuppliedKey) {
+          return res.status(400).json({ error: "API key is required when testing a different address." });
+        }
+        apiKey = rawSuppliedKey;
+      }
+    } else {
+      apiUrl = stored.apiUrl ? normalizeOsintUrl(stored.apiUrl) : null;
+      apiKey = rawSuppliedKey || stored.apiKey;
+    }
 
     if (!apiUrl) {
       return res.status(400).json({ error: "Invalid or missing address. Use http(s)://<ip or host>(:port)." });
@@ -111,14 +130,20 @@ export function registerRoutes(app: Express) {
     try {
       const response = await osintFetch(apiUrl, apiKey, "/tools", { method: "GET" }, 10000);
       if (!response.ok) {
-        const body = await response.text();
+        await response.body?.cancel().catch(() => {});
         return res.status(response.status).json({
           ok: false,
-          error: `PRM-Compute returned ${response.status}: ${body}`,
+          status: response.status,
+          error: `PRM-Compute returned HTTP ${response.status}`,
         });
       }
-      const tools = await response.json();
-      res.json({ ok: true, tools });
+      const data = await response.json().catch(() => null);
+      const toolCount = Array.isArray(data)
+        ? data.length
+        : Array.isArray(data?.tools)
+          ? data.tools.length
+          : 0;
+      res.json({ ok: true, status: response.status, toolCount });
     } catch (error: any) {
       const msg = error?.name === "TimeoutError"
         ? "Connection timed out."
@@ -167,11 +192,39 @@ export function registerRoutes(app: Express) {
     finished_at: row.completedAt,
   });
 
+  const osintOptionKeySchema = z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, "Invalid option key");
+
+  const osintOptionValueSchema = z.union([
+    z
+      .string()
+      .max(255)
+      .refine((v) => !/[\x00-\x1f\x7f]/.test(v) && !/^-/.test(v.trim()), "Invalid option value"),
+    z.number().finite(),
+    z.boolean(),
+  ]);
+
+  const osintOptionsSchema = z
+    .record(osintOptionKeySchema, osintOptionValueSchema)
+    .refine((obj) => Object.keys(obj).length <= 20, "Too many scan options");
+
   const createScanSchema = z.object({
     tool: z.string().refine(t => OSINT_TOOLS.some(m => m.name === t), "Unsupported OSINT tool"),
     target_type: z.enum(["username", "email", "phone"]),
-    target: z.string().trim().min(1).max(255).regex(/^[a-zA-Z0-9@._+\- ]+$/, "Invalid characters in target"),
-    options: z.record(z.unknown()).optional().default({}),
+    target: z.string().trim().min(1).max(255),
+    options: osintOptionsSchema.optional().default({}),
+  }).superRefine((data, ctx) => {
+    const check = validateOsintTarget(data.target, data.target_type);
+    if (!check.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["target"],
+        message: check.error,
+      });
+    }
   });
 
   app.post("/api/osint/scans", async (req, res) => {
@@ -258,10 +311,13 @@ export function registerRoutes(app: Express) {
       if (typeof socialAccountId === "string") {
         const account = await storage.getSocialAccountById(socialAccountId);
         if (!account) return res.status(404).json({ error: "Social account not found" });
-        queued = await queueOsintScansForTarget({ socialAccountId }, account.username, "username");
+        const check = validateOsintTarget(account.username, "username");
+        if (!check.ok) return res.status(400).json({ error: check.error });
+        queued = await queueOsintScansForTarget({ socialAccountId }, check.target, "username");
       } else if (typeof personId === "string" && typeof target === "string" && ["email", "phone", "username"].includes(targetType)) {
-        const cleanTarget = targetType === "email" ? target.trim().toLowerCase() : target.trim();
-        if (!cleanTarget) return res.status(400).json({ error: "Target cannot be empty" });
+        const check = validateOsintTarget(target, targetType as OsintTargetType);
+        if (!check.ok) return res.status(400).json({ error: check.error });
+        const cleanTarget = check.target;
         const person = await storage.getPersonById(personId);
         if (!person) return res.status(404).json({ error: "Person not found" });
 

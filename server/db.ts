@@ -16,9 +16,51 @@ if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL environment variable is required. Configure your external PostgreSQL database connection.");
 }
 
-export const pool = new Pool({ 
+const LOCAL_DB_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'postgres', 'db']);
+
+/**
+ * Determine TLS/SSL configuration for the PostgreSQL pool.
+ * Explicit DATABASE_SSL ("true"/"false") takes precedence, followed by sslmode
+ * in DATABASE_URL, then defaulting to TLS enabled for remote hosts and disabled
+ * for local/container dev hosts without SSL.
+ */
+function resolveSslConfig(databaseUrl: string): boolean | { rejectUnauthorized: boolean } {
+  const sslOptions = {
+    rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
+  };
+
+  if (process.env.DATABASE_SSL === 'true') {
+    return sslOptions;
+  }
+  if (process.env.DATABASE_SSL === 'false') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(databaseUrl);
+    const sslMode = parsed.searchParams.get('sslmode')?.toLowerCase();
+    if (sslMode === 'disable') {
+      return false;
+    }
+    if (sslMode === 'require' || sslMode === 'verify-ca' || sslMode === 'verify-full') {
+      return sslOptions;
+    }
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (LOCAL_DB_HOSTS.has(hostname)) {
+      return false;
+    }
+  } catch {
+    if (/sslmode=disable/i.test(databaseUrl)) {
+      return false;
+    }
+  }
+
+  return sslOptions;
+}
+
+export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: false,
+  ssl: resolveSslConfig(process.env.DATABASE_URL),
   max: 25,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,

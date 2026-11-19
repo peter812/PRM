@@ -4,6 +4,7 @@ import { format, isSameDay } from "date-fns";
 import { StickyNote, Users, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { FlowItem, FlowResponse, Note, Interaction } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 
 interface PersonFlowTabProps {
   personId: string;

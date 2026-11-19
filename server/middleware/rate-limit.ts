@@ -9,6 +9,7 @@ const rateLimitStore = new Map<string, RateLimitEntry>();
 
 const WINDOW_MS = 60 * 1000; // 1 minute window
 const MAX_REQUESTS = 600; // 600 requests per window (~10/s; the SPA polls several endpoints every 2.5-10s)
+const MAX_RATE_LIMIT_ENTRIES = 10_000;
 
 function getClientKey(req: Request): string {
   // Use user ID if authenticated, otherwise fall back to IP
@@ -43,6 +44,12 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
   let entry = rateLimitStore.get(key);
 
   if (!entry || now > entry.resetAt) {
+    if (!entry && rateLimitStore.size >= MAX_RATE_LIMIT_ENTRIES) {
+      const oldestKey = rateLimitStore.keys().next().value;
+      if (oldestKey !== undefined) {
+        rateLimitStore.delete(oldestKey);
+      }
+    }
     entry = {
       count: 0,
       resetAt: now + WINDOW_MS,

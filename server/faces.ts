@@ -119,29 +119,19 @@ async function queryIdentities(opts: {
       ? sql`AND g.group_uuid = ${opts.onlyGroup}`
       : sql``;
   const sortExpr = opts.sort === "count" ? sql`fa.photo_count` : sql`fa.last_seen_at`;
+  const outerSortExpr = opts.sort === "count" ? sql`pg.photo_count` : sql`pg.last_seen_at`;
 
   const result = await db.execute(sql`
-    WITH groups AS (
-      SELECT DISTINCT personface_uuid AS group_uuid FROM people WHERE personface_uuid IS NOT NULL
-      UNION
-      SELECT DISTINCT personface_uuid AS group_uuid FROM social_accounts WHERE personface_uuid IS NOT NULL
-    ),
-    people_agg AS (
-      SELECT personface_uuid AS group_uuid,
-        json_agg(json_build_object(
-          'id', id,
-          'name', NULLIF(trim(both from concat_ws(' ', first_name, last_name)), '')
-        ) ORDER BY created_at ASC) AS people
-      FROM people
-      WHERE personface_uuid IS NOT NULL
-      GROUP BY personface_uuid
-    ),
-    account_agg AS (
-      SELECT personface_uuid AS group_uuid,
-        json_agg(json_build_object('id', id, 'username', username, 'nickname', nickname, 'imageUrl', image_url) ORDER BY created_at ASC) AS accounts
-      FROM social_accounts
-      WHERE personface_uuid IS NOT NULL
-      GROUP BY personface_uuid
+    WITH candidate_groups AS (
+      SELECT g.group_uuid
+      FROM (
+        SELECT DISTINCT personface_uuid AS group_uuid FROM people WHERE personface_uuid IS NOT NULL
+        UNION
+        SELECT DISTINCT personface_uuid AS group_uuid FROM social_accounts WHERE personface_uuid IS NOT NULL
+      ) g
+      WHERE true
+        ${groupFilterClause}
+        ${searchClause}
     ),
     face_agg AS (
       SELECT f.personface_uuid AS group_uuid,
@@ -149,8 +139,34 @@ async function queryIdentities(opts: {
         MAX(COALESCE(p.uploaded_at, f.created_at)) AS last_seen_at
       FROM faces f
       LEFT JOIN photos p ON p.id = f.photo_id
-      WHERE f.personface_uuid IS NOT NULL
+      WHERE f.personface_uuid IN (SELECT group_uuid FROM candidate_groups)
       GROUP BY f.personface_uuid
+    ),
+    paged_groups AS (
+      SELECT g.group_uuid,
+        fa.photo_count,
+        fa.last_seen_at
+      FROM candidate_groups g
+      LEFT JOIN face_agg fa ON fa.group_uuid = g.group_uuid
+      ORDER BY ${sortExpr} DESC NULLS LAST, g.group_uuid DESC
+      LIMIT ${opts.limit} OFFSET ${opts.offset}
+    ),
+    people_agg AS (
+      SELECT p.personface_uuid AS group_uuid,
+        json_agg(json_build_object(
+          'id', p.id,
+          'name', NULLIF(trim(both from concat_ws(' ', p.first_name, p.last_name)), '')
+        ) ORDER BY p.created_at ASC) AS people
+      FROM people p
+      WHERE p.personface_uuid IN (SELECT group_uuid FROM paged_groups)
+      GROUP BY p.personface_uuid
+    ),
+    account_agg AS (
+      SELECT sa.personface_uuid AS group_uuid,
+        json_agg(json_build_object('id', sa.id, 'username', sa.username, 'nickname', sa.nickname, 'imageUrl', sa.image_url) ORDER BY sa.created_at ASC) AS accounts
+      FROM social_accounts sa
+      WHERE sa.personface_uuid IN (SELECT group_uuid FROM paged_groups)
+      GROUP BY sa.personface_uuid
     ),
     crop AS (
       SELECT g.group_uuid,
@@ -164,24 +180,19 @@ async function queryIdentities(opts: {
             ORDER BY f.created_at DESC LIMIT 1),
           (SELECT f2.s3_url FROM faces f2 WHERE f2.personface_uuid = g.group_uuid ORDER BY f2.created_at DESC LIMIT 1)
         ) AS crop_url
-      FROM groups g
+      FROM paged_groups g
     )
-    SELECT g.group_uuid AS "personfaceUuid",
+    SELECT pg.group_uuid AS "personfaceUuid",
       COALESCE(pa.people, '[]'::json) AS people,
       COALESCE(aa.accounts, '[]'::json) AS accounts,
-      COALESCE(fa.photo_count, 0)::int AS "photoCount",
-      fa.last_seen_at AS "lastSeenAt",
+      COALESCE(pg.photo_count, 0)::int AS "photoCount",
+      pg.last_seen_at AS "lastSeenAt",
       c.crop_url AS "cropUrl"
-    FROM groups g
-    LEFT JOIN people_agg pa ON pa.group_uuid = g.group_uuid
-    LEFT JOIN account_agg aa ON aa.group_uuid = g.group_uuid
-    LEFT JOIN face_agg fa ON fa.group_uuid = g.group_uuid
-    LEFT JOIN crop c ON c.group_uuid = g.group_uuid
-    WHERE true
-      ${groupFilterClause}
-      ${searchClause}
-    ORDER BY ${sortExpr} DESC NULLS LAST, g.group_uuid DESC
-    LIMIT ${opts.limit} OFFSET ${opts.offset}
+    FROM paged_groups pg
+    LEFT JOIN people_agg pa ON pa.group_uuid = pg.group_uuid
+    LEFT JOIN account_agg aa ON aa.group_uuid = pg.group_uuid
+    LEFT JOIN crop c ON c.group_uuid = pg.group_uuid
+    ORDER BY ${outerSortExpr} DESC NULLS LAST, pg.group_uuid DESC
   `);
 
   const rows = (result as unknown as { rows: IdentityRow[] }).rows;

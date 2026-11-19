@@ -7,6 +7,7 @@ const StatsPeoplePage = lazy(() => import("@/pages/stats/people"));
 const StatsMessagesPage = lazy(() => import("@/pages/stats/messages"));
 const StatsGroupsFacesPage = lazy(() => import("@/pages/stats/groups-faces"));
 const StatsSummariesPage = lazy(() => import("@/pages/stats/summaries"));
+const StatsInstagramRunsPage = lazy(() => import("@/pages/stats/instagram-runs"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 export default function StatsLayout() {
@@ -23,6 +24,7 @@ export default function StatsLayout() {
           <Route path="/messages" component={StatsMessagesPage} />
           <Route path="/groups-faces" component={StatsGroupsFacesPage} />
           <Route path="/summaries" component={StatsSummariesPage} />
+          <Route path="/instagram-runs" component={StatsInstagramRunsPage} />
           <Route component={NotFound} />
         </Switch>
       </Suspense>

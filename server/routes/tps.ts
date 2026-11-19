@@ -132,10 +132,19 @@ export function registerRoutes(app: Express) {
           : []
         ).map((p) => [p.tpsId, { id: p.id }]),
       );
-      for (const item of parsed.data.items) {
-        const match = linked.get(item.tpsId) ?? await findMatchingPerson(item.name, cache);
-        results[item.tpsId] = { found: !!match, personUuid: match?.id ?? null };
-      }
+      const items = parsed.data.items;
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const workerCount = Math.min(CONCURRENCY, items.length);
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          while (cursor < items.length) {
+            const item = items[cursor++];
+            const match = linked.get(item.tpsId) ?? await findMatchingPerson(item.name, cache);
+            results[item.tpsId] = { found: !!match, personUuid: match?.id ?? null };
+          }
+        }),
+      );
       res.json({ results });
     } catch (error) {
       console.error("Error in TPS match:", error);
@@ -236,7 +245,18 @@ export function registerRoutes(app: Express) {
     try {
       const matches = await storage.getAllPeople(q);
       // Image paths are PRM-relative; the extension renders them on truepeoplesearch.com.
-      const origin = `${req.protocol}://${req.get("host")}`;
+      const configuredBase = (process.env.APP_BASE_URL || process.env.PUBLIC_URL || "").trim();
+      const rawHost = (req.get("host") || "").trim();
+      const validHost = /^(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(:\d{1,5})?$/.test(rawHost) ? rawHost : "";
+      const origin = configuredBase || (validHost ? `${req.protocol}://${validHost}` : "");
+      const resolveImageUrl = (imageUrl: string): string => {
+        if (!origin) return imageUrl;
+        try {
+          return new URL(imageUrl, origin).href;
+        } catch {
+          return imageUrl;
+        }
+      };
       res.json({
         people: matches.slice(0, 20).map((p) => ({
           id: p.id,
@@ -244,7 +264,7 @@ export function registerRoutes(app: Express) {
           lastName: p.lastName,
           nickname: p.nickname,
           maidenName: p.maidenName,
-          imageUrl: p.imageUrl ? new URL(p.imageUrl, origin).href : null,
+          imageUrl: p.imageUrl ? resolveImageUrl(p.imageUrl) : null,
           tpsId: p.tpsId,
         })),
       });

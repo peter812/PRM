@@ -1,4 +1,5 @@
 import { formatPersonName } from "@shared/person-name";
+import { withImageSize } from "@shared/image-size";
 import { useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState, useEffect } from "react";
 import {
   ReactFlow,

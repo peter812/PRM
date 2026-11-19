@@ -4,6 +4,8 @@ import { newUploadName, type UploadKind, type ImageCategory } from "./upload-nam
 import crypto from "crypto";
 import { Readable } from "stream";
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import { storage } from "./storage";
 import { STORAGE_KEY_PREFIXES, allBuckets, bucketForKey, defaultBucket, parseBucketSettings, type BucketConfig } from "./prm-s3-buckets";
@@ -89,25 +91,47 @@ export function isValidEndpointUrl(endpoint: string, defaultScheme: "http" | "ht
 }
 
 async function loadPrmS3Config(): Promise<PrmS3Config> {
-  const endpoint = ((await storage.getAppSetting(PRM_S3_KEYS.ENDPOINT)) || PRM_S3_DEFAULTS.ENDPOINT).trim();
-  let publicEndpoint = ((await storage.getAppSetting(PRM_S3_KEYS.PUBLIC_ENDPOINT)) ?? PRM_S3_DEFAULTS.PUBLIC_ENDPOINT).trim();
+  const [
+    rawEndpoint,
+    rawPublicEndpoint,
+    rawBucket,
+    rawBucketMap,
+    rawBucketPrefix,
+    rawRegion,
+    rawAccessKey,
+    rawSecretKey,
+    rawDeliveryMode,
+  ] = await Promise.all([
+    storage.getAppSetting(PRM_S3_KEYS.ENDPOINT),
+    storage.getAppSetting(PRM_S3_KEYS.PUBLIC_ENDPOINT),
+    storage.getAppSetting(PRM_S3_KEYS.BUCKET),
+    storage.getAppSetting(PRM_S3_KEYS.BUCKET_MAP),
+    storage.getAppSetting(PRM_S3_KEYS.BUCKET_PREFIX),
+    storage.getAppSetting(PRM_S3_KEYS.REGION),
+    storage.getAppSetting(PRM_S3_KEYS.ACCESS_KEY),
+    storage.getAppSetting(PRM_S3_KEYS.SECRET_KEY),
+    storage.getAppSetting(PRM_S3_KEYS.DELIVERY_MODE),
+  ]);
+
+  const endpoint = (rawEndpoint || PRM_S3_DEFAULTS.ENDPOINT).trim();
+  let publicEndpoint = (rawPublicEndpoint ?? PRM_S3_DEFAULTS.PUBLIC_ENDPOINT).trim();
   // An unparseable public endpoint would throw inside the direct-delivery
   // middleware on every API request; treat it as unset instead.
   if (publicEndpoint && !isValidEndpointUrl(publicEndpoint, "https")) {
     console.warn(`[prm-s3] Ignoring invalid public endpoint URL: ${publicEndpoint}`);
     publicEndpoint = "";
   }
-  const baseBucket = ((await storage.getAppSetting(PRM_S3_KEYS.BUCKET)) || PRM_S3_DEFAULTS.BUCKET).trim();
+  const baseBucket = (rawBucket || PRM_S3_DEFAULTS.BUCKET).trim();
   const { bucketMap, bucketPrefix } = parseBucketSettings(
     baseBucket,
-    await storage.getAppSetting(PRM_S3_KEYS.BUCKET_MAP),
-    await storage.getAppSetting(PRM_S3_KEYS.BUCKET_PREFIX),
+    rawBucketMap,
+    rawBucketPrefix,
   );
-  const region = ((await storage.getAppSetting(PRM_S3_KEYS.REGION)) || PRM_S3_DEFAULTS.REGION).trim();
-  const accessKeyId = ((await storage.getAppSetting(PRM_S3_KEYS.ACCESS_KEY)) || PRM_S3_DEFAULTS.ACCESS_KEY).trim();
-  const secretAccessKey = ((await storage.getAppSetting(PRM_S3_KEYS.SECRET_KEY)) || PRM_S3_DEFAULTS.SECRET_KEY).trim();
+  const region = (rawRegion || PRM_S3_DEFAULTS.REGION).trim();
+  const accessKeyId = (rawAccessKey || PRM_S3_DEFAULTS.ACCESS_KEY).trim();
+  const secretAccessKey = (rawSecretKey || PRM_S3_DEFAULTS.SECRET_KEY).trim();
   const deliveryMode: PrmS3DeliveryMode =
-    (await storage.getAppSetting(PRM_S3_KEYS.DELIVERY_MODE)) === "proxy" ? "proxy" : PRM_S3_DEFAULTS.DELIVERY_MODE;
+    rawDeliveryMode === "proxy" ? "proxy" : PRM_S3_DEFAULTS.DELIVERY_MODE;
   const isConfigured = !!(endpoint && baseBucket && accessKeyId && secretAccessKey);
 
   const cfg: PrmS3Config = {
@@ -530,26 +554,40 @@ async function bucketForWrite(client: S3Client, cfg: PrmS3Config, key: string): 
 export async function probePrmS3Buckets(client: S3Client, cfg: BucketConfig): Promise<{ ok: boolean; message: string }> {
   const buckets = allBuckets(cfg);
   const creatable = creatableBucket(cfg);
-  const initialized: string[] = [];
-  const missing: string[] = [];
-  for (const bucket of buckets) {
-    try {
-      await client.send(new HeadBucketCommand({ Bucket: bucket }));
-      continue;
-    } catch {
-      // Make it if that's ours to do, then look for it by listing.
-    }
-    if (bucket === creatable) {
+  const results = await Promise.all(
+    buckets.map(async (bucket): Promise<"ok" | "initialized" | "needs_list"> => {
       try {
-        await client.send(new CreateBucketCommand({ Bucket: bucket }));
-        initialized.push(bucket);
-        continue;
+        await client.send(new HeadBucketCommand({ Bucket: bucket }));
+        return "ok";
       } catch {
-        // Fall through.
+        // Make it if that's ours to do, then look for it by listing.
       }
-    }
+      if (bucket === creatable) {
+        try {
+          await client.send(new CreateBucketCommand({ Bucket: bucket }));
+          return "initialized";
+        } catch {
+          // Fall through.
+        }
+      }
+      return "needs_list";
+    }),
+  );
+
+  const initialized: string[] = [];
+  const needsList: string[] = [];
+  results.forEach((status, i) => {
+    if (status === "initialized") initialized.push(buckets[i]);
+    else if (status === "needs_list") needsList.push(buckets[i]);
+  });
+
+  const missing: string[] = [];
+  if (needsList.length > 0) {
     const listRes = await client.send(new ListBucketsCommand({}));
-    if (!listRes.Buckets?.some((b) => b.Name === bucket)) missing.push(bucket);
+    const existing = new Set(listRes.Buckets?.map((b) => b.Name).filter((n): n is string => Boolean(n)) ?? []);
+    for (const bucket of needsList) {
+      if (!existing.has(bucket)) missing.push(bucket);
+    }
   }
   const names = (list: string[]) => list.map((b) => `'${b}'`).join(", ");
   if (missing.length > 0) {
@@ -606,7 +644,7 @@ export async function checkPrmS3Health(): Promise<{ ok: boolean; message: string
 }
 
 async function putObject(kind: UploadKind, buffer: Buffer, originalFilename: string, mimeType: string, category?: ImageCategory): Promise<string> {
-  const { key } = newUploadName(kind, originalFilename, mimeType, category);
+  const { key } = newUploadName(kind, originalFilename, mimeType, category, buffer);
   const { client, cfg } = await getPrmS3Client();
   const bucket = await bucketForWrite(client, cfg, key);
   await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: buffer, ContentType: mimeType }));
@@ -654,9 +692,6 @@ export async function syncFaceCropStorage(): Promise<void> {
   const apiUrl = (await storage.getAppSetting("prm_compute_api_url")) || (await storage.getAppSetting("prm_face_api_url"));
   const apiKey = (await storage.getAppSetting("prm_compute_api_key")) || (await storage.getAppSetting("prm_face_api_key"));
   if (!apiUrl || !apiKey) return;
-
-  const cfg = await getPrmS3Config();
-  await setPrmS3Config({ ...cfg, bucket: cfg.baseBucket });
 
   try {
     const response = await fetch(`${apiUrl.replace(/\/+$/, "")}/api/face/storage/reload`, {
@@ -759,14 +794,30 @@ export async function getPrmS3ObjectStream(keyOrUrl: string): Promise<{
   };
 }
 
-export async function getPrmS3ObjectBuffer(key: string): Promise<{ buffer: Buffer; mimeType: string }> {
-  const { stream, contentType } = await getPrmS3ObjectStream(key);
+export const MAX_S3_BUFFER_BYTES = 32 * 1024 * 1024; // 32 MiB
+
+export async function getPrmS3ObjectBuffer(
+  key: string,
+  maxBytes: number = MAX_S3_BUFFER_BYTES,
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  const { stream, contentType, contentLength } = await getPrmS3ObjectStream(key);
+  if (contentLength !== undefined && contentLength > maxBytes) {
+    stream.destroy();
+    throw new Error(`S3 object "${key}" (${contentLength} bytes) exceeds max buffer size of ${maxBytes} bytes`);
+  }
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buf.length;
+    if (totalBytes > maxBytes) {
+      stream.destroy();
+      throw new Error(`S3 object "${key}" exceeds max buffer size of ${maxBytes} bytes`);
+    }
+    chunks.push(buf);
   }
   return {
-    buffer: Buffer.concat(chunks),
+    buffer: Buffer.concat(chunks, totalBytes),
     mimeType: contentType,
   };
 }
@@ -797,7 +848,49 @@ const MAX_EXTERNAL_IMAGE_BYTES = 8 * 1024 * 1024;
 const EXTERNAL_FETCH_TIMEOUT_MS = 10_000;
 const MAX_EXTERNAL_REDIRECTS = 3;
 
-function isPrivateAddress(ip: string): boolean {
+function parseIPv6(ip: string): number[] | null {
+  const clean = ip.split("%")[0].toLowerCase();
+  let normalized = clean;
+
+  const lastColon = clean.lastIndexOf(":");
+  if (lastColon !== -1 && clean.slice(lastColon + 1).includes(".")) {
+    const v4Part = clean.slice(lastColon + 1);
+    if (!net.isIPv4(v4Part)) return null;
+    const octets = v4Part.split(".").map(Number);
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    normalized = `${clean.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+
+  const halves = normalized.split("::");
+  if (halves.length > 2) return null;
+
+  const parseGroups = (part: string): number[] | null => {
+    if (!part) return [];
+    const segs = part.split(":");
+    const out: number[] = [];
+    for (const seg of segs) {
+      if (!/^[0-9a-f]{1,4}$/.test(seg)) return null;
+      out.push(parseInt(seg, 16));
+    }
+    return out;
+  };
+
+  if (halves.length === 2) {
+    const left = parseGroups(halves[0]);
+    const right = parseGroups(halves[1]);
+    if (!left || !right) return null;
+    const missing = 8 - (left.length + right.length);
+    if (missing < 1) return null;
+    return [...left, ...new Array<number>(missing).fill(0), ...right];
+  }
+
+  const parsed = parseGroups(normalized);
+  if (!parsed || parsed.length !== 8) return null;
+  return parsed;
+}
+
+export function isPrivateAddress(ip: string): boolean {
   if (net.isIPv4(ip)) {
     const [a, b] = ip.split(".").map(Number);
     return (
@@ -811,29 +904,53 @@ function isPrivateAddress(ip: string): boolean {
       a >= 224 // multicast & reserved
     );
   }
-  const v6 = ip.toLowerCase();
-  if (v6.startsWith("::ffff:")) {
-    const mapped = v6.slice(7);
-    if (net.isIPv4(mapped)) return isPrivateAddress(mapped);
-    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (hexMatch) {
-      const hi = parseInt(hexMatch[1], 16);
-      const lo = parseInt(hexMatch[2], 16);
-      return isPrivateAddress(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
-    }
+  const groups = parseIPv6(ip);
+  if (!groups) return true; // fail closed on unparseable IPv6
+
+  const isZeroPrefix96 =
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0;
+
+  // IPv4-mapped IPv6 (::ffff:0:0/96)
+  if (isZeroPrefix96 && groups[5] === 0xffff) {
+    const v4 = `${(groups[6] >> 8) & 0xff}.${groups[6] & 0xff}.${(groups[7] >> 8) & 0xff}.${groups[7] & 0xff}`;
+    return isPrivateAddress(v4);
+  }
+
+  // IPv4-compatible IPv6 (::/96, includes ::, ::1, ::127.0.0.1, ::7f00:1)
+  if (isZeroPrefix96 && groups[5] === 0) return true;
+
+  // NAT64 well-known (64:ff9b::/96) & local-use (64:ff9b:1::/48)
+  if (
+    groups[0] === 0x0064 &&
+    groups[1] === 0xff9b &&
+    ((groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0) ||
+      groups[2] === 0x0001)
+  ) {
     return true;
   }
+
+  // Discard-only prefix (100::/64)
+  if (groups[0] === 0x0100 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0) {
+    return true;
+  }
+
   return (
-    v6 === "::1" ||
-    v6 === "::" ||
-    v6.startsWith("fc") ||
-    v6.startsWith("fd") ||
-    v6.startsWith("fe80") ||
-    v6.startsWith("ff")
+    (groups[0] & 0xfe00) === 0xfc00 || // unique local (fc00::/7)
+    (groups[0] & 0xffc0) === 0xfe80 || // link-local (fe80::/10)
+    (groups[0] & 0xff00) === 0xff00 // multicast (ff00::/8)
   );
 }
 
-async function assertSafeExternalUrl(raw: string): Promise<URL> {
+interface ResolvedExternalTarget {
+  url: URL;
+  addresses: Array<{ address: string; family: 4 | 6 }>;
+}
+
+async function assertSafeExternalUrl(raw: string): Promise<ResolvedExternalTarget> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -846,11 +963,12 @@ async function assertSafeExternalUrl(raw: string): Promise<URL> {
   }
 
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (net.isIP(host)) {
+  const ipVersion = net.isIP(host);
+  if (ipVersion === 4 || ipVersion === 6) {
     if (isPrivateAddress(host)) {
       throw new Error(`Refusing to fetch image from private/internal IP: ${url.hostname}`);
     }
-    return url;
+    return { url, addresses: [{ address: host, family: ipVersion }] };
   }
 
   const addresses = await dns.lookup(host, { all: true });
@@ -862,32 +980,76 @@ async function assertSafeExternalUrl(raw: string): Promise<URL> {
       throw new Error(`Refusing to fetch image: ${url.hostname} resolves to private/internal IP ${address}`);
     }
   }
-  return url;
+  return {
+    url,
+    addresses: addresses.map((a) => ({
+      address: a.address,
+      family: a.family === 6 ? 6 : 4,
+    })),
+  };
 }
 
-async function readCappedBuffer(response: Response, maxBytes: number = MAX_EXTERNAL_IMAGE_BYTES): Promise<Buffer> {
-  const declared = Number(response.headers.get("content-length") ?? 0);
+function requestPinnedExternalUrl(
+  target: ResolvedExternalTarget,
+  signal: AbortSignal,
+): Promise<http.IncomingMessage> {
+  const { url, addresses } = target;
+  const mod = url.protocol === "https:" ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const req = mod.request(
+      url,
+      {
+        method: "GET",
+        signal,
+        // Pin connection to the already-validated DNS resolution to prevent DNS rebinding (TOCTOU).
+        lookup: (_hostname, options, callback) => {
+          const cb = typeof options === "function" ? options : callback;
+          if (typeof options === "object" && options !== null && options.all) {
+            (cb as (err: NodeJS.ErrnoException | null, addrs: Array<{ address: string; family: number }>) => void)(
+              null,
+              addresses,
+            );
+            return;
+          }
+          (cb as (err: NodeJS.ErrnoException | null, address: string, family: number) => void)(
+            null,
+            addresses[0].address,
+            addresses[0].family,
+          );
+        },
+      },
+      (res) => resolve(res),
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function readCappedIncomingMessage(
+  res: http.IncomingMessage,
+  maxBytes: number = MAX_EXTERNAL_IMAGE_BYTES,
+): Promise<Buffer> {
+  const declared = Number(res.headers["content-length"] ?? 0);
   if (declared > maxBytes) {
+    res.destroy();
     throw new Error(`Failed to download image: ${declared} bytes exceeds cap of ${maxBytes} bytes`);
   }
-  if (!response.body) return Buffer.alloc(0);
 
-  const reader = response.body.getReader();
   const chunks: Buffer[] = [];
   let seen = 0;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      seen += value.length;
+    for await (const chunk of res) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      seen += buf.length;
       if (seen > maxBytes) {
-        await reader.cancel();
+        res.destroy();
         throw new Error(`Failed to download image: exceeded cap of ${maxBytes} bytes mid-stream`);
       }
-      chunks.push(Buffer.from(value));
+      chunks.push(buf);
     }
   } catch (err) {
-    await reader.cancel().catch(() => {});
+    res.destroy();
     throw err;
   }
   return Buffer.concat(chunks);
@@ -903,32 +1065,37 @@ export async function fetchImageBuffer(location: string): Promise<{ buffer: Buff
     return await getPrmS3ObjectBuffer(location);
   }
 
-  // External URL (SSRF-guarded, redirect-checked, timed out, and capped)
-  let targetUrl = await assertSafeExternalUrl(location);
-  let res: Response;
+  // External URL (SSRF-guarded, DNS-pinned, redirect-checked, timed out, and capped)
+  let target = await assertSafeExternalUrl(location);
+  let res: http.IncomingMessage;
 
   for (let hop = 0; ; hop++) {
-    res = await fetch(targetUrl.toString(), {
-      redirect: "manual",
-      signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
-    });
+    res = await requestPinnedExternalUrl(
+      target,
+      AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+    );
 
-    const redirectLocation =
-      res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+    const status = res.statusCode ?? 0;
+    const rawLocation = status >= 300 && status < 400 ? res.headers.location : undefined;
+    const redirectLocation = Array.isArray(rawLocation) ? rawLocation[0] : rawLocation;
     if (!redirectLocation) break;
 
+    res.resume();
     if (hop >= MAX_EXTERNAL_REDIRECTS) {
       throw new Error("Failed to download image: too many redirects");
     }
-    const nextUrl = new URL(redirectLocation, targetUrl).toString();
-    targetUrl = await assertSafeExternalUrl(nextUrl);
+    const nextUrl = new URL(redirectLocation, target.url).toString();
+    target = await assertSafeExternalUrl(nextUrl);
   }
 
-  if (!res.ok) {
-    throw new Error(`Failed to fetch image from ${location}: HTTP ${res.status}`);
+  const status = res.statusCode ?? 0;
+  if (status < 200 || status >= 300) {
+    res.resume();
+    throw new Error(`Failed to fetch image from ${location}: HTTP ${status}`);
   }
-  const buffer = await readCappedBuffer(res, MAX_EXTERNAL_IMAGE_BYTES);
-  const mimeType = res.headers.get("content-type") || "image/jpeg";
+  const buffer = await readCappedIncomingMessage(res, MAX_EXTERNAL_IMAGE_BYTES);
+  const rawContentType = res.headers["content-type"];
+  const mimeType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType) || "image/jpeg";
   return {
     buffer,
     mimeType,

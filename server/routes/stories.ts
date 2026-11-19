@@ -20,7 +20,7 @@ import { people, photos, socialAccountPosts, socialAccounts, storyImporters, sto
 import { formatPersonName } from "@shared/person-name";
 import { generateDeterministicUuid } from "./social-media";
 import { queueMentioned } from "./tracking";
-import { DEFAULT_WINDOW, broadcastStoryRun, kickManualTrackingJobs, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
+import { DEFAULT_WINDOW, broadcastStoryRun, kickManualTrackingJobs, kickManualTrackingJobsAfterRun, normalizeStoriesServiceUrl, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { getImageDimensions } from "../profile-image";
@@ -93,7 +93,12 @@ const quietHours = z.string().refine((w) => {
 }, "trackingQuietHours must be HH:MM-HH:MM with different start and end");
 const importerPatchSchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
-  serviceUrl: z.string().trim().max(500).optional(),
+  serviceUrl: z
+    .string()
+    .trim()
+    .max(500)
+    .refine((v) => normalizeStoriesServiceUrl(v) !== null, "serviceUrl must be a valid http(s) URL and not a metadata endpoint")
+    .optional(),
   serviceSecret: z.string().trim().min(1).max(500).optional(),
   enabled: z.boolean().optional(),
   runEveryDays: z.number().int().min(1).max(30).optional(),
@@ -156,6 +161,39 @@ async function authedRunFor(req: Request, res: Response, runId: string, opts: { 
 }
 
 /**
+ * Authorize `/api/v1/stories/ready` via an authenticated user session, a valid
+ * `x-stories-token` run token, or an `x-stories-secret` matching any configured
+ * importer's `serviceSecret`.
+ */
+async function isAuthorizedStoriesReady(req: Request): Promise<boolean> {
+  if (req.isAuthenticated?.()) return true;
+
+  const token = req.headers["x-stories-token"];
+  if (typeof token === "string" && token.length > 0 && (await runForToken(token))) {
+    return true;
+  }
+
+  const secretHeader = req.headers["x-stories-secret"];
+  if (typeof secretHeader === "string") {
+    const supplied = secretHeader.trim();
+    if (supplied.length > 0) {
+      const suppliedBuf = Buffer.from(supplied, "utf8");
+      const importers = await db.select({ serviceSecret: storyImporters.serviceSecret }).from(storyImporters);
+      for (const imp of importers) {
+        const expected = imp.serviceSecret.trim();
+        if (!expected) continue;
+        const expectedBuf = Buffer.from(expected, "utf8");
+        if (expectedBuf.length === suppliedBuf.length && crypto.timingSafeEqual(expectedBuf, suppliedBuf)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
  * The image task group a run's photos are recognized under, made on first use.
  * A story run has one; a tracking run has one per account.
  */
@@ -215,15 +253,19 @@ export async function ingestStoryItem(meta: StoryMeta, image: Upload, video: Upl
   const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
   // Files go up first; whatever this request uploaded is removed again if a racing delivery wins the insert.
   const uploaded: { url: string; kind: "image" | "video" }[] = [];
-  let imageUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
-  if (!imageUrl) {
-    imageUrl = await uploadStoryImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
-    uploaded.push({ url: imageUrl, kind: "image" });
-  }
+  const metadata: Record<string, unknown> = { ...rest };
+
+  const resolveImage = async (): Promise<string> => {
+    const existingUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
+    if (existingUrl) return existingUrl;
+    const url = await uploadStoryImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
+    uploaded.push({ url, kind: "image" });
+    return url;
+  };
 
   // The video is a bonus on top of the cover frame: if storing it fails the story is still kept.
-  const metadata: Record<string, unknown> = { ...rest };
-  if (video) {
+  const resolveVideo = async (): Promise<void> => {
+    if (!video) return;
     try {
       const mime = video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4";
       const videoUrl = await uploadMedia(video.buffer, `${cleanStoryPk}.mp4`, mime);
@@ -233,7 +275,9 @@ export async function ingestStoryItem(meta: StoryMeta, image: Upload, video: Upl
       console.error(`Story ${cleanStoryPk}: video not stored:`, err);
       metadata.videoError = err instanceof Error ? err.message : String(err);
     }
-  }
+  };
+
+  const [imageUrl] = await Promise.all([resolveImage(), resolveVideo()]);
 
   // The post row goes first so a duplicate writes nothing; the photo lands with it or not at all.
   // The stored file can be smaller than the size Instagram reports; face boxes use the file's pixels.
@@ -322,10 +366,18 @@ export function registerStories(app: Express) {
   });
 
   // A service just came up logged in: queued manual jobs needn't wait for the
-  // unreachable retry. No token — the kick only starts what is already queued.
-  app.post("/api/v1/stories/ready", (_req, res) => {
-    kickManualTrackingJobs();
-    res.json({ ok: true });
+  // unreachable retry. Requires a logged-in session, run token, or importer secret.
+  app.post("/api/v1/stories/ready", async (req, res) => {
+    try {
+      if (!(await isAuthorizedStoriesReady(req))) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      kickManualTrackingJobs();
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error in /api/v1/stories/ready:", error);
+      res.status(500).json({ error: "Failed to kick tracking jobs" });
+    }
   });
 
   // Pre-upload duplication & account check
@@ -466,23 +518,45 @@ export function registerStories(app: Express) {
   app.get("/api/inbox-notes", async (req, res) => {
     try {
       const accountId = typeof req.query.socialAccountId === "string" ? req.query.socialAccountId : null;
-      const rows = await db
-        .select({
-          socialAccountId: socialAccounts.id,
-          username: socialAccounts.username,
-          imageUrl: socialAccounts.imageUrl,
-          ownerUuid: socialAccounts.ownerUuid,
-          firstName: people.firstName,
-          lastName: people.lastName,
-          nickname: people.nickname,
-          sentNotes: socialAccounts.sentNotes,
-        })
-        .from(socialAccounts)
-        .leftJoin(people, eq(people.id, socialAccounts.ownerUuid))
-        .where(and(sql`jsonb_array_length(${socialAccounts.sentNotes}) > 0`, accountId ? eq(socialAccounts.id, accountId) : undefined));
-      const notes = rows.flatMap(({ sentNotes, firstName, lastName, nickname, ...account }) =>
-        sentNotes.map((n: SentNote) => ({ ...account, ownerName: account.ownerUuid ? formatPersonName({ firstName, lastName, nickname }) : null, ...n })));
-      notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
+      const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string, 10) || 100));
+      const { rows } = await db.execute<{
+        social_account_id: string;
+        username: string;
+        image_url: string | null;
+        owner_uuid: string | null;
+        first_name: string | null;
+        last_name: string | null;
+        nickname: string | null;
+        note: SentNote;
+      }>(sql`
+        SELECT
+          sa.id AS social_account_id,
+          sa.username,
+          sa.image_url,
+          sa.owner_uuid,
+          p.first_name,
+          p.last_name,
+          p.nickname,
+          note
+        FROM social_accounts sa
+        LEFT JOIN people p ON p.id = sa.owner_uuid
+        CROSS JOIN LATERAL jsonb_array_elements(sa.sent_notes) AS note
+        WHERE jsonb_array_length(sa.sent_notes) > 0
+          ${accountId ? sql`AND sa.id = ${accountId}` : sql``}
+        ORDER BY (note->>'createdAt') DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `);
+      const notes = rows.map((r) => ({
+        socialAccountId: r.social_account_id,
+        username: r.username,
+        imageUrl: r.image_url,
+        ownerUuid: r.owner_uuid,
+        ownerName: r.owner_uuid
+          ? formatPersonName({ firstName: r.first_name, lastName: r.last_name, nickname: r.nickname })
+          : null,
+        ...r.note,
+      }));
       res.json(notes);
     } catch (error) {
       console.error("Error listing inbox notes:", error);
@@ -712,9 +786,12 @@ export function registerStories(app: Express) {
       const importer = await importerFor(req, res);
       if (!importer) return;
       const patch = parsed.data;
+      const serviceUrlChanged = patch.serviceUrl !== undefined && patch.serviceUrl !== importer.serviceUrl;
+      // Clear stored secret when serviceUrl changes without a replacement secret to prevent exfiltration.
+      const clearSecret = serviceUrlChanged && patch.serviceSecret === undefined;
       // A new URL, window or cadence means the planned time no longer applies; the scheduler re-rolls it.
       const reschedule =
-        (patch.serviceUrl !== undefined && patch.serviceUrl !== importer.serviceUrl) ||
+        serviceUrlChanged ||
         (patch.runWindow !== undefined && patch.runWindow !== importer.runWindow) ||
         (patch.runEveryDays !== undefined && patch.runEveryDays !== importer.runEveryDays);
       // Same for tracking: new quiet hours, or switching it on or off, drops the planned check.
@@ -723,7 +800,12 @@ export function registerStories(app: Express) {
         (patch.trackingEnabled !== undefined && patch.trackingEnabled !== importer.trackingEnabled);
       const [updated] = await db
         .update(storyImporters)
-        .set({ ...patch, ...(reschedule ? { nextRunAt: null } : {}), ...(rescheduleTracking ? { nextTrackingRunAt: null } : {}) })
+        .set({
+          ...patch,
+          ...(clearSecret ? { serviceSecret: "" } : {}),
+          ...(reschedule ? { nextRunAt: null } : {}),
+          ...(rescheduleTracking ? { nextTrackingRunAt: null } : {}),
+        })
         .where(eq(storyImporters.id, importer.id))
         .returning();
       res.json(publicImporter(updated));
@@ -753,7 +835,7 @@ export function registerStories(app: Express) {
       if (!importer) return;
       const apiUrl = storiesServiceUrl(importer);
       if (!apiUrl) return res.status(400).json({ ok: false, reason: "no_service_url" });
-      const upstream = await fetch(`${apiUrl}/login`, { method: "POST", headers: storiesServiceHeaders(importer), signal: AbortSignal.timeout(60_000) });
+      const upstream = await fetch(`${apiUrl}/login`, { method: "POST", headers: storiesServiceHeaders(importer), redirect: "error", signal: AbortSignal.timeout(60_000) });
       const body = (await upstream.json().catch(() => ({}))) as { ok?: boolean; reason?: string };
       res.status(upstream.ok ? 200 : 409).json({ ok: Boolean(body.ok), reason: body.reason ?? null });
     } catch (error) {
@@ -770,7 +852,7 @@ export function registerStories(app: Express) {
     try {
       const apiUrl = storiesServiceUrl(importer);
       if (apiUrl) {
-        const upstream = await fetch(`${apiUrl}/whoami`, { method: "POST", headers: storiesServiceHeaders(importer), signal: AbortSignal.timeout(5_000) });
+        const upstream = await fetch(`${apiUrl}/whoami`, { method: "POST", headers: storiesServiceHeaders(importer), redirect: "error", signal: AbortSignal.timeout(5_000) });
         const body = (await upstream.json().catch(() => ({}))) as { username?: unknown };
         if (typeof body.username === "string" && body.username) username = body.username;
       }

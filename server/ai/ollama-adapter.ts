@@ -52,4 +52,26 @@ export const ollamaAdapter: AiAdapter = {
     }
     return data.embedding;
   },
+
+  async embedBatch(p, model, texts, signal) {
+    if (texts.length === 0) return [];
+    try {
+      const resp = await postJson(p, "/api/embed", { model, input: texts }, signal ?? AbortSignal.timeout(60000));
+      const data = (await resp.json()) as { embeddings?: number[][] };
+      if (
+        !Array.isArray(data.embeddings) ||
+        data.embeddings.length !== texts.length ||
+        data.embeddings.some((e) => !Array.isArray(e) || e.length === 0)
+      ) {
+        throw new Error(`${p.name} returned an empty or mismatched embedding batch. The selected model may not support embeddings.`);
+      }
+      return data.embeddings;
+    } catch (err: any) {
+      // Older Ollama (<0.2.0) lacks /api/embed; fall back to /api/embeddings per item.
+      if (typeof err?.message === "string" && err.message.includes("returned 404")) {
+        return Promise.all(texts.map((text) => ollamaAdapter.embed(p, model, text, signal)));
+      }
+      throw err;
+    }
+  },
 };

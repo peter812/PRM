@@ -4,9 +4,26 @@ import { randomUUID } from "crypto";
 import { db } from "./db";
 import { dailyNotes, type DailyNoteWithDetails } from "@shared/schema";
 import { storage } from "./storage";
-import { embed, resolveModel, type ResolvedModel } from "./ai/provider";
+import { embed, embedBatch, resolveModel, type ResolvedModel } from "./ai/provider";
 
 // ── Settings helpers (delegates to storage) ─────────────────────────────────
+
+const VECTOR_CACHE_TTL_MS = 30_000;
+let cacheVersion = 0;
+let cachedVectorConfig: { value: VectorConfig; expiresAt: number } | null = null;
+let cachedClient: { key: string; client: QdrantClient; expiresAt: number } | null = null;
+const ensuredCollections = new Map<string, { size: number; expiresAt: number }>();
+
+export function getVectorCacheVersion(): number {
+  return cacheVersion;
+}
+
+export function invalidateVectorCaches(): void {
+  cacheVersion++;
+  cachedVectorConfig = null;
+  cachedClient = null;
+  ensuredCollections.clear();
+}
 
 export async function getVectorSetting(key: string): Promise<string | null> {
   return storage.getAppSetting(key);
@@ -14,6 +31,7 @@ export async function getVectorSetting(key: string): Promise<string | null> {
 
 export async function setVectorSetting(key: string, value: string): Promise<void> {
   await storage.setAppSetting(key, value);
+  invalidateVectorCaches();
 }
 
 export type VectorConfig = {
@@ -35,14 +53,28 @@ export function clampConcurrency(value: unknown): number {
 }
 
 export async function loadVectorConfig(): Promise<VectorConfig> {
-  return {
-    enabled: (await getVectorSetting("vector_enabled")) === "true",
-    qdrantUrl: (await getVectorSetting("vector_qdrant_url")) ?? "",
-    qdrantApiKey: (await getVectorSetting("vector_qdrant_api_key")) ?? "",
-    collectionName: (await getVectorSetting("vector_collection")) ?? DEFAULT_COLLECTION,
-    embeddingModel: (await getVectorSetting("vector_embedding_model")) ?? "",
-    embeddingConcurrency: clampConcurrency((await getVectorSetting("vector_embedding_concurrency")) ?? 1),
+  const now = Date.now();
+  if (cachedVectorConfig && cachedVectorConfig.expiresAt > now) {
+    return cachedVectorConfig.value;
+  }
+  const [enabled, qdrantUrl, qdrantApiKey, collectionName, embeddingModel, embeddingConcurrency] = await Promise.all([
+    getVectorSetting("vector_enabled"),
+    getVectorSetting("vector_qdrant_url"),
+    getVectorSetting("vector_qdrant_api_key"),
+    getVectorSetting("vector_collection"),
+    getVectorSetting("vector_embedding_model"),
+    getVectorSetting("vector_embedding_concurrency"),
+  ]);
+  const cfg: VectorConfig = {
+    enabled: enabled === "true",
+    qdrantUrl: qdrantUrl ?? "",
+    qdrantApiKey: qdrantApiKey ?? "",
+    collectionName: collectionName ?? DEFAULT_COLLECTION,
+    embeddingModel: embeddingModel ?? "",
+    embeddingConcurrency: clampConcurrency(embeddingConcurrency ?? 1),
   };
+  cachedVectorConfig = { value: cfg, expiresAt: Date.now() + VECTOR_CACHE_TTL_MS };
+  return cfg;
 }
 
 /**
@@ -75,10 +107,21 @@ export async function embedText(text: string, model?: ResolvedModel): Promise<nu
   return embed(model ?? await resolveModel("embedding"), text);
 }
 
+/** Embed a batch of texts with the configured embedding (provider, model). */
+export async function embedTexts(texts: string[], model?: ResolvedModel): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  return embedBatch(model ?? await resolveModel("embedding"), texts);
+}
+
 // ── Qdrant client ────────────────────────────────────────────────────────────
 
 export function buildClient(cfg: VectorConfig): QdrantClient {
   if (!cfg.qdrantUrl) throw new Error("Qdrant URL is not configured.");
+  const now = Date.now();
+  const cacheKey = `${cfg.qdrantUrl}|${cfg.qdrantApiKey}`;
+  if (cachedClient && cachedClient.key === cacheKey && cachedClient.expiresAt > now) {
+    return cachedClient.client;
+  }
   // Parse the URL so we can pass host/port/https explicitly.
   // The @qdrant/js-client-rest `url` param defaults to port 6333 regardless
   // of the scheme, so HTTPS-on-443 URLs silently hit the wrong port.
@@ -93,7 +136,7 @@ export function buildClient(cfg: VectorConfig): QdrantClient {
   const port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
   // Include any sub-path prefix (e.g. https://host/qdrant → prefix "/qdrant")
   const prefix = parsed.pathname !== "/" ? parsed.pathname.replace(/\/$/, "") : undefined;
-  return new QdrantClient({
+  const client = new QdrantClient({
     host: parsed.hostname,
     https: isHttps,
     port,
@@ -101,6 +144,8 @@ export function buildClient(cfg: VectorConfig): QdrantClient {
     apiKey: cfg.qdrantApiKey || undefined,
     checkCompatibility: false,
   });
+  cachedClient = { key: cacheKey, client, expiresAt: now + VECTOR_CACHE_TTL_MS };
+  return client;
 }
 
 /** Vector size of an existing collection, or null when it doesn't exist. */
@@ -120,10 +165,16 @@ function dimensionMismatch(name: string, existing: number, model: number): strin
 
 /** Create the collection if missing; refuse to write vectors of a different size into an existing one. */
 export async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
+  const now = Date.now();
+  const cached = ensuredCollections.get(name);
+  if (cached && cached.expiresAt > now && cached.size === vectorSize) {
+    return;
+  }
   let existing = await collectionSize(client, name);
   if (existing === null) {
     try {
       await client.createCollection(name, { vectors: { size: vectorSize, distance: "Cosine" } });
+      ensuredCollections.set(name, { size: vectorSize, expiresAt: Date.now() + VECTOR_CACHE_TTL_MS });
       return;
     } catch (err) {
       // Parallel workers can race to create it; accept if another one won.
@@ -134,6 +185,7 @@ export async function ensureCollection(client: QdrantClient, name: string, vecto
   if (existing !== vectorSize) {
     throw new Error(dimensionMismatch(name, existing, vectorSize));
   }
+  ensuredCollections.set(name, { size: vectorSize, expiresAt: Date.now() + VECTOR_CACHE_TTL_MS });
 }
 
 // ── Public operations ────────────────────────────────────────────────────────

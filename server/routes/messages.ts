@@ -1,9 +1,12 @@
 import { Router } from "express";
+import { inArray } from "drizzle-orm";
+import { db } from "../db";
 import { storage } from "../storage";
 import { z } from "zod";
-import { cleanPhoneNumberForStorage, formatPhoneNumberForDisplay } from "@shared/schema";
+import { cleanPhoneNumberForStorage, conversationParticipants, formatPhoneNumberForDisplay, people, socialAccounts } from "@shared/schema";
 import { AiConfigError, resolveModel } from "../ai/provider";
 import { guessNameFromMessages } from "../find-name-ai";
+import { optionalHttpUrlSchema } from "../url-validation";
 
 export function registerRoutes(app: any) {
   const router = Router();
@@ -51,23 +54,22 @@ export function registerRoutes(app: any) {
 
       // Fetch participants details
       const parts = await storage.getConversationParticipants(id);
-      const participantsWithDetails = await Promise.all(
-        parts.map(async (p) => {
-          let person;
-          let socialAccount;
-          if (p.personId) {
-            person = await storage.getPersonById(p.personId);
-          }
-          if (p.socialAccountId) {
-            socialAccount = await storage.getSocialAccountById(p.socialAccountId);
-          }
-          return {
-            ...p,
-            person,
-            socialAccount,
-          };
-        })
-      );
+      const personIds = Array.from(new Set(parts.map((p) => p.personId).filter((pid): pid is string => Boolean(pid))));
+      const socialAccountIds = Array.from(new Set(parts.map((p) => p.socialAccountId).filter((sid): sid is string => Boolean(sid))));
+
+      const [personRows, socialAccountRows] = await Promise.all([
+        personIds.length > 0 ? db.select().from(people).where(inArray(people.id, personIds)) : Promise.resolve([]),
+        socialAccountIds.length > 0 ? db.select().from(socialAccounts).where(inArray(socialAccounts.id, socialAccountIds)) : Promise.resolve([]),
+      ]);
+
+      const personById = new Map(personRows.map((p) => [p.id, p]));
+      const socialAccountById = new Map(socialAccountRows.map((sa) => [sa.id, sa]));
+
+      const participantsWithDetails = parts.map((p) => ({
+        ...p,
+        person: p.personId ? personById.get(p.personId) : undefined,
+        socialAccount: p.socialAccountId ? socialAccountById.get(p.socialAccountId) : undefined,
+      }));
 
       res.json({
         ...conversation,
@@ -86,7 +88,7 @@ export function registerRoutes(app: any) {
         title: z.string().nullable().optional(),
         channelType: z.string(),
         socialAccountId: z.string().nullable().optional(),
-        externalUrl: z.string().nullable().optional(),
+        externalUrl: optionalHttpUrlSchema,
         metadata: z.any().optional(),
         participantPersonIds: z.array(z.string()),
         participantSocialAccountIds: z.array(z.string()).optional(),
@@ -109,28 +111,26 @@ export function registerRoutes(app: any) {
       });
 
       // 2. Add participants
-      for (const pId of parsed.participantPersonIds) {
-        await storage.addConversationParticipant({
+      const participantRows = [
+        ...parsed.participantPersonIds.map((pId) => ({
           conversationId: conversation.id,
           personId: pId,
           socialAccountId: null,
           role: "participant",
           importDate: parsed.importDate || null,
           importUuid: parsed.importUuid || null,
-        });
-      }
-
-      if (parsed.participantSocialAccountIds) {
-        for (const saId of parsed.participantSocialAccountIds) {
-          await storage.addConversationParticipant({
-            conversationId: conversation.id,
-            personId: null,
-            socialAccountId: saId,
-            role: "participant",
-            importDate: parsed.importDate || null,
-            importUuid: parsed.importUuid || null,
-          });
-        }
+        })),
+        ...(parsed.participantSocialAccountIds ?? []).map((saId) => ({
+          conversationId: conversation.id,
+          personId: null,
+          socialAccountId: saId,
+          role: "participant",
+          importDate: parsed.importDate || null,
+          importUuid: parsed.importUuid || null,
+        })),
+      ];
+      if (participantRows.length > 0) {
+        await db.insert(conversationParticipants).values(participantRows);
       }
 
       res.status(201).json(conversation);
@@ -149,7 +149,7 @@ export function registerRoutes(app: any) {
       const updateSchema = z.object({
         title: z.string().nullable().optional(),
         channelType: z.string().optional(),
-        externalUrl: z.string().nullable().optional(),
+        externalUrl: optionalHttpUrlSchema,
         metadata: z.any().optional(),
       });
 

@@ -8,6 +8,7 @@ import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { geocodes, personAddresses } from "@shared/schema";
 import { db } from "../db";
+import { requireAuth } from "../auth";
 import { geocoderProgress, googleSearch, mapKeys, normAddress, pinAddresses, startGeocodePass } from "../map-geocoder";
 
 const TILE_URL = process.env.MAP_TILE_URL || "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -77,7 +78,7 @@ async function visiblePins(query?: string): Promise<PinRow[]> {
 
 export function registerRoutes(app: Express) {
   // GET /api/demos/map/people — one row per visible (person, address), split by geocode state
-  app.get("/api/demos/map/people", async (_req, res) => {
+  app.get("/api/demos/map/people", requireAuth, async (_req, res) => {
     try {
       const [rows, keys] = await Promise.all([visiblePins(), mapKeys()]);
       res.json({
@@ -97,7 +98,7 @@ export function registerRoutes(app: Express) {
 
   // GET /api/demos/map/google/:type?zoom&north&south&east&west — a tile session plus the
   // copyright Google requires for that viewport (it changes as the view moves)
-  app.get("/api/demos/map/google/:type", async (req, res) => {
+  app.get("/api/demos/map/google/:type", requireAuth, async (req, res) => {
     try {
       const type = z.enum(["roadmap", "satellite", "hybrid", "terrain"]).parse(req.params.type);
       const view = z.object({
@@ -119,12 +120,12 @@ export function registerRoutes(app: Express) {
     } catch (error) {
       if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors[0]?.message });
       console.error("Error creating Google tile session:", error);
-      res.status(502).json({ error: errorMessage(error) });
+      res.status(502).json({ error: "Failed to create Google tile session" });
     }
   });
 
   // POST /api/demos/map/google-test — check the saved key against each Google API the app uses
-  app.post("/api/demos/map/google-test", async (_req, res) => {
+  app.post("/api/demos/map/google-test", requireAuth, async (_req, res) => {
     const { googleKey } = await mapKeys();
     if (!googleKey) return res.status(400).json({ error: "No Google Maps API key set" });
     const check = (p: Promise<unknown>) => p.then(() => "OK", errorMessage);
@@ -137,13 +138,13 @@ export function registerRoutes(app: Express) {
   });
 
   // POST /api/demos/map/geocode — start a geocoding pass (no-op while one runs)
-  app.post("/api/demos/map/geocode", (_req, res) => {
+  app.post("/api/demos/map/geocode", requireAuth, (_req, res) => {
     startGeocodePass();
     res.json(geocoderProgress());
   });
 
   // PUT /api/demos/map/geocodes — place/move the pin for one address key by hand
-  app.put("/api/demos/map/geocodes", async (req, res) => {
+  app.put("/api/demos/map/geocodes", requireAuth, async (req, res) => {
     try {
       const { query, latitude, longitude } = z.object({
         query: z.string().min(1),
@@ -163,7 +164,7 @@ export function registerRoutes(app: Express) {
   });
 
   // DELETE /api/demos/map/pins — remove one address from a person's address history
-  app.delete("/api/demos/map/pins", async (req, res) => {
+  app.delete("/api/demos/map/pins", requireAuth, async (req, res) => {
     try {
       const { personId, query } = z.object({ personId: z.string().min(1), query: z.string().min(1) }).parse(req.body);
       if (!(await visiblePins(query)).some((p) => p.id === personId)) {
@@ -181,7 +182,7 @@ export function registerRoutes(app: Express) {
   });
 
   // POST /api/demos/map/geocodes/retry — forget not_found results (all, or one address's) and re-run
-  app.post("/api/demos/map/geocodes/retry", async (req, res) => {
+  app.post("/api/demos/map/geocodes/retry", requireAuth, async (req, res) => {
     try {
       const { query } = z.object({ query: z.string().optional() }).parse(req.body ?? {});
       if (query !== undefined && (await visiblePins(query)).length === 0) {

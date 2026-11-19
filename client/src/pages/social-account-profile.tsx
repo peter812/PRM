@@ -1511,7 +1511,7 @@ export default function SocialAccountProfile() {
                         <div className="flex items-center gap-2.5 p-2 rounded-md bg-muted/40 border">
                           <Avatar className="w-8 h-8 shrink-0">
                             {owner.imageUrl && (
-                              <AvatarImage src={owner.imageUrl} alt={formatPersonName(owner)} />
+                              <AvatarImage src={withImageSize(owner.imageUrl, 64)} alt={formatPersonName(owner)} loading="lazy" />
                             )}
                             <AvatarFallback className="text-xs">
                               {personInitials(owner)}

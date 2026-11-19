@@ -14,9 +14,21 @@ const MARKS = { seen: "seenAt", acknowledged: "acknowledgedAt" } as const;
 
 export function registerRoutes(app: Express) {
   // GET /api/events — every event, newest first; the client nests sub-events under parentEventId
-  app.get("/api/events", requireAuth, async (_req, res) => {
+  app.get("/api/events", requireAuth, async (req, res) => {
     try {
-      res.json(await db.select().from(events).orderBy(desc(events.createdAt)));
+      const rawLimit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : NaN;
+      const rawOffset = typeof req.query.offset === "string" ? parseInt(req.query.offset, 10) : NaN;
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 5000) : 200;
+      const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+
+      res.json(
+        await db
+          .select()
+          .from(events)
+          .orderBy(desc(events.createdAt))
+          .limit(limit)
+          .offset(offset),
+      );
     } catch (error) {
       console.error("Error fetching events:", error);
       res.status(500).json({ error: "Failed to fetch events" });

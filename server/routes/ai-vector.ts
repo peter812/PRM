@@ -8,6 +8,7 @@ import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildToolsArray } from "
 import { getPrompt } from "../prompts";
 import { describePhoto } from "../ai/describe";
 import { asData, DATA_TAGS_NOTE, resolveModel, chat as aiChat, adapterFor, AiConfigError, type ResolvedModel, type AiMessage, type AiToolCall } from "../ai/provider";
+import { assertSafeServiceUrl } from "../ai/http";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, lt, desc, or } from "drizzle-orm";
@@ -184,6 +185,15 @@ export function registerRoutes(app: Express) {
     function prmBase(url: string) {
       return url.replace(/\/+$/, "");
     }
+
+    /** Validate PRM-Compute URL and refuse redirects so x-api-key / setup_code are never replayed. */
+    async function prmFetch(apiUrl: string, pathAndQuery: string, init: RequestInit = {}): Promise<Response> {
+      await assertSafeServiceUrl(apiUrl, "PRM-Compute API URL");
+      return fetch(`${prmBase(apiUrl)}${pathAndQuery}`, {
+        ...init,
+        redirect: "error",
+      });
+    }
   
     app.get(["/api/prm-face/settings", "/api/prm-compute/settings"], async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -215,6 +225,11 @@ export function registerRoutes(app: Express) {
         return res.status(400).json({ error: "apiUrl is required" });
       }
       try {
+        await assertSafeServiceUrl(apiUrl.trim(), "PRM-Compute API URL");
+      } catch (err: any) {
+        return res.status(400).json({ error: err?.message ?? "Invalid PRM-Compute API URL" });
+      }
+      try {
         await setPrmFaceSetting("prm_compute_api_url", apiUrl.trim());
         res.json({ success: true });
       } catch (error) {
@@ -236,7 +251,7 @@ export function registerRoutes(app: Express) {
         params.append("setup_code", setupCode);
         params.append("label", label || "prm-app");
   
-        const response = await fetch(`${prmBase(apiUrl)}/api/get-api-key`, {
+        const response = await prmFetch(apiUrl, "/api/get-api-key", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: params.toString(),
@@ -1195,12 +1210,23 @@ export function registerRoutes(app: Express) {
   
         // 4. Combine and deduplicate face IDs
         const allFaceIds = [...new Set([...localFaceIds, ...apiFaceIds])];
-  
-        // 5. Build conditions to query the photos table
+        const localPhotoIds = [
+          ...new Set(personFaces.map((f) => f.photoId).filter((id): id is string => !!id)),
+        ];
+
+        // 5. Build conditions to query the photos table (avoiding an uncapped OR chain)
         const conditions = [];
-        for (const fid of allFaceIds) {
-          conditions.push(sql`${photos.faceUuids} @> ${JSON.stringify([{ faceUuid: fid }])}::jsonb`);
-          conditions.push(sql`${photos.facialIds} @> ${JSON.stringify([{ faceUuid: fid }])}::jsonb`);
+        if (localPhotoIds.length > 0) {
+          conditions.push(inArray(photos.id, localPhotoIds));
+        }
+        if (allFaceIds.length > 0) {
+          const faceIdArray = sql`ARRAY[${sql.join(allFaceIds.map((id) => sql`${id}`), sql`, `)}]::text[]`;
+          conditions.push(
+            sql`EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(${photos.faceUuids}, '[]'::jsonb)) AS elem WHERE elem->>'faceUuid' = ANY(${faceIdArray}))`
+          );
+          conditions.push(
+            sql`EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(${photos.facialIds}, '[]'::jsonb)) AS elem WHERE elem->>'faceUuid' = ANY(${faceIdArray}))`
+          );
         }
         // Always include direct mapping to personUuid as a fallback/additional check
         conditions.push(sql`${photos.facialIds} @> ${JSON.stringify([{ personId: personUuid }])}::jsonb`);
@@ -1861,20 +1887,21 @@ export function registerRoutes(app: Express) {
     app.get("/api/ai-chats", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const rows = await db.query.aiChats.findMany({
-          orderBy: (t, { desc }) => [desc(t.updatedAt)],
-        });
-        res.json(rows.map((r) => ({
-          id: r.id,
-          title: r.title,
-          systemMessage: r.systemMessage,
-          model: r.model,
-          providerId: r.providerId,
-          agentMode: r.agentMode,
-          messageCount: toClientMessages(r.messages).length,
-          createdAt: r.createdAt,
-          updatedAt: r.updatedAt,
-        })));
+        const rows = await db
+          .select({
+            id: aiChats.id,
+            title: aiChats.title,
+            systemMessage: aiChats.systemMessage,
+            model: aiChats.model,
+            providerId: aiChats.providerId,
+            agentMode: aiChats.agentMode,
+            messageCount: sql<number>`jsonb_array_length(coalesce(${aiChats.messages}, '[]'::jsonb))::int`,
+            createdAt: aiChats.createdAt,
+            updatedAt: aiChats.updatedAt,
+          })
+          .from(aiChats)
+          .orderBy(desc(aiChats.updatedAt));
+        res.json(rows);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -3102,7 +3129,11 @@ export function registerRoutes(app: Express) {
       res.setHeader("X-Accel-Buffering", "no");
   
       const clientId = `sse_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-      sseManager.addClient(clientId, res);
+      const userId =
+        typeof req.isAuthenticated === "function" && req.isAuthenticated() && req.user
+          ? req.user.id
+          : undefined;
+      sseManager.addClient(clientId, res, userId);
   
       // Send initial connected event
       res.write(`event: connected\ndata: ${JSON.stringify({ clientId })}\n\n`);
@@ -3113,6 +3144,7 @@ export function registerRoutes(app: Express) {
           res.write(": keepalive\n\n");
         } catch {
           clearInterval(keepalive);
+          sseManager.removeClient(clientId);
         }
       }, 30000);
   
@@ -3123,6 +3155,17 @@ export function registerRoutes(app: Express) {
     });
 
     // ── Guess the Sex ──────────────────────────────────────────────────────────
+
+    let sexGuessInFlight: Promise<{ generated: number; error?: string }> | null = null;
+
+    function generateSexGuessesDeduplicated(): Promise<{ generated: number; error?: string }> {
+      if (!sexGuessInFlight) {
+        sexGuessInFlight = generateSexGuesses().finally(() => {
+          sexGuessInFlight = null;
+        });
+      }
+      return sexGuessInFlight;
+    }
 
     // Internal helper: generate sex guesses from LLM for people with unknown sex
     async function generateSexGuesses(): Promise<{ generated: number; error?: string }> {
@@ -3281,24 +3324,10 @@ Respond with ONLY a JSON array, no other text.`;
           (e) => !e.snoozedUntil || e.snoozedUntil <= now
         );
 
-        if (pending.length < 25) {
-          // Loop generation until we hit 25 pending items or run out of candidates.
-          // Each LLM call handles 5 names (larger batches truncate), so we may need
-          // up to 5 passes to fill a 25-item queue.
-          let lastError: string | undefined;
-          let passes = 0;
-          const MAX_PASSES = 5;
-          while (passes < MAX_PASSES) {
-            passes++;
-            const result = await generateSexGuesses();
-            if (result.error) { lastError = result.error; break; } // LLM error
-            if (result.generated === 0) break; // no more candidates
-
-            // Re-check how many active items we now have
-            const nowPending = await db.select().from(sexGuessQueue).where(eq(sexGuessQueue.answered, 0));
-            const nowActive = nowPending.filter((e) => !e.snoozedUntil || e.snoozedUntil <= now);
-            if (nowActive.length >= 25) break; // target reached
-          }
+        if (pending.length === 0) {
+          // Cap inline generation to at most 1 pass so GET never blocks on sequential LLM calls.
+          const result = await generateSexGuessesDeduplicated();
+          const lastError = result.error;
 
           // Fetch final pending list (with snooze filter)
           const allRefreshed = await db.select().from(sexGuessQueue).where(eq(sexGuessQueue.answered, 0));
@@ -3319,7 +3348,12 @@ Respond with ONLY a JSON array, no other text.`;
           return res.json({ status: "ready", queue: validQueue, ...(lastError ? { error: lastError } : {}) });
         }
 
-        // Already have enough, return them with person details
+        if (pending.length < 25) {
+          // Top up in the background without blocking the GET response
+          void generateSexGuessesDeduplicated().catch(() => {});
+        }
+
+        // Return current pending items with person details
         const queueWithPeople = await Promise.all(
           pending.map(async (item) => {
             const person = await db.select().from(people).where(eq(people.id, item.personId));
@@ -3338,7 +3372,7 @@ Respond with ONLY a JSON array, no other text.`;
     app.post("/api/guess-sex/prefetch", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const result = await generateSexGuesses();
+        const result = await generateSexGuessesDeduplicated();
         res.json({ success: true, generated: result.generated, error: result.error });
       } catch (err: any) {
         // Don't propagate — this is a best-effort background call

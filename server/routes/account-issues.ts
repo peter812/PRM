@@ -67,6 +67,10 @@ export function registerAccountIssues(app: Express) {
     try {
       const closed = req.query.status === "closed";
       const accountId = typeof req.query.accountId === "string" ? req.query.accountId : null;
+      const rawLimit = Number(req.query.limit);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 500) : 500;
+      const rawOffset = Number(req.query.offset);
+      const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
       const rows = await db
         .select({
           issue: socialAccountIssues,
@@ -94,7 +98,8 @@ export function registerAccountIssues(app: Express) {
           ),
         )
         .orderBy(desc(closed ? socialAccountIssues.resolvedAt : socialAccountIssues.lastSeenAt))
-        .limit(500);
+        .limit(limit)
+        .offset(offset);
       res.json(rows);
     } catch (error) {
       fail(res, "list issues", error);

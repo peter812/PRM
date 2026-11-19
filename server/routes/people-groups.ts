@@ -3,10 +3,10 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, tasks, type Task, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, relationships, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, tasks, type Task, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray, desc, gte, lte, type SQL } from "drizzle-orm";
+import { eq, or, sql, isNotNull, and, inArray, desc, gte, lte, type SQL } from "drizzle-orm";
 import { computeFamilyLabels, FAMILY_LABEL_DEPTH } from "../family-relations-helper";
 import { getPrimaryAddress } from "../person-addresses";
 import { AiConfigError, asData, chat as aiChat, DATA_TAGS_NOTE, resolveModel } from "../ai/provider";
@@ -66,6 +66,27 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 
 // Flag to track if user creation is allowed (only after database reset)
 let isUserCreationAllowed = false;
+
+function parsePagination(
+  query: Record<string, unknown>,
+  defaultLimit?: number,
+  maxLimit = 5000,
+): { limit: number | undefined; offset: number } {
+  const rawLimit = typeof query.limit === "string" ? parseInt(query.limit, 10) : NaN;
+  const rawOffset = typeof query.offset === "string" ? parseInt(query.offset, 10) : NaN;
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(rawLimit, maxLimit)
+    : defaultLimit;
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  return { limit, offset };
+}
+
+function paginateSlice<T>(items: T[], limit: number | undefined, offset: number): T[] {
+  if (limit !== undefined) {
+    return items.slice(offset, offset + limit);
+  }
+  return offset > 0 ? items.slice(offset) : items;
+}
 
 // NOTE: The global "/api" auth gate (and its PUBLIC_API_PATHS allowlist) lives
 // in server/routes/auth-setup.ts, which is registered first and protects every
@@ -138,13 +159,14 @@ export function registerRoutes(app: Express) {
     app.get("/api/people", async (req, res) => {
       try {
         const includeRelationships = req.query.includeRelationships === 'true';
+        const { limit, offset } = parsePagination(req.query);
         
         if (includeRelationships) {
-          const people = await storage.getAllPeopleWithRelationships();
-          res.json(people);
+          const peopleList = await storage.getAllPeopleWithRelationships();
+          res.json(paginateSlice(peopleList, limit, offset));
         } else {
-          const people = await storage.getAllPeople();
-          res.json(people);
+          const peopleList = await storage.getAllPeople();
+          res.json(paginateSlice(peopleList, limit, offset));
         }
       } catch (error) {
         console.error("Error fetching people:", error);
@@ -247,44 +269,48 @@ export function registerRoutes(app: Express) {
         const creationStartDate = req.query.creation_start_date as string | undefined;
         const creationStopDate = req.query.creation_stop_date as string | undefined;
         const connectedToMe = req.query.connected_to_me as string | undefined;
+        const { limit, offset } = parsePagination(req.query, 200);
         
         if (!query) {
           return res.status(400).json({ error: "Search query parameter 'q' is required" });
         }
   
-        let people = await storage.getAllPeople(query);
+        let matchedPeople = await storage.getAllPeople(query);
         
         // Filter by creation date range
         if (creationStartDate) {
           const startTimestamp = new Date(creationStartDate).getTime();
-          people = people.filter(p => new Date(p.createdAt).getTime() >= startTimestamp);
+          matchedPeople = matchedPeople.filter(p => new Date(p.createdAt).getTime() >= startTimestamp);
         }
         
         if (creationStopDate) {
           const stopTimestamp = new Date(creationStopDate).getTime();
-          people = people.filter(p => new Date(p.createdAt).getTime() <= stopTimestamp);
+          matchedPeople = matchedPeople.filter(p => new Date(p.createdAt).getTime() <= stopTimestamp);
         }
         
         // Filter by connection to ME user
         if (connectedToMe === 'true') {
           const meId = await storage.getMePersonId();
           if (meId) {
-            // Get all relationships involving the ME user
-            const allRelationships = await storage.getAllRelationships();
-            const meRelationships = allRelationships.filter(
-              rel => rel.fromPersonId === meId || rel.toPersonId === meId
-            );
+            // Get relationships involving the ME user
+            const meRelationships = await db
+              .select({
+                fromPersonId: relationships.fromPersonId,
+                toPersonId: relationships.toPersonId,
+              })
+              .from(relationships)
+              .where(or(eq(relationships.fromPersonId, meId), eq(relationships.toPersonId, meId)));
             const connectedPersonIds = new Set(
               meRelationships.map(rel => 
                 rel.fromPersonId === meId ? rel.toPersonId : rel.fromPersonId
               )
             );
             
-            people = people.filter(p => connectedPersonIds.has(p.id));
+            matchedPeople = matchedPeople.filter(p => connectedPersonIds.has(p.id));
           }
         }
   
-        res.json(people.map(p => ({
+        res.json(paginateSlice(matchedPeople, limit, offset).map(p => ({
           id: p.id,
           uuid: p.id,
           name: `${p.firstName} ${p.lastName}`.trim(),
@@ -363,11 +389,16 @@ export function registerRoutes(app: Express) {
         const validatedData = insertPersonSchema.parse(personBody);
         
         // Check for duplicate names
-        const allPeople = await storage.getAllPeople();
-        const duplicate = allPeople.find(p => 
-          p.firstName.toLowerCase() === validatedData.firstName.toLowerCase() && 
-          p.lastName.toLowerCase() === validatedData.lastName.toLowerCase()
-        );
+        const [duplicate] = await db
+          .select({ id: people.id })
+          .from(people)
+          .where(
+            and(
+              sql`LOWER(${people.firstName}) = LOWER(${validatedData.firstName})`,
+              sql`LOWER(${people.lastName}) = LOWER(${validatedData.lastName})`,
+            ),
+          )
+          .limit(1);
         
         if (duplicate) {
           return res.status(400).json({ 
@@ -437,13 +468,11 @@ export function registerRoutes(app: Express) {
           });
         }
 
-        let finalPerson = await storage.getPersonById(id) || person;
-        if (!finalPerson.imageUrl && validatedData.socialAccountUuids) {
-          const didPass = await autoPassInImageForPerson(id);
-          if (didPass) {
-            finalPerson = await storage.getPersonById(id) || finalPerson;
-          }
+        if (!person.imageUrl && validatedData.socialAccountUuids) {
+          await autoPassInImageForPerson(id);
         }
+
+        const finalPerson = await storage.getPersonById(id) || person;
   
         res.json(finalPerson);
       } catch (error) {
@@ -527,7 +556,8 @@ export function registerRoutes(app: Express) {
         }
         
         // Otherwise, get all notes across all people with a single SQL query
-        const noteRows = await db
+        const { limit, offset } = parsePagination(req.query);
+        const baseQuery = db
           .select({
             note: notes,
             firstName: people.firstName,
@@ -535,7 +565,16 @@ export function registerRoutes(app: Express) {
           })
           .from(notes)
           .innerJoin(people, eq(notes.personId, people.id))
-          .orderBy(desc(notes.createdAt));
+          .orderBy(desc(notes.createdAt))
+          .$dynamic();
+
+        const noteRows = await (
+          limit !== undefined
+            ? baseQuery.limit(limit).offset(offset)
+            : offset > 0
+              ? baseQuery.offset(offset)
+              : baseQuery
+        );
 
         const allNotes = noteRows.map(({ note, firstName, lastName }) => ({
           ...note,
@@ -841,9 +880,10 @@ export function registerRoutes(app: Express) {
           const familyLabels = computeFamilyLabels(personId, familyTree);
           
           if (familyLabels.size > 0) {
+            const familyPeopleById = new Map(familyTree.people.map(p => [p.id, p]));
             const familyRelationships = [];
             for (const [id, label] of familyLabels.entries()) {
-              const fp = familyTree.people.find(p => p.id === id);
+              const fp = familyPeopleById.get(id);
               if (!fp) continue;
               familyRelationships.push({
                 id: `family_${id}`,
@@ -1062,8 +1102,9 @@ export function registerRoutes(app: Express) {
     // Groups endpoints
     app.get("/api/groups", async (req, res) => {
       try {
-        const groups = await storage.getAllGroups();
-        res.json(groups);
+        const { limit, offset } = parsePagination(req.query);
+        const groupsList = await storage.getAllGroups();
+        res.json(paginateSlice(groupsList, limit, offset));
       } catch (error) {
         console.error("Error fetching groups:", error);
         res.status(500).json({ error: "Failed to fetch groups" });
@@ -1143,8 +1184,9 @@ export function registerRoutes(app: Express) {
     // Sub groups endpoints
     app.get("/api/subgroups", async (req, res) => {
       try {
+        const { limit, offset } = parsePagination(req.query);
         const subGroupsList = await storage.getAllSubGroups();
-        res.json(subGroupsList);
+        res.json(paginateSlice(subGroupsList, limit, offset));
       } catch (error) {
         console.error("Error fetching all sub groups:", error);
         res.status(500).json({ error: "Failed to fetch sub groups" });
@@ -1407,29 +1449,20 @@ export function registerRoutes(app: Express) {
 
           if (F_center.size > 0 && memberSaIds.length > 0) {
             const fCenterArray = Array.from(F_center);
-            const MEMBER_CHUNK_SIZE = 100;
-            const CENTER_CHUNK_SIZE = 400;
+            const intersectionCounts = await db
+              .select({
+                followerId: socialFollows.followerId,
+                count: sql<number>`count(*)::int`,
+              })
+              .from(socialFollows)
+              .where(and(
+                sql`${socialFollows.followerId} = ANY(${memberSaIds}::text[])`,
+                sql`${socialFollows.followedId} = ANY(${fCenterArray}::text[])`
+              ))
+              .groupBy(socialFollows.followerId);
 
-            for (let i = 0; i < memberSaIds.length; i += MEMBER_CHUNK_SIZE) {
-              const memberChunk = memberSaIds.slice(i, i + MEMBER_CHUNK_SIZE);
-              for (let j = 0; j < fCenterArray.length; j += CENTER_CHUNK_SIZE) {
-                const centerChunk = fCenterArray.slice(j, j + CENTER_CHUNK_SIZE);
-                const intersectionCounts = await db
-                  .select({
-                    followerId: socialFollows.followerId,
-                    count: sql<number>`count(*)::int`,
-                  })
-                  .from(socialFollows)
-                  .where(and(
-                    inArray(socialFollows.followerId, memberChunk),
-                    inArray(socialFollows.followedId, centerChunk)
-                  ))
-                  .groupBy(socialFollows.followerId);
-
-                for (const r of intersectionCounts) {
-                  countMap.set(r.followerId, (countMap.get(r.followerId) || 0) + Number(r.count));
-                }
-              }
+            for (const r of intersectionCounts) {
+              countMap.set(r.followerId, Number(r.count));
             }
           }
 

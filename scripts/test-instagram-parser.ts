@@ -71,7 +71,7 @@ console.log("parseThreadFolderName:");
 console.log("fixture thread:");
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const fixtureDir = path.join(scriptDir, "..", "test", "fixtures", "instagram-thread", "laylabug_587235216244212");
-const thread = loadThreadFolder(fixtureDir);
+const thread = await loadThreadFolder(fixtureDir);
 
 check("threadId parsed", thread.threadId === "587235216244212");
 check("username parsed", thread.username === "laylabug");
@@ -82,7 +82,7 @@ assertUniqueExternalIds(thread, "fixture");
 
 // Content hash: present, stable across reloads, and sensitive to content changes
 check("contentHash is a sha256 hex", /^[0-9a-f]{64}$/.test(thread.contentHash), thread.contentHash);
-check("contentHash deterministic across reloads", loadThreadFolder(fixtureDir).contentHash === thread.contentHash);
+check("contentHash deterministic across reloads", (await loadThreadFolder(fixtureDir)).contentHash === thread.contentHash);
 {
   const files = ["message_1.json", "message_2.json"].map((name) => ({
     name,
@@ -129,7 +129,7 @@ check(
 const realDir = process.env.REAL_THREAD_DIR;
 if (realDir) {
   console.log(`real thread (${realDir}):`);
-  const real = loadThreadFolder(realDir);
+  const real = await loadThreadFolder(realDir);
   console.log(`  parsed ${real.messages.length} messages, ${real.participants.length} participants`);
   assertAscending(real, "real");
   assertUniqueExternalIds(real, "real");

@@ -1,8 +1,9 @@
 // Address history routes (address-history-plan.md §3). Rules live in ../person-addresses.
 import type { Express, Response } from "express";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { insertPersonAddressSchema } from "@shared/schema";
-import { storage } from "../storage";
+import { insertPersonAddressSchema, people } from "@shared/schema";
+import { db } from "../db";
 import {
   AddressError,
   createPersonAddress,
@@ -29,7 +30,8 @@ export function registerRoutes(app: Express) {
 
   app.post("/api/people/:id/addresses", async (req, res) => {
     try {
-      if (!(await storage.getPersonById(req.params.id))) return res.status(404).json({ error: "Person not found" });
+      const [person] = await db.select({ id: people.id }).from(people).where(eq(people.id, req.params.id)).limit(1);
+      if (!person) return res.status(404).json({ error: "Person not found" });
       res.status(201).json(await createPersonAddress(req.params.id, insertPersonAddressSchema.parse(req.body)));
     } catch (error) {
       sendError(res, error, "create");

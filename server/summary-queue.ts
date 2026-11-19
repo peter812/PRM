@@ -23,6 +23,7 @@ import {
 import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
 import { fetchImageBuffer } from "./prm-s3";
 import { describeImage } from "./ai/describe";
+import { extractBalancedJson } from "./json-extract";
 import { bannedActions } from "./banned-actions";
 import { syncEntityInBackground } from "./vector-universal";
 import { asData, chat, DATA_TAGS_NOTE, listProviders, resolveModel, type AiTask, type ResolvedModel } from "./ai/provider";
@@ -634,19 +635,8 @@ function extractJsonArray(text: string): ExtractedNote[] {
       }
     } catch {}
 
-    let start = candidate.indexOf("[");
-    while (start !== -1) {
-      let end = candidate.lastIndexOf("]");
-      while (end > start) {
-        try {
-          const slice = candidate.slice(start, end + 1);
-          const parsed = JSON.parse(slice);
-          if (Array.isArray(parsed)) return parsed as ExtractedNote[];
-        } catch {}
-        end = candidate.lastIndexOf("]", end - 1);
-      }
-      start = candidate.indexOf("[", start + 1);
-    }
+    const parsed = extractBalancedJson(candidate, "[", Array.isArray);
+    if (Array.isArray(parsed)) return parsed as ExtractedNote[];
   }
   return [];
 }
@@ -687,23 +677,34 @@ async function extractBackendNotes(
   const parsed = extractJsonArray(raw);
 
   const createdAt = new Date().toISOString();
-  const affectedPersonIds = new Set<string>();
-  const affectedAccountIds = new Set<string>();
+  const personNotes = new Map<string, AiBackendNote[]>();
+  const accountNotes = new Map<string, AiBackendNote[]>();
 
   for (const item of parsed) {
     const target = candidates[Number(String(item?.target ?? "").replace(/^C/i, "")) - 1];
     const text = typeof item?.note === "string" ? item.note.trim() : "";
     if (!target || !text) continue;
     const note: AiBackendNote = { text, source: { kind: "post_append", postId, imageIndex: fix.imageIndex }, createdAt };
-    const added = JSON.stringify([note]);
-    if (target.kind === "person") {
-      await db.update(people).set({ aiBackendNotes: sql`${people.aiBackendNotes} || ${added}::jsonb` }).where(eq(people.id, target.id));
-      affectedPersonIds.add(target.id);
-    } else {
-      await db.update(socialAccounts).set({ aiBackendNotes: sql`${socialAccounts.aiBackendNotes} || ${added}::jsonb` }).where(eq(socialAccounts.id, target.id));
-      affectedAccountIds.add(target.id);
-    }
+    const bucket = target.kind === "person" ? personNotes : accountNotes;
+    const list = bucket.get(target.id);
+    if (list) list.push(note);
+    else bucket.set(target.id, [note]);
   }
+
+  const affectedPersonIds = new Set<string>(personNotes.keys());
+  const affectedAccountIds = new Set<string>(accountNotes.keys());
+
+  const noteUpdates: Array<() => Promise<unknown>> = [
+    ...Array.from(personNotes.entries()).map(([id, notes]) => () => {
+      const added = JSON.stringify(notes);
+      return db.update(people).set({ aiBackendNotes: sql`${people.aiBackendNotes} || ${added}::jsonb` }).where(eq(people.id, id));
+    }),
+    ...Array.from(accountNotes.entries()).map(([id, notes]) => () => {
+      const added = JSON.stringify(notes);
+      return db.update(socialAccounts).set({ aiBackendNotes: sql`${socialAccounts.aiBackendNotes} || ${added}::jsonb` }).where(eq(socialAccounts.id, id));
+    }),
+  ];
+  await mapWithConcurrency(noteUpdates, 4, (run) => run());
 
   if (affectedAccountIds.size > 0) {
     await db
@@ -726,6 +727,24 @@ async function extractBackendNotes(
   }
 }
 
+/** Runs `fn` over `items` with at most `limit` concurrent executions, preserving index order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * Stories get a single LLM run with the story prompt: every image goes to the scene (vision) model
  * at once, or, for a video-only story, the transcript goes to the text model.
@@ -744,8 +763,14 @@ async function runStorySummary(
   await saveProgress();
 
   const imageUrls = mediaUrls.filter((url) => url && !isVideoMediaUrl(url));
-  const fetched = await Promise.allSettled(imageUrls.map((url) => fetchImageBuffer(url)));
-  const buffers = fetched.flatMap((r) => (r.status === "fulfilled" ? [r.value.buffer] : []));
+  const fetched = await mapWithConcurrency(imageUrls, 4, async (url) => {
+    try {
+      return (await fetchImageBuffer(url)).buffer;
+    } catch {
+      return null;
+    }
+  });
+  const buffers = fetched.filter((b): b is Buffer => b !== null);
   const transcript = (post.videoTranscript as { text?: string } | null)?.text;
   if (imageUrls.length > 0 && buffers.length === 0 && !transcript) {
     throw new Error(`All ${imageUrls.length} image(s) failed to load`);

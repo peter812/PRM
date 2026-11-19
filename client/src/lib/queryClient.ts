@@ -45,9 +45,16 @@ export const getQueryFn: <T>(options: {
               }
             }
           } else {
+            const raw = String(item);
+            const qIdx = raw.indexOf("?");
+            const pathPart = qIdx === -1 ? raw : raw.slice(0, qIdx);
+            if (pathPart === "." || pathPart === "..") {
+              throw new Error(`Invalid queryKey path segment: ${pathPart}`);
+            }
             // Keys like ["/api/social-accounts", id, "posts?includeDeleted=true"]
-            // carry raw path/query fragments — join verbatim, don't encode.
-            segments.push(String(item));
+            // carry a query suffix — encode only the path segment and preserve the query.
+            const encodedPath = encodeURIComponent(pathPart);
+            segments.push(qIdx === -1 ? encodedPath : `${encodedPath}?${raw.slice(qIdx + 1)}`);
           }
         }
         if (segments.length > 0) {

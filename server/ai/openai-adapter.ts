@@ -132,4 +132,22 @@ export const openaiAdapter: AiAdapter = {
     }
     return embedding;
   },
+
+  async embedBatch(p, model, texts, signal) {
+    if (texts.length === 0) return [];
+    const resp = await postJson(p, "/embeddings", { model, input: texts }, signal ?? AbortSignal.timeout(60000));
+    const data = (await resp.json()) as { data?: { embedding?: number[]; index?: number }[] };
+    const items = data.data ?? [];
+    if (items.length !== texts.length) {
+      throw new Error(`${p.name} returned an empty or mismatched embedding batch. The selected model may not support embeddings.`);
+    }
+    const sorted = items.every((d) => typeof d.index === "number")
+      ? [...items].sort((a, b) => a.index! - b.index!)
+      : items;
+    const embeddings = sorted.map((d) => d.embedding);
+    if (embeddings.some((e) => !Array.isArray(e) || e.length === 0)) {
+      throw new Error(`${p.name} returned an empty embedding. The selected model may not support embeddings.`);
+    }
+    return embeddings as number[][];
+  },
 };

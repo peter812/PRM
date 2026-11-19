@@ -1,5 +1,5 @@
 import { formatPersonName } from "@shared/person-name";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Application, Graphics, Container, Text, TextStyle } from "pixi.js";
 import { Button } from "@/components/ui/button";
@@ -46,7 +46,7 @@ interface Edge {
   to: string;
   type: 'relationship' | 'group-member';
   color: number;
-  graphics: Graphics;
+  visible: boolean;
 }
 
 // Helper to convert HSL from CSS variable to hex color
@@ -76,7 +76,9 @@ export default function Graph() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const nodesRef = useRef<Map<string, Node>>(new Map());
+  const nodesArrayRef = useRef<Node[]>([]);
   const edgesRef = useRef<Edge[]>([]);
+  const edgesGraphicsRef = useRef<Graphics | null>(null);
   const containerRef = useRef<Container | null>(null);
   const animationRef = useRef<number | null>(null);
   const isDraggingRef = useRef<string | null>(null);
@@ -130,9 +132,9 @@ export default function Graph() {
     select: (data) => ({ id: data.id }),
   });
 
-  const allPeople = graphData?.people || [];
-  const groups = graphData?.groups || [];
-  const relationships = graphData?.relationships || [];
+  const allPeople = useMemo(() => graphData?.people ?? [], [graphData?.people]);
+  const groups = useMemo(() => graphData?.groups ?? [], [graphData?.groups]);
+  const relationships = useMemo(() => graphData?.relationships ?? [], [graphData?.relationships]);
 
   // Set ME person as default highlight when data loads
   useEffect(() => {
@@ -142,8 +144,9 @@ export default function Graph() {
   }, [meData?.id]);
 
   // Filter out orphans if hideOrphans is enabled
-  const people = hideOrphans
-    ? allPeople.filter(person => {
+  const people = useMemo(() => {
+    if (!hideOrphans) return allPeople;
+    return allPeople.filter(person => {
       // Check if person has any relationships
       const hasRelationship = relationships.some(
         rel => rel.fromPersonId === person.id || rel.toPersonId === person.id
@@ -151,8 +154,8 @@ export default function Graph() {
       // Check if person is a member of any group
       const isInGroup = groups.some(group => group.members.includes(person.id));
       return hasRelationship || isInGroup;
-    })
-    : allPeople;
+    });
+  }, [allPeople, hideOrphans, relationships, groups]);
 
   useEffect(() => {
     if (!canvasRef.current || !people.length) return;
@@ -192,7 +195,9 @@ export default function Graph() {
 
         // Clear refs
         nodesRef.current.clear();
+        nodesArrayRef.current = [];
         edgesRef.current = [];
+        edgesGraphicsRef.current = null;
         containerRef.current = null;
 
         // Clean up any existing canvas elements
@@ -435,6 +440,12 @@ export default function Graph() {
         }
 
         nodesRef.current = nodes;
+        nodesArrayRef.current = Array.from(nodes.values());
+
+        // Create single shared Graphics object for all edges behind nodes
+        const edgesGraphics = new Graphics();
+        container.addChildAt(edgesGraphics, 0);
+        edgesGraphicsRef.current = edgesGraphics;
 
         // Create edges
         const edges: Edge[] = [];
@@ -446,22 +457,15 @@ export default function Graph() {
             const toNode = nodes.get(rel.toPersonId);
 
             if (fromNode && toNode) {
-              const graphics = new Graphics();
-
               // Use relationship type color if available, otherwise default to gray
               const edgeColor = rel.typeColor ? hexToNumber(rel.typeColor) : defaultRelationshipColor;
 
-              graphics.moveTo(fromNode.x, fromNode.y);
-              graphics.lineTo(toNode.x, toNode.y);
-              graphics.stroke({ color: edgeColor, width: 2, alpha: 0.6 });
-
-              container.addChildAt(graphics, 0); // Add edges behind nodes
               edges.push({
                 from: rel.fromPersonId,
                 to: rel.toPersonId,
                 type: 'relationship',
                 color: edgeColor,
-                graphics,
+                visible: true,
               });
             }
           });
@@ -476,20 +480,14 @@ export default function Graph() {
                 const personNode = nodes.get(memberId);
 
                 if (groupNode && personNode) {
-                  const graphics = new Graphics();
-
-                  graphics.moveTo(groupNode.x, groupNode.y);
-                  graphics.lineTo(personNode.x, personNode.y);
                   const groupColor = group.color ? hexToNumber(group.color) : 0x8b5cf6;
-                  graphics.stroke({ color: groupColor, width: 1, alpha: 0.5 });
 
-                  container.addChildAt(graphics, 0); // Add edges behind nodes
                   edges.push({
                     from: `group-${group.id}`,
                     to: memberId,
                     type: 'group-member',
                     color: groupColor,
-                    graphics,
+                    visible: true,
                   });
                 }
               });
@@ -498,6 +496,23 @@ export default function Graph() {
         }
 
         edgesRef.current = edges;
+
+        // Pre-group edges by style (type + color) to minimize stroke() calls per frame
+        const edgeBatches = new Map<string, { color: number; width: number; alpha: number; edges: Edge[] }>();
+        edges.forEach((edge) => {
+          const key = `${edge.type}-${edge.color}`;
+          let batch = edgeBatches.get(key);
+          if (!batch) {
+            batch = {
+              color: edge.color,
+              width: edge.type === 'relationship' ? 2 : 1,
+              alpha: edge.type === 'relationship' ? 0.6 : 0.5,
+              edges: [],
+            };
+            edgeBatches.set(key, batch);
+          }
+          batch.edges.push(edge);
+        });
 
         // Apply highlight filter if active
         if (highlightedPersonId) {
@@ -546,7 +561,7 @@ export default function Graph() {
               const shouldShow =
                 (edge.type === 'relationship' && connectedPersonIds.has(edge.from) && connectedPersonIds.has(edge.to)) ||
                 (edge.type === 'group-member' && userGroupIds.has(edge.from) && connectedPersonIds.has(edge.to));
-              edge.graphics.visible = shouldShow;
+              edge.visible = shouldShow;
             });
           }
         }
@@ -563,10 +578,10 @@ export default function Graph() {
             return;
           }
 
-          const nodes = Array.from(nodesRef.current.values());
+          const nodes = nodesArrayRef.current;
           const damping = 0.9;
 
-          // Apply forces
+          // Apply node repulsion and center attraction forces
           nodes.forEach((node) => {
             if (!node.graphics || !node.text) return; // Skip if graphics destroyed
             if (node.graphics.destroyed || node.text.destroyed) return; // Skip if destroyed by Pixi
@@ -589,50 +604,55 @@ export default function Graph() {
               }
             });
 
-            // Attraction along edges with desired distance
-            edgesRef.current.forEach((edge) => {
-              if (!edge.graphics || edge.graphics.destroyed || !edge.graphics.visible) return; // Skip hidden/destroyed edges
-
-              let other: Node | undefined;
-
-              if (edge.from === node.id) {
-                other = nodesRef.current.get(edge.to);
-              } else if (edge.to === node.id) {
-                other = nodesRef.current.get(edge.from);
-              }
-
-              if (other && other.graphics && other.graphics.visible) {
-                const dx = other.x - node.x;
-                const dy = other.y - node.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-
-                // Spring force: attractive if too far, repulsive if too close
-                const displacement = distance - linkDistanceRef.current;
-                const force = displacement * linkForceRef.current;
-
-                if (distance > 0) {
-                  fx += (dx / distance) * force;
-                  fy += (dy / distance) * force;
-                }
-              }
-            });
-
             // Center attraction
             const dx = centerX - node.x;
             const dy = centerY - node.y;
             fx += dx * centerForceRef.current;
             fy += dy * centerForceRef.current;
 
-            node.vx = (node.vx + fx) * damping;
-            node.vy = (node.vy + fy) * damping;
+            node.vx += fx;
+            node.vy += fy;
           });
 
-          // Update positions (skip if dragging)
+          // Apply edge attraction forces in a single O(E) pass
+          edgesRef.current.forEach((edge) => {
+            if (!edge.visible) return; // Skip hidden edges
+
+            const fromNode = nodesRef.current.get(edge.from);
+            const toNode = nodesRef.current.get(edge.to);
+            if (
+              fromNode && toNode &&
+              fromNode.graphics && toNode.graphics &&
+              !fromNode.graphics.destroyed && !toNode.graphics.destroyed &&
+              fromNode.graphics.visible && toNode.graphics.visible
+            ) {
+              const dx = toNode.x - fromNode.x;
+              const dy = toNode.y - fromNode.y;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+
+              if (distance > 0) {
+                // Spring force: attractive if too far, repulsive if too close
+                const displacement = distance - linkDistanceRef.current;
+                const force = displacement * linkForceRef.current;
+                const fx = (dx / distance) * force;
+                const fy = (dy / distance) * force;
+                fromNode.vx += fx;
+                fromNode.vy += fy;
+                toNode.vx -= fx;
+                toNode.vy -= fy;
+              }
+            }
+          });
+
+          // Apply damping and update positions (skip if dragging)
           let maxVelocity = 0;
           nodes.forEach((node) => {
             if (!node.graphics || !node.text) return; // Skip if graphics destroyed
             if (node.graphics.destroyed || node.text.destroyed) return; // Skip if destroyed by Pixi
             if (!node.graphics.visible) return; // Skip hidden nodes
+
+            node.vx *= damping;
+            node.vy *= damping;
 
             if (isDraggingRef.current !== node.id) {
               node.x += node.vx;
@@ -651,45 +671,43 @@ export default function Graph() {
             return;
           }
 
-          // Update edge positions
-          edgesRef.current.forEach((edge) => {
-            if (!edge.graphics) return; // Skip if graphics destroyed
-            if (edge.graphics.destroyed) return; // Skip if destroyed by Pixi
-            if (!edge.graphics.visible) return; // Skip hidden edges
+          // Redraw all visible edges in a single shared Graphics object
+          const g = edgesGraphicsRef.current;
+          if (g && !g.destroyed) {
+            try {
+              const wasRenderable = g.renderable;
+              g.renderable = false;
+              g.clear();
 
-            const fromNode = nodesRef.current.get(edge.from);
-            const toNode = nodesRef.current.get(edge.to);
-            if (fromNode && toNode && fromNode.graphics && toNode.graphics &&
-              !fromNode.graphics.destroyed && !toNode.graphics.destroyed &&
-              fromNode.graphics.visible && toNode.graphics.visible) {
-              try {
-                // Check again before graphics operations
-                if (!active || !isMountedRef.current || edge.graphics.destroyed) return;
+              edgeBatches.forEach((batch) => {
+                let hasSegments = false;
+                for (let i = 0; i < batch.edges.length; i++) {
+                  const edge = batch.edges[i];
+                  if (!edge.visible) continue;
 
-                // Temporarily set renderable to false to prevent rendering during clear/redraw
-                const g = edge.graphics;
-                const wasRenderable = g.renderable;
-                g.renderable = false;
-
-                g.clear();
-
-                if (edge.type === 'relationship') {
-                  g.moveTo(fromNode.x, fromNode.y);
-                  g.lineTo(toNode.x, toNode.y);
-                  g.stroke({ color: edge.color, width: 2, alpha: 0.6 });
-                } else if (edge.type === 'group-member') {
-                  g.moveTo(fromNode.x, fromNode.y);
-                  g.lineTo(toNode.x, toNode.y);
-                  g.stroke({ color: edge.color, width: 1, alpha: 0.5 });
+                  const fromNode = nodesRef.current.get(edge.from);
+                  const toNode = nodesRef.current.get(edge.to);
+                  if (
+                    fromNode && toNode &&
+                    fromNode.graphics && toNode.graphics &&
+                    !fromNode.graphics.destroyed && !toNode.graphics.destroyed &&
+                    fromNode.graphics.visible && toNode.graphics.visible
+                  ) {
+                    g.moveTo(fromNode.x, fromNode.y);
+                    g.lineTo(toNode.x, toNode.y);
+                    hasSegments = true;
+                  }
                 }
+                if (hasSegments) {
+                  g.stroke({ color: batch.color, width: batch.width, alpha: batch.alpha });
+                }
+              });
 
-                // Restore renderable state after drawing is complete
-                g.renderable = wasRenderable;
-              } catch (e) {
-                // Graphics may have been destroyed during operation, skip silently
-              }
+              g.renderable = wasRenderable;
+            } catch (e) {
+              // Graphics may have been destroyed during operation, skip silently
             }
-          });
+          }
 
           // Manually render after all updates are complete
           if (appRef.current) {
@@ -845,7 +863,9 @@ export default function Graph() {
       // Clear refs
       containerRef.current = null;
       nodesRef.current.clear();
+      nodesArrayRef.current = [];
       edgesRef.current = [];
+      edgesGraphicsRef.current = null;
 
       // Destroy PIXI app synchronously
       if (appRef.current) {

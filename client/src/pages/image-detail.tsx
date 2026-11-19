@@ -1,5 +1,5 @@
 import { formatPersonName } from "@shared/person-name";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRoute, useLocation } from "wouter";
 import { Loader2, ChevronLeft, ImageOff, CheckCircle2, XCircle, ExternalLink, Trash2 } from "lucide-react";
@@ -171,21 +171,42 @@ export default function ImageDetailPage() {
     }
   };
 
-  const { data: people = [] } = useQuery<Person[]>({
-    queryKey: ["/api/people"],
-  });
-
-  const { data: socialAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts"],
-  });
-
-  const peopleMap = new Map(people.map((p) => [p.id, p]));
-  const socialMap = new Map(socialAccounts.map((s) => [s.id, s]));
-
   const { data: photo, isLoading, error } = useQuery<PhotoWithSource>({
     queryKey: [`/api/photos/${id}`],
     enabled: !!id,
   });
+
+  const needsSourceLookup = useMemo(() => {
+    if (!photo || photo.source || !photo.prmLocation) return false;
+    const parts = photo.prmLocation.split(":");
+    const prefix = parts[0]?.trim();
+    const targetId = parts.slice(1).join(":").trim();
+    return (
+      (prefix === "profile_image" || prefix === "social_profile_image") &&
+      targetId !== "00000000-0000-0000-0000-000000000000"
+    );
+  }, [photo]);
+
+  const { needsPeopleLookup, needsSocialLookup } = useMemo(() => {
+    const fIds = photo && isFacialIdsArray(photo.facialIds) ? photo.facialIds : [];
+    return {
+      needsPeopleLookup: needsSourceLookup || fIds.some((f) => !!f.personId),
+      needsSocialLookup: needsSourceLookup || fIds.some((f) => !!f.socialAccountId),
+    };
+  }, [photo, needsSourceLookup]);
+
+  const { data: people = [] } = useQuery<Person[]>({
+    queryKey: ["/api/people"],
+    enabled: needsPeopleLookup,
+  });
+
+  const { data: socialAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
+    queryKey: ["/api/social-accounts"],
+    enabled: needsSocialLookup,
+  });
+
+  const peopleMap = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
+  const socialMap = useMemo(() => new Map(socialAccounts.map((s) => [s.id, s])), [socialAccounts]);
 
   // Parent lookup (only for sub-images)
   const { data: parent } = useQuery<Photo>({

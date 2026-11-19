@@ -14,6 +14,7 @@ import { FaceClustersTab } from "@/components/face-clusters-tab";
 import { IdentitySearch, type IdentityTarget } from "@/components/identity-search";
 import { useNoFaceToggle } from "@/components/no-face-account";
 import { useToast } from "@/hooks/use-toast";
+import { useWindowedItems } from "@/hooks/use-windowed-items";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
@@ -145,7 +146,20 @@ function AccountHolderView({ accountId }: { accountId: string }) {
 
   const faces = data?.faces ?? [];
   const sources = useMemo(() => Array.from(new Set(faces.map((f) => f.source))), [faces]);
-  const shown = faces.filter((f) => (scope === "all" || (scope === "here") === f.inScope) && (source === "all" || f.source === source));
+  const shown = useMemo(
+    () => faces.filter((f) => (scope === "all" || (scope === "here") === f.inScope) && (source === "all" || f.source === source)),
+    [faces, scope, source],
+  );
+  const auto = useMemo(
+    () => faces.filter((f) => f.how === "auto").sort((a, b) => (a.score ?? 0) - (b.score ?? 0)),
+    [faces],
+  );
+  const here = useMemo(() => faces.filter((f) => f.inScope).length, [faces]);
+  const best = useMemo(
+    () => faces.find((f) => f.how === "confirmed" && f.source === "profile") ?? faces.find((f) => f.how === "confirmed") ?? faces[0],
+    [faces],
+  );
+  const { visibleItems: visibleShown, hasMore, sentinelRef, loadMore, remainingCount } = useWindowedItems(shown, [accountId, scope, source]);
 
   if (isLoading || !data) return <Spinner />;
 
@@ -160,9 +174,6 @@ function AccountHolderView({ accountId }: { accountId: string }) {
   );
   if (!data.group) return <PickHolderFace accountId={accountId} holder={data} noFaceSwitch={noFaceSwitch} />;
 
-  const auto = faces.filter((f) => f.how === "auto").sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
-  const here = faces.filter((f) => f.inScope).length;
-  const best = faces.find((f) => f.how === "confirmed" && f.source === "profile") ?? faces.find((f) => f.how === "confirmed") ?? faces[0];
   const toggle = (id: string) => setSelected((s) => {
     const next = new Set(s);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -241,11 +252,20 @@ function AccountHolderView({ accountId }: { accountId: string }) {
       {shown.length === 0 ? (
         <p className="text-sm text-muted-foreground">No faces match these filters.</p>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
-          {shown.map((f) => (
-            <HolderFaceTile key={f.id} face={f} selected={selected.has(f.id)} onToggle={() => toggle(f.id)} onOpen={() => setOpen(f)} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
+            {visibleShown.map((f) => (
+              <HolderFaceTile key={f.id} face={f} selected={selected.has(f.id)} onToggle={() => toggle(f.id)} onOpen={() => setOpen(f)} />
+            ))}
+          </div>
+          {hasMore && (
+            <div ref={sentinelRef} className="flex justify-center pt-2">
+              <Button size="sm" variant="outline" onClick={loadMore}>
+                Show more ({remainingCount} remaining)
+              </Button>
+            </div>
+          )}
+        </>
       )}
 
       <FacePhotoDialog face={open} label={`@${data.username}`} removing={remove.isPending} onRemove={(id) => remove.mutate([id])} onClose={() => setOpen(null)} />
@@ -581,31 +601,42 @@ function PersonSeenFaces({ accountId, person }: { accountId: string; person: Per
   const keep = useKeepFaces(accountId, person.label);
   const remove = useRemoveFaces(accountId, person.label, () => setOpen(null));
   const busy = keep.isPending || remove.isPending;
+  const faces = data?.faces ?? [];
+  const { visibleItems, hasMore, sentinelRef, loadMore, remainingCount } = useWindowedItems(faces, [accountId, person.group]);
 
   if (isLoading || !data) return <Spinner />;
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] gap-2 p-2 pt-0">
-      {data.faces.map((f) => (
-        <div key={f.id} className="space-y-1">
-          <button type="button" onClick={() => setOpen(f)} className="relative block w-full" title={f.date ? new Date(f.date).toLocaleDateString() : undefined}>
-            <img src={withImageSize(f.cropUrl, 128)} alt="" loading="lazy" className="aspect-square w-full rounded object-cover bg-muted" />
-            <div className="absolute bottom-1 inset-x-1 flex justify-between gap-1">
-              <Badge variant="secondary" className="h-4 px-1 text-[10px]">{f.postAccountId && f.postAccountId !== accountId ? "Tagged" : SOURCE_LABEL[f.source]}</Badge>
-              {f.how === "auto" && f.score !== null && <Badge className="h-4 px-1 text-[10px] bg-amber-500/90 hover:bg-amber-500/90">{Math.round(f.score * 100)}%</Badge>}
-            </div>
-          </button>
-          {f.how === "auto" && (
-            <div className="flex gap-1">
-              <Button size="sm" variant="outline" className="h-6 flex-1 px-0" title="Keep" disabled={busy} onClick={() => keep.mutate([f.id])}>
-                <Check className="h-3.5 w-3.5" />
-              </Button>
-              <Button size="sm" variant="outline" className="h-6 flex-1 px-0" title={`Not ${person.label}`} disabled={busy} onClick={() => remove.mutate([f.id])}>
-                <X className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          )}
+    <div className="space-y-2 p-2 pt-0">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] gap-2">
+        {visibleItems.map((f) => (
+          <div key={f.id} className="space-y-1">
+            <button type="button" onClick={() => setOpen(f)} className="relative block w-full" title={f.date ? new Date(f.date).toLocaleDateString() : undefined}>
+              <img src={withImageSize(f.cropUrl, 128)} alt="" loading="lazy" decoding="async" className="aspect-square w-full rounded object-cover bg-muted" />
+              <div className="absolute bottom-1 inset-x-1 flex justify-between gap-1">
+                <Badge variant="secondary" className="h-4 px-1 text-[10px]">{f.postAccountId && f.postAccountId !== accountId ? "Tagged" : SOURCE_LABEL[f.source]}</Badge>
+                {f.how === "auto" && f.score !== null && <Badge className="h-4 px-1 text-[10px] bg-amber-500/90 hover:bg-amber-500/90">{Math.round(f.score * 100)}%</Badge>}
+              </div>
+            </button>
+            {f.how === "auto" && (
+              <div className="flex gap-1">
+                <Button size="sm" variant="outline" className="h-6 flex-1 px-0" title="Keep" disabled={busy} onClick={() => keep.mutate([f.id])}>
+                  <Check className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="outline" className="h-6 flex-1 px-0" title={`Not ${person.label}`} disabled={busy} onClick={() => remove.mutate([f.id])}>
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {hasMore && (
+        <div ref={sentinelRef} className="flex justify-center pt-1">
+          <Button size="sm" variant="outline" onClick={loadMore}>
+            Show more ({remainingCount} remaining)
+          </Button>
         </div>
-      ))}
+      )}
       <FacePhotoDialog face={open} label={person.label} removing={remove.isPending} onRemove={(id) => remove.mutate([id])} onClose={() => setOpen(null)} />
     </div>
   );

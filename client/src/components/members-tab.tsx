@@ -65,10 +65,15 @@ export function MembersTab({ members, groupId, subGroups = [] }: MembersTabProps
 
   const { data: allPeople = [] } = useQuery<Person[]>({
     queryKey: ["/api/people"],
+    enabled: isAddMemberOpen,
   });
 
-  const memberIds = members.map((m) => m.id);
-  const availablePeople = allPeople.filter((p) => !memberIds.includes(p.id));
+  const memberIds = useMemo(() => members.map((m) => m.id), [members]);
+  const memberIdSet = useMemo(() => new Set(memberIds), [memberIds]);
+  const availablePeople = useMemo(
+    () => allPeople.filter((p) => !memberIdSet.has(p.id)),
+    [allPeople, memberIdSet],
+  );
 
   const removeMemberMutation = useMutation({
     mutationFn: async (personId: string) => {

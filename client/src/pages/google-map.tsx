@@ -4,7 +4,7 @@
  * Google's map types and Street View. View only — pins are placed, moved and removed on
  * /demos/map, which also runs geocoding. Needs a Google Maps key (Settings → Maps).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
@@ -49,21 +49,23 @@ function savedMapType(): string {
 type SetMarkerRef = (marker: google.maps.marker.AdvancedMarkerElement | null, key: string) => void;
 
 /** Its own component so the ref callback is stable; an inline one would re-register every render. */
-function PinMarker({ pin, onSelect, setMarkerRef }: { pin: MapPin; onSelect: (p: MapPin) => void; setMarkerRef: SetMarkerRef }) {
+const PinMarker = memo(function PinMarker({ pin, onSelect, setMarkerRef }: { pin: MapPin; onSelect: (p: MapPin) => void; setMarkerRef: SetMarkerRef }) {
   const key = pinKey(pin);
   const ref = useCallback((m: google.maps.marker.AdvancedMarkerElement | null) => setMarkerRef(m, key), [setMarkerRef, key]);
+  const position = useMemo(() => ({ lat: pin.latitude!, lng: pin.longitude! }), [pin.latitude, pin.longitude]);
+  const handleClick = useCallback(() => onSelect(pin), [onSelect, pin]);
   return (
     <AdvancedMarker
       ref={ref}
-      position={{ lat: pin.latitude!, lng: pin.longitude! }}
+      position={position}
       anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
       title={fullName(pin)}
-      onClick={() => onSelect(pin)}
+      onClick={handleClick}
     >
       <div dangerouslySetInnerHTML={{ __html: pinHtml(pin) }} />
     </AdvancedMarker>
   );
-}
+});
 
 function PinMarkers({ pins, fit }: { pins: MapPin[]; fit: boolean }) {
   const map = useMap();

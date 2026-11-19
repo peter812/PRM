@@ -162,7 +162,7 @@ export function SocialAccountHistoryTab({
     refetchInterval: (query) => {
       const data = query.state.data as TrackingJob[] | undefined;
       const hasOpen = data?.some((j) => j.status === "queued" || j.status === "running");
-      return hasOpen ? 2_000 : LIVE_MS;
+      return hasOpen ? 2_000 : 30_000;
     },
   });
   const openJobs = (jobs ?? []).filter((j) => j.status === "queued" || j.status === "running");
@@ -216,7 +216,7 @@ export function SocialAccountHistoryTab({
       return res.json();
     },
     enabled: !!socialAccountId,
-    refetchInterval: LIVE_MS,
+    refetchInterval: openJobs.length > 0 ? LIVE_MS : false,
   });
 
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =

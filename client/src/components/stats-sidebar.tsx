@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, LayoutDashboard, Users, MessagesSquare, ScanFace, Sparkles } from "lucide-react";
+import { ArrowLeft, LayoutDashboard, Users, MessagesSquare, ScanFace, Sparkles, CalendarDays } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -17,6 +17,7 @@ const statsMenuItems = [
   { title: "Messages & Notes", url: "/stats/messages", icon: MessagesSquare },
   { title: "Groups & Faces", url: "/stats/groups-faces", icon: ScanFace },
   { title: "Summaries & Stories", url: "/stats/summaries", icon: Sparkles },
+  { title: "Instagram Runs", url: "/stats/instagram-runs", icon: CalendarDays },
 ];
 
 export function StatsSidebar({ backPath }: { backPath: string }) {

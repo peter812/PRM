@@ -172,11 +172,14 @@ export async function markChecked(accountId: string, section: Section): Promise<
 
 /** A scan just finished: stamp it and roll the due date forward. */
 export async function markScanned(accountId: string): Promise<void> {
-  const [account] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, accountId));
+  const [[account], cadences, quiet] = await Promise.all([
+    db.select().from(socialAccounts).where(eq(socialAccounts.id, accountId)),
+    levelCadences(),
+    trackingQuietHours(),
+  ]);
   if (!account) return;
   // A due time inside quiet hours would only pile up at their end: move it to an active minute that day.
-  const due = jitteredDue(scanCadence(account, await levelCadences()));
-  const quiet = await trackingQuietHours();
+  const due = jitteredDue(scanCadence(account, cadences));
   await db
     .update(socialAccounts)
     .set({ scanCheckedAt: new Date(), scanDueAt: due && inQuietHours(due, quiet) ? randomActiveMinute(due, quiet) : due })
@@ -416,43 +419,49 @@ async function knownContent(
   const storyPks = new Map<string, string[]>();
   const highlightIds = new Map<string, string[]>();
   const push = <T,>(m: Map<string, T[]>, k: string, v: T) => (m.get(k) ?? m.set(k, []).get(k)!).push(v);
-  if (postAccounts.length) {
+  const [postRows, storyRows, highlightRows] = await Promise.all([
+    postAccounts.length
+      ? runner
+          .select({
+            accountId: socialAccountPosts.socialAccountId,
+            coauthors: socialAccountPosts.coauthorAccountIds,
+            pk: socialAccountPosts.instagramPk,
+            postedAt: socialAccountPosts.postedAt,
+            pinned: sql<boolean>`COALESCE((${socialAccountPosts.metadata}->>'isPinned')::boolean, false)`,
+          })
+          .from(socialAccountPosts)
+          .where(and(
+            or(...postAccounts.map(postedBy)),
+            sql`${socialAccountPosts.postType} <> 'story'`,
+            eq(socialAccountPosts.isDeleted, false),
+            sql`${socialAccountPosts.instagramPk} IS NOT NULL`,
+          ))
+          .orderBy(sql`${socialAccountPosts.postedAt} DESC NULLS LAST`)
+      : Promise.resolve([]),
+    highlightAccounts.length
+      ? runner
+          .select({ accountId: socialAccountPosts.socialAccountId, pk: socialAccountPosts.instagramPk })
+          .from(socialAccountPosts)
+          .where(and(inArray(socialAccountPosts.socialAccountId, highlightAccounts), eq(socialAccountPosts.postType, "story"), sql`${socialAccountPosts.instagramPk} IS NOT NULL`))
+      : Promise.resolve([]),
+    highlightAccounts.length
+      ? runner
+          .select({ accountId: instagramHighlights.socialAccountId, id: instagramHighlights.instagramId })
+          .from(instagramHighlights)
+          .where(and(inArray(instagramHighlights.socialAccountId, highlightAccounts), sql`${instagramHighlights.deletedSeenAt} IS NULL`))
+      : Promise.resolve([]),
+  ]);
+  if (postRows.length) {
     const wanted = new Set(postAccounts);
-    const rows = await runner
-      .select({
-        accountId: socialAccountPosts.socialAccountId,
-        coauthors: socialAccountPosts.coauthorAccountIds,
-        pk: socialAccountPosts.instagramPk,
-        postedAt: socialAccountPosts.postedAt,
-        pinned: sql<boolean>`COALESCE((${socialAccountPosts.metadata}->>'isPinned')::boolean, false)`,
-      })
-      .from(socialAccountPosts)
-      .where(and(
-        or(...postAccounts.map(postedBy)),
-        sql`${socialAccountPosts.postType} <> 'story'`,
-        eq(socialAccountPosts.isDeleted, false),
-        sql`${socialAccountPosts.instagramPk} IS NOT NULL`,
-      ))
-      .orderBy(sql`${socialAccountPosts.postedAt} DESC NULLS LAST`);
-    for (const r of rows) {
+    for (const r of postRows) {
       const post = { pk: r.pk!, postedAt: r.postedAt?.toISOString() ?? null, pinned: r.pinned };
       // A post is on its poster's grid and on each coauthor's.
       const on = new Set([r.accountId, ...((r.coauthors as string[] | null) ?? [])].filter((id) => wanted.has(id)));
       for (const id of on) push(posts, id, post);
     }
   }
-  if (highlightAccounts.length) {
-    const stories = await runner
-      .select({ accountId: socialAccountPosts.socialAccountId, pk: socialAccountPosts.instagramPk })
-      .from(socialAccountPosts)
-      .where(and(inArray(socialAccountPosts.socialAccountId, highlightAccounts), eq(socialAccountPosts.postType, "story"), sql`${socialAccountPosts.instagramPk} IS NOT NULL`));
-    for (const r of stories) push(storyPks, r.accountId, r.pk!);
-    const sets = await runner
-      .select({ accountId: instagramHighlights.socialAccountId, id: instagramHighlights.instagramId })
-      .from(instagramHighlights)
-      .where(and(inArray(instagramHighlights.socialAccountId, highlightAccounts), sql`${instagramHighlights.deletedSeenAt} IS NULL`));
-    for (const r of sets) push(highlightIds, r.accountId, r.id);
-  }
+  for (const r of storyRows) push(storyPks, r.accountId, r.pk!);
+  for (const r of highlightRows) push(highlightIds, r.accountId, r.id);
   return (id) => ({ posts: posts.get(id) ?? [], storyPks: storyPks.get(id) ?? [], highlightIds: highlightIds.get(id) ?? [] });
 }
 
@@ -521,7 +530,7 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
   activeClaimCount++;
   let claimed: ClaimedJob[];
   try {
-    claimed = await db.transaction(async (tx) => {
+    const claimedIds = await db.transaction(async (tx) => {
       const manual = await tx.execute<{ id: string; created_at: Date }>(sql`
         UPDATE tracking_jobs j
         SET importer_id = ${importerId}, attempts = j.attempts + 1
@@ -536,7 +545,7 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
       `);
       const manualIds = manual.rows.sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map((r) => r.id);
       const remaining = limit - manualIds.length;
-      if (opts.manualOnly || remaining <= 0) return toClaimed(manualIds, tx);
+      if (opts.manualOnly || remaining <= 0) return manualIds;
 
       const due = await tx.execute<{ id: string }>(sql`
         INSERT INTO tracking_jobs (social_account_id, kind, scan_mode, origin, status, importer_id, attempts)
@@ -550,8 +559,9 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
         ) d
         RETURNING id
       `);
-      return toClaimed([...manualIds, ...due.rows.map((r) => r.id)], tx);
+      return [...manualIds, ...due.rows.map((r) => r.id)];
     });
+    claimed = await toClaimed(claimedIds, db);
     for (const job of claimed) inFlightClaimIds.add(job.id);
   } finally {
     activeClaimCount--;

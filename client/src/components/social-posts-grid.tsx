@@ -1,12 +1,93 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Heart, MessageCircle, ImageIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LikesHiddenBadge } from "@/components/likes-hidden-badge";
+import { useWindowedItems } from "@/hooks/use-windowed-items";
 import { postPosters } from "@/lib/instagram";
+import { safeJsonParse } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
 import type { SocialAccountPost } from "@shared/schema";
+
+function SocialPostCard<P extends SocialAccountPost>({
+  post,
+  accountId,
+  onOpen,
+  renderByline,
+  dimmed,
+  coverIndex,
+}: {
+  post: P;
+  accountId: string | undefined;
+  onOpen: (post: P) => void;
+  renderByline?: (post: P) => ReactNode;
+  dimmed?: (post: P) => boolean;
+  coverIndex?: (post: P) => number;
+}) {
+  const images = useMemo(() => safeJsonParse<string[]>(post.content, []), [post.content]);
+  const firstImage = images[coverIndex?.(post) ?? 0] || images[0] || null;
+  const hasRenderByline = Boolean(renderByline);
+  // A collab post: the other posters, whichever of them this profile is.
+  const collaborators = useMemo(
+    () => (hasRenderByline ? [] : postPosters(post).filter((p) => p.id !== accountId)),
+    [hasRenderByline, post, accountId],
+  );
+
+  return (
+    <Card
+      className={`overflow-hidden cursor-pointer hover:shadow-md transition-shadow${dimmed?.(post) ? " opacity-60" : ""}`}
+      onClick={() => onOpen(post)}
+      data-testid={`card-post-${post.id}`}
+    >
+      {/* Image thumbnail */}
+      <div className="aspect-square bg-muted relative overflow-hidden">
+        {firstImage ? (
+          <img src={withImageSize(firstImage, 360)} alt="Post thumbnail" loading="lazy" decoding="async" className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <ImageIcon className="h-10 w-10 text-muted-foreground/40" />
+          </div>
+        )}
+        {images.length > 1 && (
+          <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">{images.length}</div>
+        )}
+      </div>
+
+      {/* Post info */}
+      <div className="p-3">
+        {renderByline?.(post)}
+        {collaborators.length > 0 && (
+          <p className="text-xs text-muted-foreground mb-1 truncate" data-testid={`text-post-collab-${post.id}`}>
+            with {collaborators.map((c) => `@${c.username}`).join(", ")}
+          </p>
+        )}
+        {post.description && <p className="text-sm line-clamp-2 mb-2">{post.description}</p>}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1" data-testid={`text-post-likes-${post.id}`}>
+            <Heart className="h-3 w-3" />
+            {post.likesHidden ? <LikesHiddenBadge /> : post.likeCount}
+          </span>
+          <span className="flex items-center gap-1">
+            <MessageCircle className="h-3 w-3" />
+            {post.commentCount}
+          </span>
+          {(post.postedAt || post.createdAt) && (
+            <span className="ml-auto text-[11px] text-muted-foreground/80" data-testid={`text-post-date-${post.id}`}>
+              {new Date(post.postedAt ?? post.createdAt).toLocaleDateString()}
+            </span>
+          )}
+          {post.isDeleted && (
+            <Badge variant="destructive" className="text-[10px] px-1.5 py-0" data-testid={`badge-post-deleted-${post.id}`}>
+              Deleted
+            </Badge>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 /**
  * A social account's posts as cards: thumbnail, caption, likes, comments,
@@ -33,6 +114,8 @@ export function SocialPostsGrid<P extends SocialAccountPost>({
   coverIndex?: (post: P) => number;
   empty: ReactNode;
 }) {
+  const { visibleItems: visiblePosts, hasMore, sentinelRef, loadMore, remainingCount } = useWindowedItems(posts, [accountId]);
+
   if (isLoading) {
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4" data-testid="posts-loading-skeleton">
@@ -55,72 +138,27 @@ export function SocialPostsGrid<P extends SocialAccountPost>({
   if (!posts.length) return <>{empty}</>;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-      {posts.map((post) => {
-        let images: string[] = [];
-        try {
-          images = post.content ? JSON.parse(post.content) : [];
-        } catch {
-          images = [];
-        }
-        const firstImage = images[coverIndex?.(post) ?? 0] || images[0] || null;
-        // A collab post: the other posters, whichever of them this profile is.
-        const collaborators = renderByline ? [] : postPosters(post).filter((p) => p.id !== accountId);
-
-        return (
-          <Card
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+        {visiblePosts.map((post) => (
+          <SocialPostCard
             key={post.id}
-            className={`overflow-hidden cursor-pointer hover:shadow-md transition-shadow${dimmed?.(post) ? " opacity-60" : ""}`}
-            onClick={() => onOpen(post)}
-            data-testid={`card-post-${post.id}`}
-          >
-            {/* Image thumbnail */}
-            <div className="aspect-square bg-muted relative overflow-hidden">
-              {firstImage ? (
-                <img src={withImageSize(firstImage, 360)} alt="Post thumbnail" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <ImageIcon className="h-10 w-10 text-muted-foreground/40" />
-                </div>
-              )}
-              {images.length > 1 && (
-                <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">{images.length}</div>
-              )}
-            </div>
-
-            {/* Post info */}
-            <div className="p-3">
-              {renderByline?.(post)}
-              {collaborators.length > 0 && (
-                <p className="text-xs text-muted-foreground mb-1 truncate" data-testid={`text-post-collab-${post.id}`}>
-                  with {collaborators.map((c) => `@${c.username}`).join(", ")}
-                </p>
-              )}
-              {post.description && <p className="text-sm line-clamp-2 mb-2">{post.description}</p>}
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1" data-testid={`text-post-likes-${post.id}`}>
-                  <Heart className="h-3 w-3" />
-                  {post.likesHidden ? <LikesHiddenBadge /> : post.likeCount}
-                </span>
-                <span className="flex items-center gap-1">
-                  <MessageCircle className="h-3 w-3" />
-                  {post.commentCount}
-                </span>
-                {(post.postedAt || post.createdAt) && (
-                  <span className="ml-auto text-[11px] text-muted-foreground/80" data-testid={`text-post-date-${post.id}`}>
-                    {new Date(post.postedAt ?? post.createdAt).toLocaleDateString()}
-                  </span>
-                )}
-                {post.isDeleted && (
-                  <Badge variant="destructive" className="text-[10px] px-1.5 py-0" data-testid={`badge-post-deleted-${post.id}`}>
-                    Deleted
-                  </Badge>
-                )}
-              </div>
-            </div>
-          </Card>
-        );
-      })}
-    </div>
+            post={post}
+            accountId={accountId}
+            onOpen={onOpen}
+            renderByline={renderByline}
+            dimmed={dimmed}
+            coverIndex={coverIndex}
+          />
+        ))}
+      </div>
+      {hasMore && (
+        <div ref={sentinelRef} className="flex justify-center pt-4">
+          <Button variant="outline" size="sm" onClick={loadMore} data-testid="button-load-more-posts">
+            Load more ({remainingCount} remaining)
+          </Button>
+        </div>
+      )}
+    </>
   );
 }

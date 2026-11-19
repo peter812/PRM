@@ -22,7 +22,7 @@ import {
   type AiTask,
 } from "../ai/provider";
 import { describeImage } from "../ai/describe";
-import { postJson } from "../ai/http";
+import { assertSafeServiceUrl, postJson } from "../ai/http";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -118,6 +118,9 @@ export function registerRoutes(app: Express): void {
       if (!existing) return res.status(404).json({ error: "Provider not found" });
       const body = providerFields.partial().parse(req.body);
       const { isDefault, secret, ...rest } = body;
+      if (body.baseUrl && !sameBaseUrl(body.baseUrl, existing.baseUrl) && existing.secret && !secret && body.authType !== "none") {
+        return res.status(400).json({ error: "Re-enter the secret when changing the base URL." });
+      }
       const patch: Partial<AiProvider> = { ...rest };
       if (secret) patch.secret = secret; // blank = keep the stored secret
       if (patch.authType === "none") { patch.username = ""; patch.secret = ""; }
@@ -232,7 +235,17 @@ export function registerRoutes(app: Express): void {
         sexGuess: selectionSchema.optional(),
       }).parse(req.body ?? {});
       if (body.autoDescribeImages !== undefined) await storage.setAppSetting("ai_auto_describe_images", String(body.autoDescribeImages));
-      if (body.whisperApiUrl !== undefined) await storage.setAppSetting("whisper_api_url", body.whisperApiUrl.trim());
+      if (body.whisperApiUrl !== undefined) {
+        const trimmedWhisperUrl = body.whisperApiUrl.trim();
+        if (trimmedWhisperUrl) {
+          try {
+            await assertSafeServiceUrl(trimmedWhisperUrl, "Whisper API URL");
+          } catch (err: any) {
+            return res.status(400).json({ error: err?.message ?? "Invalid Whisper API URL" });
+          }
+        }
+        await storage.setAppSetting("whisper_api_url", trimmedWhisperUrl);
+      }
       if (body.whisperModel !== undefined) await storage.setAppSetting("whisper_model", body.whisperModel.trim());
       for (const task of SETTINGS_TASKS) {
         const sel = body[task];

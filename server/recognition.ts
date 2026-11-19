@@ -1236,28 +1236,50 @@ export const COMPUTE_LANE_MAX: ComputeLanes = { face: 16, ocr: 16, stt: 16, tota
 
 export async function getComputeLanes(): Promise<ComputeLanes> {
   const lanes = { ...COMPUTE_LANE_DEFAULTS };
-  for (const key of Object.keys(lanes) as (keyof ComputeLanes)[]) {
-    const n = Number(await storage.getAppSetting(COMPUTE_LANE_KEYS[key]));
+  const keys = Object.keys(lanes) as (keyof ComputeLanes)[];
+  const values = await Promise.all(keys.map((key) => storage.getAppSetting(COMPUTE_LANE_KEYS[key])));
+  keys.forEach((key, i) => {
+    const n = Number(values[i]);
     if (Number.isInteger(n) && n >= 1) lanes[key] = Math.min(n, COMPUTE_LANE_MAX[key]);
-  }
+  });
   return lanes;
 }
 
 export async function getAutoRecognitionSettings(): Promise<AutoRecognitionSettings> {
   const read = async (key?: string) => (key ? (await storage.getAppSetting(key)) === "true" : false);
-  const out = {} as AutoRecognitionSettings;
-  for (const kind of Object.keys(AUTO_RECOGNITION_KEYS) as AutoRecognitionKind[]) {
-    const keys = AUTO_RECOGNITION_KEYS[kind];
-    (out as any)[kind] = {
-      face: await read(keys.face),
-      ...(keys.ocr ? { ocr: await read(keys.ocr), transcribe: await read(keys.transcribe) } : {}),
-    };
-  }
-  out.profileLink = { minFacePct: await getProfileLinkMinFacePct() };
-  out.lookalike = { minScore: await getLookalikeMinScore() };
-  out.autoAssign = { minScore: await getAutoAssignMinScore(), verifyMinScore: await getVerifyMinScore() };
-  out.honeypot = await getHoneypotSettings();
-  return out;
+  const kinds = Object.keys(AUTO_RECOGNITION_KEYS) as AutoRecognitionKind[];
+  const [kindEntries, minFacePct, lookalikeMinScore, autoAssignMinScore, verifyMinScore, honeypot] =
+    await Promise.all([
+      Promise.all(
+        kinds.map(async (kind) => {
+          const keys = AUTO_RECOGNITION_KEYS[kind];
+          if (keys.ocr) {
+            const [face, ocr, transcribe] = await Promise.all([
+              read(keys.face),
+              read(keys.ocr),
+              read(keys.transcribe),
+            ]);
+            return [kind, { face, ocr, transcribe }] as const;
+          }
+          return [kind, { face: await read(keys.face) }] as const;
+        }),
+      ),
+      getProfileLinkMinFacePct(),
+      getLookalikeMinScore(),
+      getAutoAssignMinScore(),
+      getVerifyMinScore(),
+      getHoneypotSettings(),
+    ]);
+  return Object.assign(
+    {} as AutoRecognitionSettings,
+    Object.fromEntries(kindEntries),
+    {
+      profileLink: { minFacePct },
+      lookalike: { minScore: lookalikeMinScore },
+      autoAssign: { minScore: autoAssignMinScore, verifyMinScore },
+      honeypot,
+    },
+  );
 }
 
 export async function setAutoRecognitionSettings(

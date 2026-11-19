@@ -1,13 +1,14 @@
 // Face review's Verify tab (face-clustering-plan.md §4): per identity, the faces auto-assign thinks
 // are probably them but didn't move, plus older auto-assigns below today's bar. Everything starts
 // selected: deselect the misses, then Confirm names the rest and marks the misses "not them".
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Check, Loader2, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useWindowedItems } from "@/hooks/use-windowed-items";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
@@ -23,7 +24,10 @@ export function FaceVerifyTab() {
   const group = identities?.some((i) => i.group === picked) ? picked : identities?.[0]?.group ?? null;
   const [search, setSearch] = useState("");
   const needle = search.trim().toLowerCase();
-  const shown = needle ? identities?.filter((i) => i.label.toLowerCase().includes(needle)) ?? [] : identities ?? [];
+  const shown = useMemo(
+    () => (needle ? identities?.filter((i) => i.label.toLowerCase().includes(needle)) ?? [] : identities ?? []),
+    [identities, needle],
+  );
 
   if (isLoading) return <div className="text-center py-16 text-muted-foreground">Loading…</div>;
   if (isError) return <div className="text-center py-16 text-sm text-destructive">Couldn't load the verify list. Please refresh.</div>;
@@ -45,7 +49,7 @@ export function FaceVerifyTab() {
             className={cn("w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent", i.group === group && "bg-accent")}
             data-testid={`verify-identity-${i.group}`}
           >
-            {i.cropUrl ? <img src={withImageSize(i.cropUrl, 64)} alt="" className="h-8 w-8 rounded object-cover shrink-0" /> : <div className="h-8 w-8 rounded bg-muted shrink-0" />}
+            {i.cropUrl ? <img src={withImageSize(i.cropUrl, 64)} alt="" loading="lazy" decoding="async" className="h-8 w-8 rounded object-cover shrink-0" /> : <div className="h-8 w-8 rounded bg-muted shrink-0" />}
             <span className="truncate flex-1">{i.label}</span>
             <Badge variant="secondary">{i.pending + i.unconfirmed}</Badge>
           </button>
@@ -56,13 +60,59 @@ export function FaceVerifyTab() {
   );
 }
 
+function VerifyFaceGrid({
+  title,
+  list,
+  group,
+  deselected,
+  onToggle,
+}: {
+  title: string;
+  list: VerifyFace[];
+  group: string;
+  deselected: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  const { visibleItems, hasMore, sentinelRef, loadMore, remainingCount } = useWindowedItems(list, [group]);
+  if (list.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-medium">{title} <span className="text-muted-foreground font-normal">({list.length})</span></h3>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-1.5">
+        {visibleItems.map((f) => (
+          <button key={f.id} type="button" onClick={() => onToggle(f.id)} className="relative" title={`${Math.round(f.score * 100)}% match`} data-testid={`verify-face-${f.id}`}>
+            <img src={withImageSize(f.cropUrl, 128)} alt="" loading="lazy" decoding="async" className={cn("aspect-square w-full object-cover rounded bg-muted", deselected.has(f.id) && "opacity-25 grayscale")} />
+            {deselected.has(f.id) && <X className="absolute inset-0 m-auto h-6 w-6 text-destructive" />}
+            <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[10px]">{Math.round(f.score * 100)}%</span>
+          </button>
+        ))}
+      </div>
+      {hasMore && (
+        <div ref={sentinelRef} className="flex justify-center pt-1">
+          <Button size="sm" variant="outline" onClick={loadMore}>
+            Show more ({remainingCount} remaining)
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VerifyGroupPanel({ group }: { group: string }) {
   const { toast } = useToast();
   const { data, isLoading } = useQuery<VerifyGroup>({ queryKey: ["/api/face-review/verify", group] });
   const [deselected, setDeselected] = useState<Set<string>>(new Set());
-  const all = data ? [...data.pendingFaces, ...data.unconfirmedFaces] : [];
-  const confirm = all.filter((f) => !deselected.has(f.id)).map((f) => f.id);
-  const reject = all.filter((f) => deselected.has(f.id)).map((f) => f.id);
+  const all = useMemo(() => (data ? [...data.pendingFaces, ...data.unconfirmedFaces] : []), [data]);
+  const { confirm, reject } = useMemo(() => {
+    const c: string[] = [];
+    const r: string[] = [];
+    for (const f of all) {
+      if (deselected.has(f.id)) r.push(f.id);
+      else c.push(f.id);
+    }
+    return { confirm: c, reject: r };
+  }, [all, deselected]);
 
   const save = useMutation({
     mutationFn: async () => (await apiRequest("POST", `/api/face-review/verify/${encodeURIComponent(group)}/confirm`, { confirm, reject })).json() as Promise<{ confirmed: number; rejected: number }>,
@@ -83,21 +133,6 @@ function VerifyGroupPanel({ group }: { group: string }) {
       if (!next.delete(id)) next.add(id);
       return next;
     });
-  const grid = (title: string, list: VerifyFace[]) =>
-    list.length > 0 && (
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium">{title} <span className="text-muted-foreground font-normal">({list.length})</span></h3>
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-1.5">
-          {list.map((f) => (
-            <button key={f.id} type="button" onClick={() => toggle(f.id)} className="relative" title={`${Math.round(f.score * 100)}% match`} data-testid={`verify-face-${f.id}`}>
-              <img src={withImageSize(f.cropUrl, 128)} alt="" loading="lazy" className={cn("aspect-square w-full object-cover rounded bg-muted", deselected.has(f.id) && "opacity-25 grayscale")} />
-              {deselected.has(f.id) && <X className="absolute inset-0 m-auto h-6 w-6 text-destructive" />}
-              <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 text-[10px]">{Math.round(f.score * 100)}%</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    );
 
   return (
     <div className="space-y-4 min-w-0">
@@ -109,8 +144,8 @@ function VerifyGroupPanel({ group }: { group: string }) {
           Confirm {confirm.length}{reject.length ? `, not them ${reject.length}` : ""}
         </Button>
       </div>
-      {grid("Probably them", data.pendingFaces)}
-      {grid("Auto-assigned at a lower score, unconfirmed", data.unconfirmedFaces)}
+      <VerifyFaceGrid title="Probably them" list={data.pendingFaces} group={group} deselected={deselected} onToggle={toggle} />
+      <VerifyFaceGrid title="Auto-assigned at a lower score, unconfirmed" list={data.unconfirmedFaces} group={group} deselected={deselected} onToggle={toggle} />
     </div>
   );
 }

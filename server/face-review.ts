@@ -190,25 +190,68 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean, showNoise: boo
 
 // ── Counts (§3.2) ─────────────────────────────────────────────────────────────
 
-/** One query, one row, COUNT(*) FILTER per kind/dismissed combination (finding #6). */
-export async function getFaceReviewCounts(showNoise: boolean): Promise<FaceReviewCounts> {
-  const [row] = await db
-    .select({
-      story: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", false, showNoise)})::int`,
-      profile: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", false, showNoise)})::int`,
-      post: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", false, showNoise)})::int`,
-      message: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", false, showNoise)})::int`,
-      storyDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", true, showNoise)})::int`,
-      profileDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", true, showNoise)})::int`,
-      postDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", true, showNoise)})::int`,
-      messageDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", true, showNoise)})::int`,
-      honeypot: sql<number>`(SELECT count(*) FROM faces WHERE honeypot IN ('manual', 'auto'))::int`,
-    })
-    .from(photos);
+const COUNTS_CACHE_TTL_MS = 30_000;
+const countsCache = new Map<boolean, { value: FaceReviewCounts; expiresAt: number }>();
+const inFlightCounts = new Map<boolean, Promise<FaceReviewCounts>>();
+let countsCacheGeneration = 0;
 
-  const story = row?.story ?? 0, profile = row?.profile ?? 0, post = row?.post ?? 0, message = row?.message ?? 0;
-  const dismissed = (row?.storyDismissed ?? 0) + (row?.profileDismissed ?? 0) + (row?.postDismissed ?? 0) + (row?.messageDismissed ?? 0);
-  return { story, profile, post, message, total: story + profile + post + message, dismissed, honeypot: row?.honeypot ?? 0 };
+/** Clear the cached face-review tab counts (call after face/review mutations). */
+export function invalidateFaceReviewCountsCache(): void {
+  countsCacheGeneration++;
+  countsCache.clear();
+  inFlightCounts.clear();
+}
+
+/** One query, one row, COUNT(*) FILTER per kind/dismissed combination (finding #6), cached with 30s TTL + in-flight deduplication. */
+export async function getFaceReviewCounts(showNoise: boolean): Promise<FaceReviewCounts> {
+  const cached = countsCache.get(showNoise);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const existing = inFlightCounts.get(showNoise);
+  if (existing) {
+    return existing;
+  }
+
+  const generation = countsCacheGeneration;
+  const promise = (async (): Promise<FaceReviewCounts> => {
+    const [row] = await db
+      .select({
+        story: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", false, showNoise)})::int`,
+        profile: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", false, showNoise)})::int`,
+        post: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", false, showNoise)})::int`,
+        message: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", false, showNoise)})::int`,
+        storyDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", true, showNoise)})::int`,
+        profileDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", true, showNoise)})::int`,
+        postDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", true, showNoise)})::int`,
+        messageDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", true, showNoise)})::int`,
+        honeypot: sql<number>`(SELECT count(*) FROM faces WHERE honeypot IN ('manual', 'auto'))::int`,
+      })
+      .from(photos)
+      .where(
+        sql`(
+          (${photos.prmLocation} LIKE 'profile_image:%' AND ${photos.isSubImage} = false AND ${photos.widthPx} >= ${HQ_MIN_WIDTH})
+          OR ((${photos.prmLocation} LIKE 'message:%' OR ${photos.prmLocation} LIKE 'post:%') AND ${photos.faceIdAt} IS NOT NULL)
+        ) AND jsonb_array_length(coalesce(${photos.facialIds}, '[]'::jsonb)) > 0`,
+      );
+
+    const story = row?.story ?? 0, profile = row?.profile ?? 0, post = row?.post ?? 0, message = row?.message ?? 0;
+    const dismissed = (row?.storyDismissed ?? 0) + (row?.profileDismissed ?? 0) + (row?.postDismissed ?? 0) + (row?.messageDismissed ?? 0);
+    const result: FaceReviewCounts = { story, profile, post, message, total: story + profile + post + message, dismissed, honeypot: row?.honeypot ?? 0 };
+
+    if (generation === countsCacheGeneration) {
+      countsCache.set(showNoise, { value: result, expiresAt: Date.now() + COUNTS_CACHE_TTL_MS });
+    }
+    return result;
+  })().finally(() => {
+    if (inFlightCounts.get(showNoise) === promise) {
+      inFlightCounts.delete(showNoise);
+    }
+  });
+
+  inFlightCounts.set(showNoise, promise);
+  return promise;
 }
 
 // ── Queue (§3.1) ──────────────────────────────────────────────────────────────

@@ -561,7 +561,10 @@ export async function resolvePhotoSources(photos: Photo[]): Promise<Map<string, 
     );
     if (urlsForPosts.length > 0) {
       try {
-        const postLikeConditions = urlsForPosts.map((url) => sql`content LIKE ${'%' + url + '%'}`);
+        const postLikeConditions = urlsForPosts.map((url) => {
+          const escaped = url.replace(/[%_\\]/g, (c) => `\\${c}`);
+          return sql`content LIKE ${`%${escaped}%`} ESCAPE '\\'`;
+        });
         const checkRes: any = await db.execute(sql`
           SELECT id, social_account_id, post_type, content
           FROM social_account_posts

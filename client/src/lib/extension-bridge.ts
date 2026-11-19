@@ -15,6 +15,12 @@ export const EXTENSION_MAX_RECORDS_SETTING = "chrome_extension_max_records";
 /** Cap applied to each side of a follower/following walk when unset. */
 export const DEFAULT_MAX_RECORDS = 3000;
 
+export const CHROME_EXTENSION_ID_REGEX = /^[a-p]{32}$/;
+
+export function isValidExtensionId(id: string): boolean {
+  return CHROME_EXTENSION_ID_REGEX.test(id);
+}
+
 export type ExtractAction = "account" | "graph";
 
 interface ExtractRequest {
@@ -77,9 +83,15 @@ export function requestExtraction(
       "The PRM Chrome extension isn't installed, or it doesn't allow this PRM origin.",
     );
   }
-  if (!extensionId) {
+  const trimmedExtensionId = extensionId?.trim() ?? "";
+  if (!trimmedExtensionId) {
     throw new ExtensionUnavailableError(
       "No extension ID is configured. Copy it from chrome://extensions and paste it into Chrome Extension settings.",
+    );
+  }
+  if (!isValidExtensionId(trimmedExtensionId)) {
+    throw new ExtensionUnavailableError(
+      "The configured Chrome extension ID is invalid. It must be 32 lowercase letters (a–p).",
     );
   }
 
@@ -92,7 +104,7 @@ export function requestExtraction(
   };
 
   return new Promise((resolve, reject) => {
-    send(extensionId, request, (response) => {
+    send(trimmedExtensionId, request, (response) => {
       // Chrome reports an unreachable extension here rather than by throwing.
       const lastError = window.chrome?.runtime?.lastError;
       if (lastError) {

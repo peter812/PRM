@@ -10,21 +10,13 @@
 | Severity | Count |
 | --- | --- |
 | Critical | 0 |
-| High | 8 |
+| High | 7 |
 | Medium | 18 |
 | Low | 17 |
 
 ---
 
 ## High Severity
-
-### 1. `trust proxy: 1` Enables IP Spoofing to Bypass Rate Limits & 4-Digit Extension Auth Code
-- **Locations:** `server/auth.ts:70`, `server/middleware/rate-limit.ts:18` (`getClientKey`), `server/routes/auth-setup.ts:1220, 1240-1259` (`/api/extension-auth/code`, `/api/extension-auth/verify`)
-- **Issue:** Express unconditionally trusts 1 proxy hop (`app.set("trust proxy", 1)`). Both `rateLimitMiddleware` and `/api/extension-auth/verify` (`verifyAttempts`) key clients by `req.ip`. An attacker can spoof `X-Forwarded-For` on each request to rotate `req.ip`, bypassing the 5-attempts/minute limit on `/api/extension-auth/verify` and brute-forcing the 4-digit extension code (`1000`–`9999`, 60s TTL) to obtain a valid Chrome extension `sessionToken`.
-- **Solution:**
-  1. Only set `trust proxy` when explicitly configured via an environment variable (e.g., `TRUST_PROXY`) matching the actual reverse-proxy hop count or CIDR.
-  2. Increase extension auth code entropy (e.g., `crypto.randomBytes(6).toString("base64url")` or 8+ alphanumeric characters).
-  3. Enforce a global per-code failure counter (e.g., invalidate/delete the code after 5 failed attempts regardless of IP).
 
 ### 2. Stored AI Provider Secret Exfiltration via `PATCH /api/ai/providers/:id`
 - **Locations:** `server/routes/ai-providers.ts:115-131` (`PATCH /api/ai/providers/:id`), `server/routes/ai-providers.ts:172-196` (`/models`, `/show`), `server/ai/http.ts:12-20` (`providerHeaders`)
@@ -149,8 +141,8 @@
 
 ### 21. Unbounded In-Memory Rate-Limit Maps (Heap Exhaustion DoS)
 - **Locations:** `server/middleware/rate-limit.ts:8, 22-31, 43-51`, `server/routes/auth-setup.ts:1186, 1191-1198, 1253`
-- **Issue:** `rateLimitStore` and `verifyAttempts` grow unboundedly between cleanup intervals; combined with `X-Forwarded-For` spoofing, attackers can exhaust Node.js heap.
-- **Solution:** Cap map sizes with oldest-entry/LRU eviction and fix `trust proxy` so `req.ip` cannot be spoofed.
+- **Issue:** `rateLimitStore` and `verifyAttempts` grow unboundedly between cleanup intervals, allowing large numbers of unique client keys to exhaust Node.js heap.
+- **Solution:** Cap map sizes with oldest-entry/LRU eviction.
 
 ### 22. No Dedicated Brute-Force Rate Limiting on `/api/login`
 - **Locations:** `server/auth.ts:101-103`, `server/middleware/rate-limit.ts:11`

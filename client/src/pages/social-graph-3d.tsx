@@ -207,6 +207,7 @@ type EffortDirection = 'none' | 'arrows' | 'taper';
 /** Tubes are opaque-ish meshes; plain links stay lines. */
 const tubeMaterial = (resources: GraphResourceCache, color: string) => resources.basicMaterial(color, { opacity: 0.8 });
 const TUBE_UP = new THREE.Vector3(0, 1, 0);
+const TUBE_DIR_SCRATCH = new THREE.Vector3();
 
 export default function SocialGraph3D() {
   const initial = parseGraphUrl();
@@ -1180,11 +1181,11 @@ function SocialGraphContent({
         if (typeof start.x !== 'number' || typeof end.x !== 'number') return false;
         if (obj?.userData?.tube) {
           // Stretch the unit tube between the endpoints, +y pointing at the target.
-          const dir = new THREE.Vector3(end.x - start.x, end.y - start.y, (end.z ?? 0) - (start.z ?? 0));
-          const length = dir.length();
+          TUBE_DIR_SCRATCH.set(end.x - start.x, end.y - start.y, (end.z ?? 0) - (start.z ?? 0));
+          const length = TUBE_DIR_SCRATCH.length();
           obj.position.set((start.x + end.x) / 2, (start.y + end.y) / 2, ((start.z ?? 0) + (end.z ?? 0)) / 2);
           obj.scale.set(1, Math.max(length, 0.001), 1);
-          if (length > 0) obj.quaternion.setFromUnitVectors(TUBE_UP, dir.divideScalar(length));
+          if (length > 0) obj.quaternion.setFromUnitVectors(TUBE_UP, TUBE_DIR_SCRATCH.divideScalar(length));
           return true;
         }
         const line = obj as THREE.Line;

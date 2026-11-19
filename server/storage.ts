@@ -378,7 +378,7 @@ export interface IStorage {
   getAllApiKeys(userId: number): Promise<ApiKey[]>;
   getApiKeyByKey(key: string): Promise<ApiKey | undefined>;
   createApiKey(apiKey: InsertApiKey): Promise<ApiKey>;
-  deleteApiKey(id: string): Promise<void>;
+  deleteApiKey(id: string, userId: number): Promise<boolean>;
   updateApiKeyLastUsed(id: string): Promise<void>;
 
   // SSO Config operations
@@ -391,7 +391,7 @@ export interface IStorage {
   // Extension session operations
   getExtensionSessionByToken(tokenHash: string): Promise<ExtensionSession | undefined>;
   createExtensionSession(session: InsertExtensionSession): Promise<ExtensionSession>;
-  deleteExtensionSession(id: string): Promise<void>;
+  deleteExtensionSession(id: string, userId: number): Promise<boolean>;
   updateExtensionSessionLastAccessed(id: string): Promise<void>;
   updateExtensionSessionToken(id: string, tokenHash: string): Promise<void>;
 
@@ -402,6 +402,7 @@ export interface IStorage {
   deleteExtensionAuthCodeByUserId(userId: number): Promise<void>;
   getExtensionAuthCodeByCode(code: string): Promise<ExtensionAuthCode | undefined>;
   getAllExtensionSessions(): Promise<ExtensionSession[]>;
+  getExtensionSessionsByUserId(userId: number): Promise<ExtensionSession[]>;
 
   // Group operations
   getAllGroups(searchQuery?: string): Promise<Group[]>;
@@ -1471,48 +1472,56 @@ export class DatabaseStorage implements IStorage {
   async deletePeopleCreatedSince(cutoff: Date): Promise<{ deleted: number }> {
     // Select people created on or after cutoff, strictly excluding the "Me" record
     const meId = await this.getMePersonId();
-    const targetPeople = await db
-      .select({ id: people.id, vectorId: people.vectorId })
-      .from(people)
-      .where(and(gte(people.createdAt, cutoff), meId ? ne(people.id, meId) : undefined));
+
+    const { targetPeople, childNotes } = await db.transaction(async (tx) => {
+      const targetPeople = await tx
+        .select({ id: people.id, vectorId: people.vectorId })
+        .from(people)
+        .where(and(gte(people.createdAt, cutoff), meId ? ne(people.id, meId) : undefined));
+
+      if (targetPeople.length === 0) {
+        return { targetPeople, childNotes: [] as Array<{ vectorId: string | null }> };
+      }
+
+      const targetIds = targetPeople.map((p) => p.id);
+
+      // Unlink any social accounts referencing these people to prevent cascade deletion of social accounts
+      await tx
+        .update(socialAccounts)
+        .set({ ownerUuid: null })
+        .where(inArray(socialAccounts.ownerUuid, targetIds));
+
+      // Remove from interactions
+      for (const personId of targetIds) {
+        await this.removePersonFromInteractions(personId, tx);
+      }
+
+      // Remove from all groups in a single SQL UPDATE
+      const targetIdsSql = sql`ARRAY[${sql.join(targetIds.map((id) => sql`${id}`), sql`, `)}]::text[]`;
+      await tx.execute(sql`
+        UPDATE groups
+        SET members = ARRAY(
+          SELECT m FROM unnest(members) AS m
+          WHERE NOT (m = ANY(${targetIdsSql}))
+        )
+        WHERE members && ${targetIdsSql}
+      `);
+
+      // Fetch child note vector IDs
+      const childNotes = await tx
+        .select({ vectorId: notes.vectorId })
+        .from(notes)
+        .where(inArray(notes.personId, targetIds));
+
+      // Delete people (DB cascade handles notes, relationships, schooling)
+      await tx.delete(people).where(inArray(people.id, targetIds));
+
+      return { targetPeople, childNotes };
+    });
 
     if (targetPeople.length === 0) {
       return { deleted: 0 };
     }
-
-    const targetIds = targetPeople.map((p) => p.id);
-
-    // Unlink any social accounts referencing these people to prevent cascade deletion of social accounts
-    await db
-      .update(socialAccounts)
-      .set({ ownerUuid: null })
-      .where(inArray(socialAccounts.ownerUuid, targetIds));
-
-    // Remove from interactions
-    for (const personId of targetIds) {
-      await this.removePersonFromInteractions(personId);
-    }
-
-    // Remove from all groups
-    const allGroups = await db.select().from(groups);
-    for (const group of allGroups) {
-      if (group.members && group.members.some((m) => targetIds.includes(m))) {
-        const updatedMembers = group.members.filter((m) => !targetIds.includes(m));
-        await db
-          .update(groups)
-          .set({ members: updatedMembers })
-          .where(eq(groups.id, group.id));
-      }
-    }
-
-    // Fetch child note vector IDs
-    const childNotes = await db
-      .select({ vectorId: notes.vectorId })
-      .from(notes)
-      .where(inArray(notes.personId, targetIds));
-
-    // Delete people (DB cascade handles notes, relationships, schooling)
-    await db.delete(people).where(inArray(people.id, targetIds));
 
     // Async vector cleanup
     const personVectorIds = targetPeople.map((p) => p.vectorId).filter(Boolean) as string[];
@@ -1524,7 +1533,7 @@ export class DatabaseStorage implements IStorage {
       void deleteEntityVector("note", noteVectorIds);
     }
 
-    return { deleted: targetIds.length };
+    return { deleted: targetPeople.length };
   }
 
   async getSchoolingByPersonId(personId: string): Promise<Schooling | undefined> {
@@ -1634,9 +1643,9 @@ export class DatabaseStorage implements IStorage {
     return { person: person || undefined, remainingCount: countResult?.count ?? 0 };
   }
 
-  private async removePersonFromInteractions(personId: string): Promise<void> {
+  private async removePersonFromInteractions(personId: string, executor: Pick<typeof db, "select" | "delete" | "update"> = db): Promise<void> {
     // Get all interactions that include this person
-    const affectedInteractions = await db
+    const affectedInteractions = await executor
       .select()
       .from(interactions)
       .where(sql`${personId} = ANY(${interactions.peopleIds})`);
@@ -1646,10 +1655,10 @@ export class DatabaseStorage implements IStorage {
       
       // If less than 2 people remain, delete the interaction
       if (updatedPeopleIds.length < 2) {
-        await db.delete(interactions).where(eq(interactions.id, interaction.id));
+        await executor.delete(interactions).where(eq(interactions.id, interaction.id));
       } else {
         // Otherwise update with removed person
-        await db
+        await executor
           .update(interactions)
           .set({ peopleIds: updatedPeopleIds })
           .where(eq(interactions.id, interaction.id));
@@ -2725,8 +2734,12 @@ export class DatabaseStorage implements IStorage {
     return apiKey;
   }
 
-  async deleteApiKey(id: string): Promise<void> {
-    await db.delete(apiKeys).where(eq(apiKeys.id, id));
+  async deleteApiKey(id: string, userId: number): Promise<boolean> {
+    const result = await db
+      .delete(apiKeys)
+      .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+      .returning({ id: apiKeys.id });
+    return result.length > 0;
   }
 
   async updateApiKeyLastUsed(id: string): Promise<void> {
@@ -2791,8 +2804,12 @@ export class DatabaseStorage implements IStorage {
     return session;
   }
 
-  async deleteExtensionSession(id: string): Promise<void> {
-    await db.delete(extensionSessions).where(eq(extensionSessions.id, id));
+  async deleteExtensionSession(id: string, userId: number): Promise<boolean> {
+    const result = await db
+      .delete(extensionSessions)
+      .where(and(eq(extensionSessions.id, id), eq(extensionSessions.userId, userId)))
+      .returning({ id: extensionSessions.id });
+    return result.length > 0;
   }
 
   async updateExtensionSessionLastAccessed(id: string): Promise<void> {
@@ -2855,6 +2872,13 @@ export class DatabaseStorage implements IStorage {
 
   async getAllExtensionSessions(): Promise<ExtensionSession[]> {
     return await db.select().from(extensionSessions);
+  }
+
+  async getExtensionSessionsByUserId(userId: number): Promise<ExtensionSession[]> {
+    return await db
+      .select()
+      .from(extensionSessions)
+      .where(eq(extensionSessions.userId, userId));
   }
 
   // Group operations
@@ -3061,9 +3085,29 @@ export class DatabaseStorage implements IStorage {
    */
   async getSocialGraph(settings: SocialGraphSettings, connectionPairs?: ConnectionPair[]): Promise<SocialGraphData> {
     const [allAccounts, allTypes, realFollows] = await Promise.all([
-      db.select().from(socialAccounts),
-      db.select().from(socialAccountTypes),
-      connectionPairs ? Promise.resolve([]) : db.select().from(socialFollows),
+      db
+        .select({
+          id: socialAccounts.id,
+          username: socialAccounts.username,
+          nickname: socialAccounts.nickname,
+          typeId: socialAccounts.typeId,
+          ownerUuid: socialAccounts.ownerUuid,
+        })
+        .from(socialAccounts),
+      db
+        .select({
+          id: socialAccountTypes.id,
+          color: socialAccountTypes.color,
+        })
+        .from(socialAccountTypes),
+      connectionPairs
+        ? Promise.resolve([])
+        : db
+            .select({
+              followerId: socialFollows.followerId,
+              followedId: socialFollows.followedId,
+            })
+            .from(socialFollows),
     ]);
     const allFollows: { followerId: string; followedId: string }[] = connectionPairs
       ? connectionPairs.flatMap(p => [{ followerId: p.a, followedId: p.b }, { followerId: p.b, followedId: p.a }])
@@ -3083,7 +3127,7 @@ export class DatabaseStorage implements IStorage {
 
     const allAccountIds = new Set(allAccounts.map(a => a.id));
 
-    type AccountWithFollowing = SocialAccount & { following: string[] | null };
+    type AccountWithFollowing = (typeof allAccounts)[number] & { following: string[] | null };
     const accountsWithFollowing: AccountWithFollowing[] = allAccounts.map(a => ({
       ...a,
       following: followingMap.get(a.id) || null,
@@ -4039,34 +4083,82 @@ export class DatabaseStorage implements IStorage {
     const results: Record<string, SocialAccountWithCurrentProfile> = {};
     const notFound: string[] = [];
 
-    for (const lookup of lookups) {
-      const platformCondition = sql`EXISTS (
-        SELECT 1 FROM ${socialAccountTypes} sat
-        WHERE sat.id = ${socialAccounts.typeId}
-        AND LOWER(sat.name) = LOWER(${lookup.platform})
-      )`;
+    if (lookups.length === 0) {
+      return { results, not_found: notFound };
+    }
 
-      const rows = await db
-        .select({
-          account: socialAccounts,
-          followerCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.followed_id = ${socialAccounts.id})`,
-          followingCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.follower_id = ${socialAccounts.id})`,
-        })
-        .from(socialAccounts)
-        .where(
-          and(
-            eq(socialAccounts.username, lookup.username),
-            platformCondition
-          )
+    const uniqueUsernames = Array.from(new Set(lookups.map((l) => l.username)));
+    const uniquePlatforms = Array.from(new Set(lookups.map((l) => l.platform.toLowerCase())));
+
+    const matchedRows = await db
+      .select({
+        account: socialAccounts,
+        platformName: socialAccountTypes.name,
+      })
+      .from(socialAccounts)
+      .innerJoin(socialAccountTypes, eq(socialAccounts.typeId, socialAccountTypes.id))
+      .where(
+        and(
+          inArray(socialAccounts.username, uniqueUsernames),
+          inArray(sql`LOWER(${socialAccountTypes.name})`, uniquePlatforms)
         )
-        .limit(1);
+      );
 
-      if (rows.length > 0) {
-        const row = rows[0];
+    if (matchedRows.length === 0) {
+      return {
+        results,
+        not_found: lookups.map((l) => l.username),
+      };
+    }
+
+    const accountByKey = new Map<string, (typeof matchedRows)[number]>();
+    const accountIdsSet = new Set<string>();
+    for (const row of matchedRows) {
+      const key = `${row.account.username}\0${row.platformName.toLowerCase()}`;
+      if (!accountByKey.has(key)) {
+        accountByKey.set(key, row);
+      }
+      accountIdsSet.add(row.account.id);
+    }
+
+    const accountIds = Array.from(accountIdsSet);
+    const [followerCounts, followingCounts] = await Promise.all([
+      db
+        .select({
+          accountId: socialFollows.followedId,
+          count: sql<number>`COUNT(*)::int`,
+        })
+        .from(socialFollows)
+        .where(inArray(socialFollows.followedId, accountIds))
+        .groupBy(socialFollows.followedId),
+      db
+        .select({
+          accountId: socialFollows.followerId,
+          count: sql<number>`COUNT(*)::int`,
+        })
+        .from(socialFollows)
+        .where(inArray(socialFollows.followerId, accountIds))
+        .groupBy(socialFollows.followerId),
+    ]);
+
+    const followerCountMap = new Map<string, number>();
+    for (const row of followerCounts) {
+      followerCountMap.set(row.accountId, Number(row.count) || 0);
+    }
+
+    const followingCountMap = new Map<string, number>();
+    for (const row of followingCounts) {
+      followingCountMap.set(row.accountId, Number(row.count) || 0);
+    }
+
+    for (const lookup of lookups) {
+      const key = `${lookup.username}\0${lookup.platform.toLowerCase()}`;
+      const row = accountByKey.get(key);
+      if (row) {
         const state: SocialNetworkState = {
           socialAccountId: row.account.id,
-          followerCount: Number(row.followerCount) || 0,
-          followingCount: Number(row.followingCount) || 0,
+          followerCount: followerCountMap.get(row.account.id) ?? 0,
+          followingCount: followingCountMap.get(row.account.id) ?? 0,
           updatedAt: null,
         };
         results[lookup.username] = this.buildSocialAccountWithProfile(row.account, state);
@@ -6039,8 +6131,16 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // 2. Fetch all photos in the database
-    const allPhotos = await db.select().from(photos);
+    // 2. Fetch all photos in the database (only columns needed for orphan detection and deletion)
+    const allPhotos = await db
+      .select({
+        id: photos.id,
+        location: photos.location,
+        vectorId: photos.vectorId,
+        ogMetadata: photos.ogMetadata,
+        faceUuids: photos.faceUuids,
+      })
+      .from(photos);
 
     // 3. Determine which ones are active
     const activePhotoIds = new Set<string>();
@@ -6094,36 +6194,45 @@ export class DatabaseStorage implements IStorage {
     // 4. Identify orphans
     const orphans = allPhotos.filter(photo => !activePhotoIds.has(photo.id));
 
-    // 5. Delete orphans (both records and files)
+    // 5. Delete orphans (both records and files) with bounded S3 concurrency
     let filesDeleted = 0;
     const deletedPhotosList: Array<{ id: string; location: string; vectorId: string | null }> = [];
     const orphanIdsToDelete: string[] = [];
 
-    for (const orphan of orphans) {
-      // Delete the physical file; external (non-PRM-S3) locations have nothing to delete
-      if (isPrmS3ImageUrl(orphan.location)) {
-        try {
-          await deleteImageFromPrmS3(orphan.location);
-          filesDeleted++;
-        } catch (err: any) {
-          const isMissing =
-            err?.name === "NoSuchKey" ||
-            err?.name === "NotFound" ||
-            err?.$metadata?.httpStatusCode === 404;
-          if (!isMissing) {
-            console.error(`Failed to delete physical file for orphan photo ${orphan.id} at ${orphan.location}:`, err);
-            continue;
-          }
-        }
-      }
+    const S3_DELETE_CONCURRENCY = 8;
+    let nextIndex = 0;
+    const workerCount = Math.min(S3_DELETE_CONCURRENCY, orphans.length);
 
-      orphanIdsToDelete.push(orphan.id);
-      deletedPhotosList.push({
-        id: orphan.id,
-        location: orphan.location,
-        vectorId: orphan.vectorId,
-      });
-    }
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (nextIndex < orphans.length) {
+          const orphan = orphans[nextIndex++];
+          // Delete the physical file; external (non-PRM-S3) locations have nothing to delete
+          if (isPrmS3ImageUrl(orphan.location)) {
+            try {
+              await deleteImageFromPrmS3(orphan.location);
+              filesDeleted++;
+            } catch (err: any) {
+              const isMissing =
+                err?.name === "NoSuchKey" ||
+                err?.name === "NotFound" ||
+                err?.$metadata?.httpStatusCode === 404;
+              if (!isMissing) {
+                console.error(`Failed to delete physical file for orphan photo ${orphan.id} at ${orphan.location}:`, err);
+                continue;
+              }
+            }
+          }
+
+          orphanIdsToDelete.push(orphan.id);
+          deletedPhotosList.push({
+            id: orphan.id,
+            location: orphan.location,
+            vectorId: orphan.vectorId,
+          });
+        }
+      })
+    );
 
     // Batch delete from DB in chunks of 200
     for (let i = 0; i < orphanIdsToDelete.length; i += 200) {

@@ -8,7 +8,7 @@ import { bucketForKey } from "./prm-s3-buckets";
 import { CopyObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
-import { parseSmsBackup } from "./sms-import";
+import { parseSmsBackupStream } from "./sms-import";
 import { classifyMessage, type AutomatedCategory } from "./message-classifier";
 import { log } from "./vite";
 import { queueOsintScansForMeAccount } from "./osint-scan-queue";
@@ -453,26 +453,87 @@ async function insertBatchWithFallback<T extends Record<string, any>>(
   return inserted;
 }
 
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 /**
- * Buffers export XML and flushes it to a file descriptor every few MB. A full export
- * is larger than V8's maximum string length (~512 MB), so it is never joined in memory.
+ * Buffers export XML and flushes it asynchronously to a WriteStream every few MB,
+ * respecting backpressure ('drain'). A full export is larger than V8's maximum
+ * string length (~512 MB), so it is never joined in memory.
  */
 class XmlFileWriter {
   private parts: string[] = [];
   private size = 0;
-  constructor(private fd: number) {}
+  private streamError: Error | null = null;
+  private static readonly FLUSH_THRESHOLD = 8 * 1024 * 1024;
+
+  constructor(private stream: fs.WriteStream) {
+    this.stream.on("error", (err) => {
+      this.streamError = err;
+    });
+  }
 
   push(s: string) {
     this.parts.push(s);
     this.size += s.length;
-    if (this.size >= 8 * 1024 * 1024) this.flush();
   }
 
-  flush() {
+  async flushIfNeeded(): Promise<void> {
+    if (this.size >= XmlFileWriter.FLUSH_THRESHOLD) {
+      await this.flush();
+    }
+  }
+
+  async flush(): Promise<void> {
+    if (this.streamError) throw this.streamError;
     if (this.parts.length === 0) return;
-    fs.writeSync(this.fd, this.parts.join(""));
+    const chunk = this.parts.join("");
     this.parts = [];
     this.size = 0;
+    const canContinue = this.stream.write(chunk, "utf-8");
+    if (!canContinue) {
+      await new Promise<void>((resolve, reject) => {
+        const onDrain = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const cleanup = () => {
+          this.stream.off("drain", onDrain);
+          this.stream.off("error", onError);
+        };
+        this.stream.once("drain", onDrain);
+        this.stream.once("error", onError);
+      });
+    }
+    if (this.streamError) throw this.streamError;
+  }
+
+  async close(): Promise<void> {
+    await this.flush();
+    await new Promise<void>((resolve, reject) => {
+      if (this.streamError) {
+        reject(this.streamError);
+        return;
+      }
+      const onFinish = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+      const cleanup = () => {
+        this.stream.off("finish", onFinish);
+        this.stream.off("error", onError);
+      };
+      this.stream.once("finish", onFinish);
+      this.stream.once("error", onError);
+      this.stream.end();
+    });
   }
 }
 
@@ -483,10 +544,15 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
 }): Promise<void> {
   const includeHistory = options.includeHistory ?? false;
   const includePostHistory = options.includePostHistory ?? true;
-  const onProgress = options.onProgress;
+  const rawOnProgress = options.onProgress;
+  const onProgress = async (progress: number, message: string) => {
+    await chunks.flushIfNeeded();
+    await yieldToEventLoop();
+    await rawOnProgress?.(progress, message);
+  };
   const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 
-  await onProgress?.(2, "Fetching core data…");
+  await onProgress(2, "Fetching core data…");
 
   // Run queries in small sequential batches to avoid exhausting the DB connection pool
   const [allUsers, allPeople, allRelationshipTypes, allRelationships] = await Promise.all([
@@ -1620,18 +1686,17 @@ export async function writeExportXmlToFile(
 ): Promise<void> {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   const partialPath = `${filePath}.partial`;
-  const fd = fs.openSync(partialPath, "w");
+  const stream = fs.createWriteStream(partialPath, { encoding: "utf-8" });
+  const writer = new XmlFileWriter(stream);
   try {
-    const writer = new XmlFileWriter(fd);
     await generateExportXml(writer, options);
     await options.onProgress?.(99, "Saving file…");
-    writer.flush();
+    await writer.close();
   } catch (err) {
-    fs.closeSync(fd);
+    stream.destroy();
     await fs.promises.unlink(partialPath).catch(() => {});
     throw err;
   }
-  fs.closeSync(fd);
   await fs.promises.rename(partialPath, filePath);
 }
 
@@ -1678,7 +1743,11 @@ export async function executeImportXml(
 ): Promise<{ imported: Record<string, number>; skipped: Record<string, number> }> {
   const includeHistory = options?.includeHistory ?? true;
   const includePostHistory = options?.includePostHistory ?? true;
-  const onProgress = options?.onProgress;
+  const rawOnProgress = options?.onProgress;
+  const onProgress = async (progress: number, message: string) => {
+    await yieldToEventLoop();
+    await rawOnProgress?.(progress, message);
+  };
   const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 
   const mePersonId = await storage.getMePersonId();
@@ -3410,6 +3479,25 @@ async function isTaskCancelled(taskId: string): Promise<boolean> {
   return !task || task.status === "cancelled" || task.status === "failed";
 }
 
+/** Run async work over `items` with at most `concurrency` workers in flight. */
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++;
+        await worker(items[index], index);
+      }
+    }),
+  );
+}
+
 /**
  * Migrates profile images to single canonical URLs with ?s= variants (image-sizes-plan.md Phase 3).
  * 1. Builds thumbUrl -> hqUrl map from the generated profile thumbs (derivedFromPhotoId) and accounts holding both urls.
@@ -3478,15 +3566,15 @@ async function processMigrateProfileImageTiers(taskId: string): Promise<string> 
     .from(socialAccounts)
     .where(isNotNull(socialAccounts.imageUrl));
 
-  for (const account of allAccounts) {
+  await runWithConcurrency(allAccounts, 6, async (account) => {
     const photo = await storage.getPhotoByLocation(account.imageUrl!);
-    if (photo?.widthPx == null) continue;
+    if (photo?.widthPx == null) return;
     const isHq = photo.widthPx >= 320;
     if (account.isHqImage !== isHq) {
       await db.update(socialAccounts).set({ isHqImage: isHq }).where(eq(socialAccounts.id, account.id));
       accountsUpdated++;
     }
-  }
+  });
 
   if (await isTaskCancelled(taskId)) return JSON.stringify({ cancelled: true });
   await storage.updateTaskProgress(taskId, 50, "Rewriting references in people, groups, and history...");
@@ -3506,39 +3594,35 @@ async function processMigrateProfileImageTiers(taskId: string): Promise<string> 
 
   if (thumbToHqMap.size > 0) {
     const peopleRows = await db.select({ id: people.id, imageUrl: people.imageUrl }).from(people).where(isNotNull(people.imageUrl));
-    for (const p of peopleRows) {
-      if (p.imageUrl && thumbToHqMap.has(p.imageUrl)) {
-        await db.update(people).set({ imageUrl: thumbToHqMap.get(p.imageUrl)! }).where(eq(people.id, p.id));
-        peopleUpdated++;
-      }
-    }
+    const peopleToUpdate = peopleRows.filter((p) => p.imageUrl && thumbToHqMap.has(p.imageUrl));
+    await runWithConcurrency(peopleToUpdate, 6, async (p) => {
+      await db.update(people).set({ imageUrl: thumbToHqMap.get(p.imageUrl!)! }).where(eq(people.id, p.id));
+      peopleUpdated++;
+    });
 
     const groupRows = await db.select({ id: groups.id, imageUrl: groups.imageUrl }).from(groups).where(isNotNull(groups.imageUrl));
-    for (const g of groupRows) {
-      if (g.imageUrl && thumbToHqMap.has(g.imageUrl)) {
-        await db.update(groups).set({ imageUrl: thumbToHqMap.get(g.imageUrl)! }).where(eq(groups.id, g.id));
-        groupsUpdated++;
-      }
-    }
+    const groupsToUpdate = groupRows.filter((g) => g.imageUrl && thumbToHqMap.has(g.imageUrl));
+    await runWithConcurrency(groupsToUpdate, 6, async (g) => {
+      await db.update(groups).set({ imageUrl: thumbToHqMap.get(g.imageUrl!)! }).where(eq(groups.id, g.id));
+      groupsUpdated++;
+    });
 
     const spvRows = await db.select({ id: socialProfileVersions.id, imageUrl: socialProfileVersions.imageUrl }).from(socialProfileVersions).where(isNotNull(socialProfileVersions.imageUrl));
-    for (const spv of spvRows) {
-      if (spv.imageUrl && thumbToHqMap.has(spv.imageUrl)) {
-        await db.update(socialProfileVersions).set({ imageUrl: thumbToHqMap.get(spv.imageUrl)! }).where(eq(socialProfileVersions.id, spv.id));
-        spvUpdated++;
-      }
-    }
+    const spvToUpdate = spvRows.filter((spv) => spv.imageUrl && thumbToHqMap.has(spv.imageUrl));
+    await runWithConcurrency(spvToUpdate, 6, async (spv) => {
+      await db.update(socialProfileVersions).set({ imageUrl: thumbToHqMap.get(spv.imageUrl!)! }).where(eq(socialProfileVersions.id, spv.id));
+      spvUpdated++;
+    });
 
     const historyRows = await db
       .select({ id: socialAccountHistory.id, previousImageUrl: socialAccountHistory.previousImageUrl })
       .from(socialAccountHistory)
       .where(isNotNull(socialAccountHistory.previousImageUrl));
-    for (const h of historyRows) {
-      if (h.previousImageUrl && thumbToHqMap.has(h.previousImageUrl)) {
-        await db.update(socialAccountHistory).set({ previousImageUrl: thumbToHqMap.get(h.previousImageUrl)! }).where(eq(socialAccountHistory.id, h.id));
-        historyUpdated++;
-      }
-    }
+    const historyToUpdate = historyRows.filter((h) => h.previousImageUrl && thumbToHqMap.has(h.previousImageUrl));
+    await runWithConcurrency(historyToUpdate, 6, async (h) => {
+      await db.update(socialAccountHistory).set({ previousImageUrl: thumbToHqMap.get(h.previousImageUrl!)! }).where(eq(socialAccountHistory.id, h.id));
+      historyUpdated++;
+    });
   }
 
   if (await isTaskCancelled(taskId)) return JSON.stringify({ cancelled: true });
@@ -3546,7 +3630,7 @@ async function processMigrateProfileImageTiers(taskId: string): Promise<string> 
 
   // 4. Delete thumb objects and photos rows
   let deletedThumbs = 0;
-  for (const p of mappedThumbs) {
+  await runWithConcurrency(mappedThumbs, 6, async (p) => {
     try {
       await deleteImageFromPrmS3(p.location);
     } catch {
@@ -3554,7 +3638,7 @@ async function processMigrateProfileImageTiers(taskId: string): Promise<string> 
     }
     await db.delete(photos).where(eq(photos.id, p.id));
     deletedThumbs++;
-  }
+  });
 
   // 5. Verification of remaining
   const pending = await legacyProfileImagesPending();
@@ -3929,7 +4013,7 @@ function sniffImageMime(buffer: Buffer): { mime: string; ext: string } {
  * "your_instagram_activity/messages/inbox/<thread>/photos/x.jpg") to a path
  * inside the extracted thread folder. Returns null for remote or missing files.
  */
-function resolveMediaPath(threadFolder: string, uri: string): string | null {
+async function resolveMediaPath(threadFolder: string, uri: string): Promise<string | null> {
   if (/^https?:\/\//i.test(uri)) return null;
   const parts = uri.split("/").filter(Boolean);
   const threadBase = path.basename(threadFolder);
@@ -3937,10 +4021,16 @@ function resolveMediaPath(threadFolder: string, uri: string): string | null {
   const candidates: string[] = [];
   if (idx >= 0) candidates.push(path.join(threadFolder, ...parts.slice(idx + 1)));
   if (parts.length >= 2) candidates.push(path.join(threadFolder, ...parts.slice(-2)));
+  const resolvedRoot = path.resolve(threadFolder);
   for (const candidate of candidates) {
     const resolved = path.resolve(candidate);
-    if (!resolved.startsWith(path.resolve(threadFolder))) continue; // no escaping the thread dir
-    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
+    if (!resolved.startsWith(resolvedRoot)) continue; // no escaping the thread dir
+    try {
+      const st = await fs.promises.stat(resolved);
+      if (st.isFile()) return resolved;
+    } catch {
+      // candidate does not exist or is not accessible
+    }
   }
   return null;
 }
@@ -3959,12 +4049,12 @@ function mediaMimeForFile(kind: "video" | "audio", filePath: string): string {
 }
 
 /** Find every extracted directory that contains message_1.json */
-function findThreadFolders(root: string): string[] {
+async function findThreadFolders(root: string): Promise<string[]> {
   const found: string[] = [];
-  const walk = (dir: string) => {
+  const walk = async (dir: string): Promise<void> => {
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
@@ -3973,10 +4063,10 @@ function findThreadFolders(root: string): string[] {
       return; // thread folders don't nest
     }
     for (const e of entries) {
-      if (e.isDirectory()) walk(path.join(dir, e.name));
+      if (e.isDirectory()) await walk(path.join(dir, e.name));
     }
   };
-  walk(root);
+  await walk(root);
   return found;
 }
 
@@ -4039,7 +4129,7 @@ async function importOneDmThread(
 ): Promise<ImportThreadSummary> {
   const importMedia = options.importMedia !== false;
 
-  const parsed: ParsedThread = loadThreadFolder(threadFolder);
+  const parsed: ParsedThread = await loadThreadFolder(threadFolder);
   const importUuid = crypto.randomUUID();
   const importDate = new Date();
 
@@ -4226,7 +4316,7 @@ async function importOneDmThread(
     const attachments: MessageAttachment[] = [];
 
     for (const media of msg.media as ParsedMedia[]) {
-      const filePath = resolveMediaPath(threadFolder, media.uri);
+      const filePath = await resolveMediaPath(threadFolder, media.uri);
 
       if (media.kind === "photo") {
         if (!filePath) {
@@ -4239,7 +4329,7 @@ async function importOneDmThread(
           summary.mediaUnavailable++;
           continue;
         }
-        const buffer = fs.readFileSync(filePath);
+        const buffer = await fs.promises.readFile(filePath);
         const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
         const existingPhoto = await storage.getPhotoByFileHash(fileHash);
         if (existingPhoto) {
@@ -4274,7 +4364,7 @@ async function importOneDmThread(
           summary.mediaUnavailable++;
           continue;
         }
-        const buffer = fs.readFileSync(filePath);
+        const buffer = await fs.promises.readFile(filePath);
         const mimeType = mediaMimeForFile(media.kind, filePath);
         const url = await uploadMedia(buffer, path.basename(filePath), mimeType);
         attachments.push({
@@ -4642,12 +4732,17 @@ export async function processImportInstagramBackup(
 ): Promise<string> {
   const { zipPath, rootSocialAccountId, rootUsername, options = {} } = payload;
 
-  const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), "prm-ig-dm-"));
+  const extractDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "prm-ig-dm-"));
   try {
     const zip = new AdmZip(zipPath);
-    zip.extractAllTo(extractDir, true);
+    await new Promise<void>((resolve, reject) => {
+      zip.extractAllToAsync(extractDir, true, false, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
 
-    const threadFolders = findThreadFolders(extractDir);
+    const threadFolders = await findThreadFolders(extractDir);
     if (threadFolders.length === 0) {
       throw new Error("No Instagram message threads (message_1.json) found in the uploaded zip");
     }
@@ -4692,8 +4787,8 @@ export async function processImportInstagramBackup(
       summaries,
     });
   } finally {
-    fs.rmSync(extractDir, { recursive: true, force: true });
-    fs.rmSync(zipPath, { force: true });
+    await fs.promises.rm(extractDir, { recursive: true, force: true });
+    await fs.promises.rm(zipPath, { force: true });
   }
 }
 
@@ -4713,7 +4808,7 @@ export async function processImportSms(
 ): Promise<string> {
   const { xmlPath, rootPersonId, options = {} } = payload;
   try {
-    const { threads } = parseSmsBackup(fs.readFileSync(xmlPath, "utf-8"));
+    const { threads } = await parseSmsBackupStream(xmlPath);
     if (threads.length === 0) {
       throw new Error("No <sms> or <mms> messages found in the uploaded XML");
     }
@@ -4867,7 +4962,7 @@ export async function processImportSms(
     summary.unmatchedNumbers = [...new Set(summary.unmatchedNumbers)];
     return JSON.stringify({ success: true, ...summary });
   } finally {
-    fs.rmSync(xmlPath, { force: true });
+    await fs.promises.rm(xmlPath, { force: true }).catch(() => {});
   }
 }
 

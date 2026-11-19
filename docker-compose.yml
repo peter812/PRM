@@ -40,37 +40,15 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
     networks:
       people_net:
         ipv4_address: 10.5.0.11
 
-  whisper:
-    extends:
-      file: docker-compose.whisper.yml
-      service: whisper
-    networks:
-      people_net:
-        ipv4_address: 10.5.0.12
 
-  whisper-init:
-    extends:
-      file: docker-compose.whisper.yml
-      service: whisper-init
-    networks:
-      people_net:
-        ipv4_address: 10.5.0.13
 
 volumes:
   postgres_data:
-  whisper_models:
+
 
 networks:
   people_net:

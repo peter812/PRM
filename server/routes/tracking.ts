@@ -23,6 +23,7 @@ import { photos, socialAccountPosts, socialAccountPostTags, socialPostComments, 
 import { TRACKING_KINDS, type TrackingKind } from "@shared/interest-level";
 import { generateDeterministicUuid } from "./social-media";
 import { authedRun, existingStoryPks, ingestStoryItem, runImageTaskGroup, storeStoryItem, storyMetaSchema, storyPostId, storyUpload, type Upload } from "./stories";
+import { optionalHttpUrlSchema } from "../url-validation";
 import { kickManualTrackingJobs, manualImporter, rateLimitedUntil } from "../stories-scheduler";
 import { applySnapshot, recordPostsCapture, type CaptureScope } from "../social-account-history";
 import { profileImageFromBuffer, classifyProfileImage, applyProfileImageVerdict, getImageDimensions, type ProfileImageOutcome } from "../profile-image";
@@ -88,7 +89,7 @@ const infoSchema = z.object({
   pk: z.string().optional(),
   nickname: z.string().nullable().optional(),
   bio: z.string().nullable().optional(),
-  accountUrl: z.string().nullable().optional(),
+  accountUrl: optionalHttpUrlSchema,
   externalImageUrl: z.string().nullable().optional(),
   reportedFollowersCount: z.number().int().nullable().optional(),
   reportedFollowingCount: z.number().int().nullable().optional(),
@@ -340,6 +341,33 @@ type PostOutcome = { outcome: "updated" | "duplicate" | "stored"; postId: string
  * slides stay. With `taggedAccountId` the post came from that account's
  * Tagged tab: it is stored under its poster, who need not be tracked.
  */
+async function getPhotoLocationsByHash(hashes: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(hashes.filter(Boolean))];
+  if (unique.length === 0) return new Map();
+  const rows = await db
+    .select({ fileHash: photos.fileHash, location: photos.location })
+    .from(photos)
+    .where(inArray(photos.fileHash, unique));
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (row.fileHash && !map.has(row.fileHash)) map.set(row.fileHash, row.location);
+  }
+  return map;
+}
+
+async function forEachWithConcurrency<T>(items: readonly T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let index = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (index < items.length) {
+        const current = items[index++];
+        await fn(current);
+      }
+    }),
+  );
+}
+
 export async function applyPost(
   ctx: { job: TrackingJob; account: SocialAccount },
   meta: z.infer<typeof postMetaSchema>,
@@ -384,7 +412,8 @@ export async function applyPost(
     coauthors: coauthorNames,
     videoDuration: meta.videoDuration ?? null,
   };
-  if (video) {
+  const uploadVideo = async () => {
+    if (!video) return;
     try {
       metadata.videoUrl = await storeMedia(video.buffer, `${meta.pk}.mp4`, video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4", "video");
     } catch (err) {
@@ -392,10 +421,10 @@ export async function applyPost(
       metadata.detail = { comments: meta.detail.comments, videoSupport: false };
       metadata.videoError = err instanceof Error ? err.message : String(err);
     }
-  }
+  };
   // Instagram leaks the real like_count even when the poster hid it; PRM stores only what a viewer sees.
   const likesHidden = meta.likesHidden ?? existing?.likesHidden ?? false;
-  const shared = {
+  const buildShared = () => ({
     description: meta.caption ?? existing?.description ?? null,
     likesHidden,
     likeCount: likesHidden ? 0 : meta.likeCount ?? existing?.likeCount ?? 0,
@@ -406,10 +435,11 @@ export async function applyPost(
     metadata,
     scrapedFrom: meta.scrapedFrom,
     updatedAt: new Date(),
-  };
+  });
 
   if (existing) {
-    await db.update(socialAccountPosts).set(shared).where(eq(socialAccountPosts.id, id));
+    await uploadVideo();
+    await db.update(socialAccountPosts).set(buildShared()).where(eq(socialAccountPosts.id, id));
     await upsertComments(id, meta.comments ?? []);
     return { outcome: "updated", postId: id };
   }
@@ -417,14 +447,21 @@ export async function applyPost(
   // Bytes go to storage first; the rows land together, so a failed insert
   // can't leave photos pointing at a post that doesn't exist. The post row
   // goes first so a duplicate (racing job) writes nothing instead of failing.
-  const stored = await Promise.all(
-    slides.map(async (slide, i) => {
-      const fileHash = crypto.createHash("sha256").update(slide.buffer).digest("hex");
-      let url = (await storage.getPhotoByFileHash(fileHash))?.location;
-      if (!url) url = await uploadPostImage(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg");
-      return { url, fileHash, dims: getImageDimensions(slide.buffer) };
-    })
-  );
+  const uploadSlides = async () => {
+    const slideHashes = slides.map((slide) => crypto.createHash("sha256").update(slide.buffer).digest("hex"));
+    const existingByHash = await getPhotoLocationsByHash(slideHashes);
+    return Promise.all(
+      slides.map(async (slide, i) => {
+        const fileHash = slideHashes[i];
+        const url =
+          existingByHash.get(fileHash) ??
+          (await uploadPostImage(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg"));
+        return { url, fileHash, dims: getImageDimensions(slide.buffer) };
+      }),
+    );
+  };
+  const [, stored] = await Promise.all([uploadVideo(), uploadSlides()]);
+  const shared = buildShared();
   const photoIds = await db.transaction(async (tx) => {
     const [post] = await tx
       .insert(socialAccountPosts)
@@ -696,7 +733,7 @@ export async function ingestScan(jobId: string): Promise<void> {
       .where(eq(trackingJobs.id, jobId))
       .limit(1);
     if (!row || row.job.status !== "running") return;
-    job = row.job;
+    const currentJob = (job = row.job);
     let account = row.account;
 
     let manifest: z.infer<typeof scanManifestSchema>;
@@ -739,23 +776,27 @@ export async function ingestScan(jobId: string): Promise<void> {
     if (posts) {
       const s: SectionState = (sections.posts = { status: posts.status, reason: posts.reason, error: posts.error });
       const counts: Record<string, unknown> = { mode: posts.mode, escalated: posts.escalated, stored: 0, updated: 0, duplicate: 0 };
-      for (const raw of posts.items) {
+      await forEachWithConcurrency(posts.items, 4, async (raw) => {
         const parsed = scanPostItem.safeParse(raw);
         if (!parsed.success) {
           itemFailed("bad post item", parsed.error.message);
-          continue;
+          return;
         }
         const item = parsed.data;
         try {
-          const out = await applyPost({ job, account }, item.meta, await Promise.all(item.slides.map(read)), await readOptional(item.video));
+          const [slides, video] = await Promise.all([
+            Promise.all(item.slides.map(read)),
+            readOptional(item.video),
+          ]);
+          const out = await applyPost({ job: currentJob, account }, item.meta, slides, video);
           counts[out.outcome] = (counts[out.outcome] as number) + 1;
         } catch (err) {
           itemFailed(`post ${item.meta.pk}`, err);
         }
-      }
+      });
       if (s.status === "completed") {
         try {
-          Object.assign(counts, await applyPostsSection(job, account, posts));
+          Object.assign(counts, await applyPostsSection(currentJob, account, posts));
         } catch (err) {
           sectionFailed(s, err);
         }
@@ -767,24 +808,25 @@ export async function ingestScan(jobId: string): Promise<void> {
       const s: SectionState = (sections.highlights = { status: highlights.status, reason: highlights.reason, error: highlights.error });
       const counts: Record<string, number> = {};
       const count = (outcome: string) => (counts[outcome] = (counts[outcome] ?? 0) + 1);
-      for (const raw of highlights.items) {
+      await forEachWithConcurrency(highlights.items, 4, async (raw) => {
         const parsed = scanStoryItem.safeParse(raw);
         if (!parsed.success) {
           itemFailed("bad highlight story item", parsed.error.message);
-          continue;
+          return;
         }
         const item = parsed.data;
         try {
-          count((await ingestStoryItem(item.meta, await read(item.image), await readOptional(item.video), { runId: job.runId, groupKind: "tracking_job", account })).outcome);
+          const [image, video] = await Promise.all([read(item.image), readOptional(item.video)]);
+          count((await ingestStoryItem(item.meta, image, video, { runId: currentJob.runId, groupKind: "tracking_job", account })).outcome);
         } catch (err) {
           itemFailed(`highlight story ${item.meta.storyPk}`, err);
         }
-      }
-      for (const raw of highlights.sets) {
+      });
+      await forEachWithConcurrency(highlights.sets, 4, async (raw) => {
         const parsed = scanSetItem.safeParse(raw);
         if (!parsed.success) {
           itemFailed("bad highlight set", parsed.error.message);
-          continue;
+          return;
         }
         const set = parsed.data;
         try {
@@ -792,7 +834,7 @@ export async function ingestScan(jobId: string): Promise<void> {
         } catch (err) {
           itemFailed(`highlight ${set.meta.highlightId}`, err);
         }
-      }
+      });
       if (s.status === "completed" && highlights.complete) {
         try {
           counts.setsDeleted = await applyHighlightsSection(account, highlights.seenHighlightIds);
@@ -1169,9 +1211,18 @@ export function registerTracking(app: Express) {
             .where(inArray(instagramHighlightMemberships.highlightId, sets.map((s) => s.id)))
             .orderBy(asc(instagramHighlightMemberships.placedSeenAt))
         : [];
+      const stintsByHighlight = new Map<string, typeof stints>();
+      for (const m of stints) {
+        let list = stintsByHighlight.get(m.highlightId);
+        if (!list) {
+          list = [];
+          stintsByHighlight.set(m.highlightId, list);
+        }
+        list.push(m);
+      }
       const out: HighlightWithStints[] = sets.map((set) => ({
         ...set,
-        stints: stints.filter((m) => m.highlightId === set.id).map((m) => ({ ...m, postId: storyPostId(m.storyPk) })),
+        stints: (stintsByHighlight.get(set.id) ?? []).map((m) => ({ ...m, postId: storyPostId(m.storyPk) })),
       }));
       res.json(out);
     } catch (error) {

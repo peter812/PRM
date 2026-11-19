@@ -134,36 +134,71 @@ export function requireAuth(
 }
 
 
+const INVALID_TOKEN_CACHE_TTL_MS = 60_000;
+const INVALID_TOKEN_CACHE_MAX_SIZE = 500;
+const invalidTokenCache = new Map<string, number>();
+let hasLegacyExtensionSessions: boolean | null = null;
+
+function cacheInvalidToken(suppliedHash: string, now: number): void {
+  if (invalidTokenCache.size >= INVALID_TOKEN_CACHE_MAX_SIZE) {
+    const oldestKey = invalidTokenCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      invalidTokenCache.delete(oldestKey);
+    }
+  }
+  invalidTokenCache.set(suppliedHash, now + INVALID_TOKEN_CACHE_TTL_MS);
+}
+
 /** Authenticate a Chrome extension token with SHA-256 (O(1)) and legacy scrypt fallback/migration. */
 export async function authenticateExtensionToken(token: string): Promise<ExtensionSession | null> {
   if (!token) return null;
   try {
     const suppliedHash = crypto.createHash("sha256").update(token).digest("hex");
-    const session = await storage.getExtensionSessionByToken(suppliedHash);
+    const now = Date.now();
+    const cachedExpiry = invalidTokenCache.get(suppliedHash);
+    if (cachedExpiry !== undefined) {
+      if (cachedExpiry > now) {
+        return null;
+      }
+      invalidTokenCache.delete(suppliedHash);
+    }
 
+    const session = await storage.getExtensionSessionByToken(suppliedHash);
     if (session) {
       return session;
     }
 
-    // Fallback and migration for legacy scrypt tokens
+    // Fallback and migration for legacy scrypt tokens (skip DB scan once known empty)
+    if (hasLegacyExtensionSessions === false) {
+      cacheInvalidToken(suppliedHash, now);
+      return null;
+    }
+
     const allSessions = await storage.getAllExtensionSessions();
-    for (const s of allSessions) {
-      if (s.sessionToken.includes(".")) {
-        try {
-          const [hashed, salt] = s.sessionToken.split(".");
-          const hashedBuf = Buffer.from(hashed, "hex");
-          const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
-          if (timingSafeEqual(hashedBuf, suppliedBuf)) {
-            // Migrate to SHA-256
-            await storage.updateExtensionSessionToken(s.id, suppliedHash);
-            s.sessionToken = suppliedHash; // Update local reference
-            return s;
+    const legacySessions = allSessions.filter((s) => s.sessionToken.includes("."));
+    hasLegacyExtensionSessions = legacySessions.length > 0;
+
+    for (const s of legacySessions) {
+      try {
+        const [hashed, salt] = s.sessionToken.split(".");
+        if (!hashed || !salt) continue;
+        const hashedBuf = Buffer.from(hashed, "hex");
+        const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
+        if (hashedBuf.length === suppliedBuf.length && timingSafeEqual(hashedBuf, suppliedBuf)) {
+          // Migrate to SHA-256
+          await storage.updateExtensionSessionToken(s.id, suppliedHash);
+          s.sessionToken = suppliedHash; // Update local reference
+          if (legacySessions.length === 1) {
+            hasLegacyExtensionSessions = false;
           }
-        } catch {
-          continue;
+          return s;
         }
+      } catch {
+        continue;
       }
     }
+
+    cacheInvalidToken(suppliedHash, now);
   } catch (error) {
     console.error("Error authenticating extension token:", error);
   }

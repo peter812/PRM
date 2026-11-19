@@ -4,7 +4,7 @@
  * any addresses not located yet; pins appear as it progresses. With a Google
  * Maps key (Settings → Maps) the style picker also offers Google's map types.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import L from "leaflet";
@@ -51,6 +51,94 @@ import {
 function personIcon(p: MapPin, moving: boolean): L.DivIcon {
   return L.divIcon({ className: "", html: pinHtml(p, moving ? "moving" : ""), iconSize: [36, 36], iconAnchor: [18, 18], popupAnchor: [0, -18] });
 }
+
+interface PersonMapMarkerProps {
+  p: MapPin;
+  isMoving: boolean;
+  others: number;
+  onMarkerRef: (key: string, marker: L.Marker | null) => void;
+  onDragEnd: (query: string, latitude: number, longitude: number) => void;
+  onFocus: (personId: string) => void;
+  onStartMove: (key: string) => void;
+  onStartRemove: (p: MapPin, key: string) => void;
+}
+
+const PersonMapMarker = memo(function PersonMapMarker({
+  p,
+  isMoving,
+  others,
+  onMarkerRef,
+  onDragEnd,
+  onFocus,
+  onStartMove,
+  onStartRemove,
+}: PersonMapMarkerProps) {
+  const key = pinKey(p);
+  const lat = p.latitude!;
+  const lng = p.longitude!;
+  const icon = useMemo(() => personIcon(p, isMoving), [p.id, p.imageUrl, p.firstName, p.lastName, isMoving]);
+  const position = useMemo(() => [lat, lng] as [number, number], [lat, lng]);
+  const eventHandlers = useMemo<L.LeafletEventHandlerFnMap>(
+    () => ({
+      dragend: (e) => {
+        const ll = (e.target as L.Marker).getLatLng();
+        onDragEnd(p.query, ll.lat, ll.lng);
+      },
+    }),
+    [p.query, onDragEnd],
+  );
+  const markerRef = useCallback(
+    (m: L.Marker | null) => {
+      onMarkerRef(key, m);
+    },
+    [key, onMarkerRef],
+  );
+
+  return (
+    <Marker
+      position={position}
+      icon={icon}
+      draggable={isMoving}
+      ref={markerRef}
+      eventHandlers={eventHandlers}
+    >
+      <Popup>
+        <div className="space-y-1 min-w-48 text-neutral-900">
+          <div className="font-semibold text-sm">{fullName(p)}</div>
+          <div className="text-xs">{p.address}</div>
+          <div className="text-xs text-neutral-500">{SOURCE_LABELS[p.source]}</div>
+          {p.status === "manual" ? (
+            <div className="text-xs italic text-neutral-500">Placed by hand</div>
+          ) : (
+            p.displayName && <div className="text-xs text-neutral-500">Matched: {p.displayName}</div>
+          )}
+          {others > 0 && (
+            <button type="button" className="text-xs text-[#0078A8] hover:underline" onClick={() => onFocus(p.id)}>
+              {others} other address{others === 1 ? "" : "es"}
+            </button>
+          )}
+          <div className="flex gap-3 pt-1 text-xs">
+            <Link href={`/person/${p.id}?from=map`}>Open profile</Link>
+            <button
+              type="button"
+              className="text-[#0078A8] hover:underline"
+              onClick={() => onStartMove(key)}
+            >
+              Move pin
+            </button>
+            <button
+              type="button"
+              className="text-red-600 hover:underline"
+              onClick={() => onStartRemove(p, key)}
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      </Popup>
+    </Marker>
+  );
+});
 
 /** Keeps ?lat=&lng=&z= in sync with the view, and forwards map clicks. */
 function MapEvents({ onClick }: { onClick: (latlng: L.LatLng) => void }) {
@@ -387,6 +475,26 @@ export default function MapDemo() {
     }
   };
 
+  const focusRef = useRef(focus);
+  focusRef.current = focus;
+  const handleMarkerFocus = useCallback((personId: string) => focusRef.current(personId), []);
+  const handleMarkerRef = useCallback((key: string, m: L.Marker | null) => {
+    if (m) markers.current.set(key, m);
+    else markers.current.delete(key);
+  }, []);
+  const handleMarkerDragEnd = useCallback(
+    (query: string, latitude: number, longitude: number) => place.mutate({ query, latitude, longitude }),
+    [place.mutate],
+  );
+  const handleStartMove = useCallback((key: string) => {
+    setMovingKey(key);
+    markers.current.get(key)?.closePopup();
+  }, []);
+  const handleStartRemove = useCallback((p: MapPin, key: string) => {
+    setRemovingPin(p);
+    markers.current.get(key)?.closePopup();
+  }, []);
+
   // Opened from a person's address: zoom in on that pin once it is on the map. An address still being
   // geocoded waits for the pass; one that can't be located falls back to the person's other pins.
   useEffect(() => {
@@ -460,63 +568,17 @@ export default function MapDemo() {
             const key = pinKey(p);
             const others = (pinsByPerson.get(p.id)?.length ?? 1) - 1;
             return (
-            <Marker
-              key={key}
-              position={[p.latitude!, p.longitude!]}
-              icon={personIcon(p, key === movingKey)}
-              draggable={key === movingKey}
-              ref={(m) => {
-                if (m) markers.current.set(key, m);
-                else markers.current.delete(key);
-              }}
-              eventHandlers={{
-                dragend: (e) => {
-                  const ll = (e.target as L.Marker).getLatLng();
-                  place.mutate({ query: p.query, latitude: ll.lat, longitude: ll.lng });
-                },
-              }}
-            >
-              <Popup>
-                <div className="space-y-1 min-w-48 text-neutral-900">
-                  <div className="font-semibold text-sm">{fullName(p)}</div>
-                  <div className="text-xs">{p.address}</div>
-                  <div className="text-xs text-neutral-500">{SOURCE_LABELS[p.source]}</div>
-                  {p.status === "manual" ? (
-                    <div className="text-xs italic text-neutral-500">Placed by hand</div>
-                  ) : (
-                    p.displayName && <div className="text-xs text-neutral-500">Matched: {p.displayName}</div>
-                  )}
-                  {others > 0 && (
-                    <button type="button" className="text-xs text-[#0078A8] hover:underline" onClick={() => focus(p.id)}>
-                      {others} other address{others === 1 ? "" : "es"}
-                    </button>
-                  )}
-                  <div className="flex gap-3 pt-1 text-xs">
-                    <Link href={`/person/${p.id}?from=map`}>Open profile</Link>
-                    <button
-                      type="button"
-                      className="text-[#0078A8] hover:underline"
-                      onClick={() => {
-                        setMovingKey(key);
-                        markers.current.get(key)?.closePopup();
-                      }}
-                    >
-                      Move pin
-                    </button>
-                    <button
-                      type="button"
-                      className="text-red-600 hover:underline"
-                      onClick={() => {
-                        setRemovingPin(p);
-                        markers.current.get(key)?.closePopup();
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              </Popup>
-            </Marker>
+              <PersonMapMarker
+                key={key}
+                p={p}
+                isMoving={key === movingKey}
+                others={others}
+                onMarkerRef={handleMarkerRef}
+                onDragEnd={handleMarkerDragEnd}
+                onFocus={handleMarkerFocus}
+                onStartMove={handleStartMove}
+                onStartRemove={handleStartRemove}
+              />
             );
           })}
         </MarkerClusterGroup>

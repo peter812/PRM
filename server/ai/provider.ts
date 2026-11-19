@@ -50,6 +50,7 @@ export interface AiAdapter {
   chat(p: AiProvider, req: ChatRequest): Promise<ChatResult>;
   chatStream(p: AiProvider, req: ChatRequest): AsyncIterable<ChatChunk>;
   embed(p: AiProvider, model: string, text: string, signal?: AbortSignal): Promise<number[]>;
+  embedBatch?(p: AiProvider, model: string, texts: string[], signal?: AbortSignal): Promise<number[][]>;
 }
 
 export function adapterFor(p: AiProvider): AiAdapter {
@@ -100,9 +101,13 @@ export const AI_TASK_KEYS: Record<AiTask, { model: string; provider: string; fal
 
 export async function getTaskSelection(task: AiTask): Promise<{ providerId: string; model: string }> {
   const keys = AI_TASK_KEYS[task];
+  const [providerRaw, modelRaw] = await Promise.all([
+    storage.getAppSetting(keys.provider),
+    storage.getAppSetting(keys.model),
+  ]);
   return {
-    providerId: (await storage.getAppSetting(keys.provider)) ?? "",
-    model: ((await storage.getAppSetting(keys.model)) ?? "").trim(),
+    providerId: providerRaw ?? "",
+    model: (modelRaw ?? "").trim(),
   };
 }
 
@@ -114,8 +119,12 @@ export async function resolveModel(task: AiTask, override?: { providerId?: strin
   if (override?.model?.trim()) {
     return { provider: await providerOrDefault(override.providerId), model: override.model.trim() };
   }
+  const chain: AiTask[] = [];
   for (let t: AiTask | undefined = task; t; t = AI_TASK_KEYS[t].fallback) {
-    const sel = await getTaskSelection(t);
+    chain.push(t);
+  }
+  const selections = await Promise.all(chain.map((t) => getTaskSelection(t)));
+  for (const sel of selections) {
     if (sel.model) return { provider: await providerOrDefault(sel.providerId), model: sel.model };
   }
   const where = task === "embedding" ? "Settings → Vector Storage" : "Settings → Intelligence";
@@ -143,6 +152,15 @@ export async function chat(r: ResolvedModel, req: Omit<ChatRequest, "model">): P
 
 export function embed(r: ResolvedModel, text: string, signal?: AbortSignal): Promise<number[]> {
   return adapterFor(r.provider).embed(r.provider, r.model, text, signal);
+}
+
+export async function embedBatch(r: ResolvedModel, texts: string[], signal?: AbortSignal): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  const adapter = adapterFor(r.provider);
+  if (adapter.embedBatch) {
+    return adapter.embedBatch(r.provider, r.model, texts, signal);
+  }
+  return Promise.all(texts.map((text) => adapter.embed(r.provider, r.model, text, signal)));
 }
 
 /** Connectivity check used by the settings page and setup wizard. */

@@ -1,7 +1,9 @@
-import { inArray } from "drizzle-orm";
-import { socialAccounts } from "@shared/schema";
+import { and, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { people, socialAccounts } from "@shared/schema";
 import { db } from "./db";
 import { storage } from "./storage";
+
+const UPDATE_CONCURRENCY = 5;
 
 interface ImagePassInResult {
   totalPeopleWithoutImages: number;
@@ -15,8 +17,15 @@ interface ImagePassInResult {
  * Automatically propagates profile images from social accounts to linked person accounts that do not have an image.
  */
 export async function runAutomaticImagePassIn(): Promise<ImagePassInResult> {
-  const allPeople = await storage.getAllPeople();
-  const peopleWithoutImages = allPeople.filter(p => !p.imageUrl);
+  const peopleWithoutImages = await db
+    .select({
+      id: people.id,
+      firstName: people.firstName,
+      lastName: people.lastName,
+      socialAccountUuids: people.socialAccountUuids,
+    })
+    .from(people)
+    .where(or(isNull(people.imageUrl), eq(people.imageUrl, "")));
 
   if (peopleWithoutImages.length === 0) {
     return {
@@ -33,9 +42,9 @@ export async function runAutomaticImagePassIn(): Promise<ImagePassInResult> {
       id: socialAccounts.id,
       ownerUuid: socialAccounts.ownerUuid,
       imageUrl: socialAccounts.imageUrl,
-      externalImageUrl: socialAccounts.externalImageUrl,
     })
-    .from(socialAccounts);
+    .from(socialAccounts)
+    .where(and(isNotNull(socialAccounts.imageUrl), ne(socialAccounts.imageUrl, "")));
 
   const accountById = new Map(accountRows.map(row => [row.id, row]));
   const imageByOwnerUuid = new Map<string, string>();
@@ -45,7 +54,6 @@ export async function runAutomaticImagePassIn(): Promise<ImagePassInResult> {
     }
   }
 
-  let updated = 0;
   let skipped = 0;
   let noSocialAccount = 0;
   const updates: { personId: string; personName: string; imageUrl: string }[] = [];
@@ -70,21 +78,26 @@ export async function runAutomaticImagePassIn(): Promise<ImagePassInResult> {
     }
 
     if (foundImage) {
-      await storage.updatePerson(person.id, { imageUrl: foundImage });
       updates.push({
         personId: person.id,
         personName: `${person.firstName} ${person.lastName}`.trim(),
         imageUrl: foundImage,
       });
-      updated++;
     } else {
       skipped++;
     }
   }
 
+  for (let i = 0; i < updates.length; i += UPDATE_CONCURRENCY) {
+    const batch = updates.slice(i, i + UPDATE_CONCURRENCY);
+    await Promise.all(
+      batch.map(u => storage.updatePerson(u.personId, { imageUrl: u.imageUrl })),
+    );
+  }
+
   return {
     totalPeopleWithoutImages: peopleWithoutImages.length,
-    updated,
+    updated: updates.length,
     skipped,
     noSocialAccount,
     updates,

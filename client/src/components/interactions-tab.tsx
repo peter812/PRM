@@ -1,4 +1,5 @@
 import { formatPersonName } from "@shared/person-name";
+import { withImageSize } from "@shared/image-size";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Trash2, Phone, Mail, Video, Calendar, Users, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";

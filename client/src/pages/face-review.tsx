@@ -81,7 +81,7 @@ const PRELOAD_OFFSETS = [1, 2, -1];
 function reviewImageUrls(item: FaceReviewItem): string[] {
   return [
     withImageSize(item.imageUrl, 1080),
-    ...(item.account?.imageUrl ? [item.account.imageUrl] : []),
+    ...(item.account?.imageUrl ? [withImageSize(item.account.imageUrl, 64)] : []),
     ...item.faces.flatMap((f) => [withImageSize(f.cropUrl, 128), ...f.lookAlikes.map((la) => withImageSize(la.cropUrl, 64))]),
   ];
 }
@@ -145,7 +145,6 @@ export default function FaceReviewPage() {
 
   const { data: counts } = useQuery<FaceReviewCounts>({
     queryKey: ["/api/face-review/counts", { noise: showNoise ? "1" : undefined }],
-    refetchInterval: 15_000,
   });
   const { data: autoSettings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
 

@@ -263,16 +263,17 @@ export function parseInstagramThread(
 // ── File-system loader (used by the import task and test scripts) ──
 
 /** Read every message_N.json in a thread folder and parse the thread. */
-export function loadThreadFolder(folderPath: string): ParsedThread {
-  const fileNames = fs
-    .readdirSync(folderPath)
-    .filter((f) => /^message_\d+\.json$/.test(f));
+export async function loadThreadFolder(folderPath: string): Promise<ParsedThread> {
+  const entries = await fs.promises.readdir(folderPath);
+  const fileNames = entries.filter((f) => /^message_\d+\.json$/.test(f));
   if (fileNames.length === 0) {
     throw new Error(`No message_N.json files found in ${folderPath}`);
   }
-  const files = fileNames.map((name) => {
-    const raw = fs.readFileSync(path.join(folderPath, name), "utf8");
-    return { name, raw, json: JSON.parse(raw) };
-  });
+  const files = await Promise.all(
+    fileNames.map(async (name) => {
+      const raw = await fs.promises.readFile(path.join(folderPath, name), "utf8");
+      return { name, raw, json: JSON.parse(raw) };
+    }),
+  );
   return parseInstagramThread(files, path.basename(folderPath));
 }

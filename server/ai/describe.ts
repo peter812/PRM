@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import sharp from "sharp";
 import { db } from "../db";
 import { people, photos } from "@shared/schema";
@@ -52,18 +52,25 @@ export async function describePhoto(photoId: string): Promise<string> {
   const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
   if (!photo) throw new Error("Photo not found");
 
-  const resolvedFaces: string[] = [];
-  for (const face of (photo.facialIds as any[]) || []) {
-    let name = "unknown person";
-    if (face.personId) {
-      const [person] = await db.select().from(people).where(eq(people.id, face.personId));
-      if (person) name = `${person.firstName} ${person.lastName}`;
-    }
+  const facesList = (photo.facialIds as any[]) || [];
+  const personIds = Array.from(new Set(facesList.map((f) => f.personId).filter((id): id is string => Boolean(id))));
+  const peopleById = new Map<string, { firstName: string; lastName: string }>();
+  if (personIds.length > 0) {
+    const rows = await db
+      .select({ id: people.id, firstName: people.firstName, lastName: people.lastName })
+      .from(people)
+      .where(inArray(people.id, personIds));
+    for (const row of rows) peopleById.set(row.id, row);
+  }
+
+  const resolvedFaces: string[] = facesList.map((face) => {
+    const person = face.personId ? peopleById.get(face.personId) : undefined;
+    const name = person ? `${person.firstName} ${person.lastName}` : "unknown person";
     const coordStr = face.coordinates
       ? `at bounds [x:${face.coordinates.x}, y:${face.coordinates.y}, w:${face.coordinates.w}, h:${face.coordinates.h}]`
       : "";
-    resolvedFaces.push(`Face ${coordStr}: ${name}`);
-  }
+    return `Face ${coordStr}: ${name}`;
+  });
 
   let prompt = await getPrompt("imageDescribe");
   if (resolvedFaces.length > 0) {

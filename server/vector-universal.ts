@@ -14,7 +14,7 @@ import {
   dailyNotes,
   aiChats,
 } from "@shared/schema";
-import { buildClient, embedText, ensureCollection, loadVectorConfig, getVectorSetting, runPool } from "./vector";
+import { buildClient, embedText, ensureCollection, getVectorCacheVersion, loadVectorConfig, getVectorSetting, runPool } from "./vector";
 import { listStaleConversationIds, rechunkConversation } from "./message-chunks";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -46,15 +46,31 @@ export type UniversalSearchResult = {
 // ── Config ───────────────────────────────────────────────────────────────────
 
 const DEFAULT_UNIVERSAL_COLLECTION = "prm_universal";
+const UNIVERSAL_CONFIG_TTL_MS = 30_000;
+let cachedUniversalConfig: {
+  value: Awaited<ReturnType<typeof loadVectorConfig>> & { universalEnabled: boolean; universalCollection: string };
+  expiresAt: number;
+  version: number;
+} | null = null;
 
 export async function loadUniversalVectorConfig() {
-  const baseConfig = await loadVectorConfig();
-  return {
+  const now = Date.now();
+  const version = getVectorCacheVersion();
+  if (cachedUniversalConfig && cachedUniversalConfig.version === version && cachedUniversalConfig.expiresAt > now) {
+    return cachedUniversalConfig.value;
+  }
+  const [baseConfig, universalEnabled, universalCollection] = await Promise.all([
+    loadVectorConfig(),
+    getVectorSetting("vector_universal_enabled"),
+    getVectorSetting("vector_universal_collection"),
+  ]);
+  const cfg = {
     ...baseConfig,
-    universalEnabled: (await getVectorSetting("vector_universal_enabled")) === "true",
-    universalCollection:
-      (await getVectorSetting("vector_universal_collection")) ?? DEFAULT_UNIVERSAL_COLLECTION,
+    universalEnabled: universalEnabled === "true",
+    universalCollection: universalCollection ?? DEFAULT_UNIVERSAL_COLLECTION,
   };
+  cachedUniversalConfig = { value: cfg, expiresAt: Date.now() + UNIVERSAL_CONFIG_TTL_MS, version: getVectorCacheVersion() };
+  return cfg;
 }
 
 // ── Sources ──────────────────────────────────────────────────────────────────
@@ -239,14 +255,14 @@ export type UniversalPoint = {
 };
 
 /** Embeds and upserts one point into the universal collection. */
-export async function writeUniversalPoint(point: UniversalPoint): Promise<void> {
+export async function writeUniversalPoint(point: UniversalPoint, opts?: { wait?: boolean }): Promise<void> {
   const target = await universalClient();
   if (!target) throw new Error("Universal vector storage is disabled or not configured.");
   const vector = await embedText(point.text);
   await ensureCollection(target.client, target.collection, vector.length);
   await ensurePayloadIndexes(target.client, target.collection);
   await target.client.upsert(target.collection, {
-    wait: true,
+    wait: opts?.wait ?? true,
     points: [
       {
         id: point.id,
@@ -377,7 +393,7 @@ export type ResyncResult = "upserted" | "removed" | "disabled";
  * then re-adds it if the row still exists and is eligible. Call after any
  * create, edit or delete. For posts the row's post_type picks post vs story.
  */
-export async function resyncEntity(type: RowEntityType, entityId: string): Promise<ResyncResult> {
+export async function resyncEntity(type: RowEntityType, entityId: string, opts?: { wait?: boolean }): Promise<ResyncResult> {
   if (!(await universalClient())) return "disabled";
 
   const data = await loadEntityData(type, entityId);
@@ -396,15 +412,18 @@ export async function resyncEntity(type: RowEntityType, entityId: string): Promi
   }
 
   const pointId = data.vectorId && UUID_RE.test(data.vectorId) ? data.vectorId : randomUUID();
-  await writeUniversalPoint({
-    id: pointId,
-    type: actualType,
-    entityId,
-    text,
-    title: getTitleForEntity(actualType, data),
-    createdAt: data.postedAt ?? data.createdAt,
-    meta: data.meta,
-  });
+  await writeUniversalPoint(
+    {
+      id: pointId,
+      type: actualType,
+      entityId,
+      text,
+      title: getTitleForEntity(actualType, data),
+      createdAt: data.postedAt ?? data.createdAt,
+      meta: data.meta,
+    },
+    opts,
+  );
   const table = tableFor(actualType);
   await db.update(table).set({ vectorId: pointId, vectorSyncedAt: new Date() }).where(eq(table.id, entityId));
   return "upserted";
@@ -595,7 +614,7 @@ export async function bulkSyncAll(
   const finished = await runPool(work, cfg.embeddingConcurrency, async ({ type, id }) => {
     try {
       if (type === "conversation") await rechunkConversation(id);
-      else await resyncEntity(type, id);
+      else await resyncEntity(type, id, { wait: false });
       processed++;
     } catch (e: any) {
       failed++;

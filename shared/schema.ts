@@ -133,6 +133,7 @@ export const people = pgTable("people", {
   index("people_created_at_idx").on(t.createdAt),
   index("people_is_starred_idx").on(t.isStarred),
   index("people_personface_uuid_idx").on(t.personfaceUuid),
+  index("idx_people_social_account_uuids").using("gin", t.socialAccountUuids),
 ]);
 
 // Address history (address-history-plan.md §2). end_date NULL = current;
@@ -596,6 +597,7 @@ export const socialAccountHistory = pgTable("social_account_history", {
   index("social_account_history_direct_idx")
     .on(t.socialAccountId, t.detectedAt)
     .where(sql`entry_kind = 'direct'`),
+  index("idx_social_account_history_observed_via").on(t.observedViaAccountId),
 ]);
 
 export const socialFollows = pgTable("social_follows", {
@@ -684,6 +686,7 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   index("social_account_posts_scraped_from_idx").on(t.scrapedFrom),
   index("social_account_posts_instagram_pk_idx").on(t.instagramPk),
   index("social_account_posts_coauthor_account_ids_idx").using("gin", t.coauthorAccountIds),
+  index("idx_social_account_posts_account_active_type_posted").on(t.socialAccountId, t.isDeleted, t.postType, t.postedAt),
 ]);
 
 // Who a post tags, as a tagged tracking job saw it on that account's Tagged tab
@@ -2591,6 +2594,7 @@ export const conversations = pgTable("conversations", {
   index("conversations_last_message_at_idx").on(t.lastMessageAt),
   index("conversations_channel_type_idx").on(t.channelType),
   index("conversations_social_account_id_idx").on(t.socialAccountId),
+  index("idx_conversations_metadata_gin").using("gin", t.metadata),
 ]);
 
 export const messages = pgTable("messages", {

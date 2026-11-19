@@ -366,7 +366,7 @@ export async function analyzeRoster(
       }));
     }
   } else {
-    parsed = await Promise.all(slots.map(async (slot, i) => {
+    parsed = await mapWithConcurrency(slots, 4, async (slot, i) => {
       const [main] = firstBlock(ocrLines.filter((l) => contains(slot.main, l.box)));
       main.forEach((l) => used.add(l));
       slotText[i] = main;
@@ -377,7 +377,7 @@ export async function analyzeRoster(
       if (p2.lowConfidence) return p;
       slotText[i] = retry;
       return p2;
-    }));
+    });
   }
   const unmatched = ocrLines.filter((l) => !used.has(l));
 
@@ -396,4 +396,22 @@ export async function analyzeRoster(
 /** Save the kept faces as references; the skipped ones are dropped from compute. */
 export function commitRoster(location: ReferenceLocation, entries: NewReference[], discard: string[]): Promise<number> {
   return saveReferences(location, entries, discard);
+}
+
+/** Runs `fn` over `items` with at most `limit` concurrent executions, preserving index order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

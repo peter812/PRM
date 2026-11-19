@@ -1,9 +1,8 @@
-import { loadVectorConfig, embedText, buildClient, ensureCollection, getVectorSetting, runPool } from "./vector";
+import { loadVectorConfig, embedText, embedTexts, buildClient, ensureCollection, getVectorSetting } from "./vector";
 import { QdrantClient } from "@qdrant/js-client-rest";
-import { randomUUID } from "crypto";
 import { db } from "./db";
 import { appKnowledge, people, socialAccounts, photos, dailyNotes, groups } from "@shared/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import fs from "fs";
 import path from "path";
 import Papa from "papaparse";
@@ -49,49 +48,55 @@ export async function reindexAppKnowledge(): Promise<{ processed: number; failed
   // 3. Combine and chunk all text
   const fullText = allTexts.join("\n\n");
   const chunks = chunkText(fullText, 120, 10);
-
-  // 4. Save to db first
-  const inserted = [];
-  for (const chunk of chunks) {
-    const [row] = await db.insert(appKnowledge).values({ content: chunk }).returning();
-    inserted.push(row);
+  if (chunks.length === 0) {
+    return { processed: 0, failed: 0 };
   }
 
-  // 5. Asynchronously embed & upsert to Qdrant
+  // 4. Save to db first
+  const inserted = await db
+    .insert(appKnowledge)
+    .values(chunks.map((content) => ({ content })))
+    .returning();
+
+  // 5. Asynchronously embed & upsert to Qdrant in batches
+  const BATCH_SIZE = 32;
   void (async () => {
     let processedCount = 0;
     let failedCount = 0;
-    await runPool(inserted, cfg.embeddingConcurrency, async (row) => {
+    let collectionReady = false;
+    for (let start = 0; start < inserted.length; start += BATCH_SIZE) {
+      const batch = inserted.slice(start, start + BATCH_SIZE);
+      const isLastBatch = start + BATCH_SIZE >= inserted.length;
       try {
-        const vector = await embedText(row.content);
-        await ensureCollection(client, APP_KNOWLEDGE_COLLECTION, vector.length);
-        const pointId = randomUUID();
+        const vectors = await embedTexts(batch.map((row) => row.content));
+        if (!collectionReady && vectors.length > 0) {
+          await ensureCollection(client, APP_KNOWLEDGE_COLLECTION, vectors[0].length);
+          collectionReady = true;
+        }
 
         await client.upsert(APP_KNOWLEDGE_COLLECTION, {
-          wait: true,
-          points: [
-            {
-              id: pointId,
-              vector,
-              payload: {
-                content: row.content,
-                dbId: row.id,
-              },
+          wait: isLastBatch,
+          points: batch.map((row, idx) => ({
+            id: row.id,
+            vector: vectors[idx],
+            payload: {
+              content: row.content,
+              dbId: row.id,
             },
-          ],
+          })),
         });
 
         await db
           .update(appKnowledge)
-          .set({ vectorId: pointId, vectorSyncedAt: new Date() })
-          .where(eq(appKnowledge.id, row.id));
+          .set({ vectorId: sql`${appKnowledge.id}`, vectorSyncedAt: new Date() })
+          .where(inArray(appKnowledge.id, batch.map((row) => row.id)));
 
-        processedCount++;
+        processedCount += batch.length;
       } catch (err) {
-        console.error(`[app-knowledge] Failed to vectorize chunk ${row.id}:`, err);
-        failedCount++;
+        console.error(`[app-knowledge] Failed to vectorize batch starting at ${start}:`, err);
+        failedCount += batch.length;
       }
-    });
+    }
     console.log(`[app-knowledge] Background indexing complete. Vectorized: ${processedCount}, Failed: ${failedCount}`);
   })();
 
@@ -219,7 +224,7 @@ export async function resolveLinksInText(text: string): Promise<{ rawUrl: string
       } else {
         resolved.push({ rawUrl, url: "/groups", title });
       }
-    } else {
+    } else if (isSafeLinkUrl(rawUrl)) {
       // General page case
       resolved.push({ rawUrl, url: rawUrl, title });
     }
@@ -229,13 +234,32 @@ export async function resolveLinksInText(text: string): Promise<{ rawUrl: string
 }
 
 /**
+ * Validates that a link URL uses a safe relative `/` path (not `//` or `/\`)
+ * or an `http:` / `https:` scheme.
+ */
+function isSafeLinkUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("/")) {
+    return !trimmed.startsWith("//") && !trimmed.startsWith("/\\");
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Replaces the custom link formatting inside assistant text with standard clickable Markdown links.
  */
 export function cleanRawLinks(text: string, resolvedLinks: { rawUrl: string; url: string; title: string }[]): string {
   let cleaned = text;
   for (const link of resolvedLinks) {
     const rawPattern = `"${link.rawUrl}"{${link.title}}`;
-    cleaned = cleaned.split(rawPattern).join(`[${link.title}](${link.url})`);
+    const replacement = isSafeLinkUrl(link.url) ? `[${link.title}](${link.url})` : link.title;
+    cleaned = cleaned.split(rawPattern).join(replacement);
   }
   return cleaned;
 }

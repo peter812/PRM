@@ -62,13 +62,51 @@ function randomTimeInWindow(day: Date, [start, end]: [number, number]): Date {
   return at;
 }
 
+function isBlockedMetadataHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    /^169\.254\./.test(host) ||
+    host === "metadata.google.internal" ||
+    host === "metadata" ||
+    host === "fd00:ec2::254" ||
+    /^::ffff:(?:169\.254\.|a9fe:)/.test(host)
+  );
+}
+
 /**
- * The importer's service base URL without a trailing slash; "" when unset.
+ * Normalize and validate a stories importer service URL.
+ * Returns "" for empty input, a normalized http(s) URL without trailing slash when valid,
+ * or null when the URL has an invalid format, unsupported scheme, or points to a metadata host.
+ */
+export function normalizeStoriesServiceUrl(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  // Reject explicit non-http(s) schemes (e.g. file:, ftp:, javascript:) while allowing bare host:port.
+  if (!/^https?:\/\//i.test(trimmed) && (trimmed.includes("://") || /^[a-z][a-z\d+.-]*:(?!\d+(?:\/|$))/i.test(trimmed))) {
+    return null;
+  }
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
+    return null;
+  }
+  if (isBlockedMetadataHost(parsed.hostname)) {
+    return null;
+  }
+  return candidate;
+}
+
+/**
+ * The importer's service base URL without a trailing slash; "" when unset or invalid.
  * A bare "host:port" gets http:// — fetch() would otherwise read "host:" as the scheme.
  */
 export function storiesServiceUrl(importer: Pick<StoryImporter, "serviceUrl">): string {
-  const url = importer.serviceUrl.trim().replace(/\/$/, "");
-  return url && !/^https?:\/\//i.test(url) ? `http://${url}` : url;
+  return normalizeStoriesServiceUrl(importer.serviceUrl) ?? "";
 }
 
 /** Headers for a call to the importer's service: the shared secret, when one is set. */
@@ -167,23 +205,37 @@ async function startQueuedStoriesRuns(): Promise<void> {
     .from(storyScrapeRuns)
     .where(and(eq(storyScrapeRuns.kind, "stories"), eq(storyScrapeRuns.status, "queued")))
     .orderBy(storyScrapeRuns.startedAt);
+  if (queued.length === 0) return;
+
+  const seenImporters = new Set<string>();
+  const toProcess: typeof queued = [];
   for (const run of queued) {
-    const close = async (status: string, error: string) => {
-      await db.update(storyScrapeRuns).set({ status, error, finishedAt: new Date() }).where(eq(storyScrapeRuns.id, run.id));
-      broadcastStoryRun();
-    };
-    const [importer] = run.importerId ? await db.select().from(storyImporters).where(eq(storyImporters.id, run.importerId)) : [];
-    if (!importer) {
-      await close("error", "importer was removed while the run was queued");
-      continue;
+    if (run.importerId) {
+      if (seenImporters.has(run.importerId)) continue;
+      seenImporters.add(run.importerId);
     }
-    if (await hasRunInFlight(importer.id, new Date())) continue;
-    if (await rateLimitedUntil(importer.id)) {
-      await close("skipped", "rate limited on the previous run; backing off 48 h");
-      continue;
-    }
-    await startStoriesRun(importer, Boolean((run.counts as { unseenOnly?: boolean } | null)?.unseenOnly), run.id);
+    toProcess.push(run);
   }
+
+  await Promise.allSettled(
+    toProcess.map(async (run) => {
+      const close = async (status: string, error: string) => {
+        await db.update(storyScrapeRuns).set({ status, error, finishedAt: new Date() }).where(eq(storyScrapeRuns.id, run.id));
+        broadcastStoryRun();
+      };
+      const [importer] = run.importerId ? await db.select().from(storyImporters).where(eq(storyImporters.id, run.importerId)) : [];
+      if (!importer) {
+        await close("error", "importer was removed while the run was queued");
+        return;
+      }
+      if (await hasRunInFlight(importer.id, new Date())) return;
+      if (await rateLimitedUntil(importer.id)) {
+        await close("skipped", "rate limited on the previous run; backing off 48 h");
+        return;
+      }
+      await startStoriesRun(importer, Boolean((run.counts as { unseenOnly?: boolean } | null)?.unseenOnly), run.id);
+    }),
+  );
 }
 
 /** Stories runs changed (queued, started, finished, deleted): the task tracker refetches. */
@@ -248,6 +300,7 @@ async function startRun(
       method: "POST",
       headers: { "content-type": "application/json", ...storiesServiceHeaders(importer) },
       body: JSON.stringify({ runId, token, ...payload }),
+      redirect: "error",
       // The service opens Instagram before answering; give it time to load.
       signal: AbortSignal.timeout(120_000),
     });

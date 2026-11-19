@@ -11,7 +11,7 @@
 import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
-import { faceClusterRejections, faceClusters, facePairDismissals, faces, photos, socialAccountPosts, socialAccounts } from "@shared/schema";
+import { faceClusterRejections, faceClusters, facePairDismissals, faces, photos, socialAccountPosts, socialAccounts, type Photo } from "@shared/schema";
 import { log } from "./vite";
 import { clearedSuggestions, computeFetch, connectFaces, faceGroupUnnamed, getComputeConnection, RecognitionRequestError, type FacialId } from "./recognition";
 import { lookAlikesFor } from "./face-lookalikes";
@@ -269,9 +269,13 @@ async function facesOfClusters(ids: string[], montageOnly: boolean, scope?: Clus
     WHERE ${inArray(faces.clusterId, ids)} ${montageOnly && !scope ? sql`AND m.ord IS NOT NULL` : sql``}
     ORDER BY faces.cluster_id, in_scope DESC, m.ord NULLS LAST, faces.id`)).rows;
   for (const r of rows) {
-    const list = out.get(r.cluster) ?? [];
+    let list = out.get(r.cluster);
+    if (!list) {
+      list = [];
+      out.set(r.cluster, list);
+    }
     if (montageOnly && list.length >= MONTAGE_SIZE) continue;
-    out.set(r.cluster, [...list, { id: r.id, cropUrl: r.crop, inScope: r.in_scope }]);
+    list.push({ id: r.id, cropUrl: r.crop, inScope: r.in_scope });
   }
   return out;
 }
@@ -285,19 +289,57 @@ async function facesOfClusters(ids: string[], montageOnly: boolean, scope?: Clus
 async function clusterSuggestions(ids: string[]): Promise<Map<string, { suggestions: ClusterSuggestion[]; banner: ClusterBanner | null }>> {
   const out = new Map<string, { suggestions: ClusterSuggestion[]; banner: ClusterBanner | null }>();
   if (!ids.length) return out;
-  const faceRows = await db.select({ id: faces.id, cluster: faces.clusterId, photoId: faces.photoId }).from(faces).where(inArray(faces.clusterId, ids));
-  const photoIds = Array.from(new Set(faceRows.map((f) => f.photoId).filter((p): p is string => !!p)));
-  const photoRows = photoIds.length ? await db.select().from(photos).where(inArray(photos.id, photoIds)) : [];
+  const faceRows = (await db.execute<{ cluster: string; photoId: string | null; totalFaces: number }>(sql`
+    SELECT cluster, photo_id AS "photoId", total_faces AS "totalFaces"
+    FROM (
+      SELECT
+        cluster_id AS cluster,
+        photo_id,
+        COUNT(*) OVER (PARTITION BY cluster_id)::int AS total_faces,
+        ROW_NUMBER() OVER (PARTITION BY cluster_id ORDER BY id) AS rn
+      FROM faces
+      WHERE ${inArray(faces.clusterId, ids)}
+    ) sub
+    WHERE rn <= 6
+  `)).rows;
+  const clusterPhotosById = new Map<string, string[]>();
+  const clusterSizeById = new Map<string, number>();
+  const photoIdSet = new Set<string>();
+  for (const r of faceRows) {
+    clusterSizeById.set(r.cluster, r.totalFaces);
+    if (!r.photoId) continue;
+    photoIdSet.add(r.photoId);
+    let list = clusterPhotosById.get(r.cluster);
+    if (!list) {
+      list = [];
+      clusterPhotosById.set(r.cluster, list);
+    }
+    if (!list.includes(r.photoId)) list.push(r.photoId);
+  }
+  const photoIds = Array.from(photoIdSet);
+  const photoRows = photoIds.length
+    ? await db
+        .select({
+          id: photos.id,
+          prmLocation: photos.prmLocation,
+          location: photos.location,
+          ogMetadata: photos.ogMetadata,
+          facialIds: photos.facialIds,
+        })
+        .from(photos)
+        .where(inArray(photos.id, photoIds))
+    : [];
   const photoById = new Map(photoRows.map((p) => [p.id, p]));
   const [byPhoto, rejections, medoids] = await Promise.all([
-    photoSuggestions(photoRows),
+    photoSuggestions(photoRows as unknown as Photo[]),
     db.execute<{ cluster: string; identity: string; n: number }>(sql`
       SELECT faces.cluster_id AS cluster, r.identity_id AS identity, count(*)::int AS n
       FROM face_cluster_rejections r JOIN faces ON faces.id = r.face_id WHERE ${inArray(faces.clusterId, ids)} GROUP BY 1, 2`),
     db.select({ id: faceClusters.id, medoid: faceClusters.medoidFaceId }).from(faceClusters).where(inArray(faceClusters.id, ids)),
   ]);
+  const medoidByCluster = new Map(medoids.map((m) => [m.id, m.medoid]));
   const lookAlikes = await lookAlikesFor(medoids.map((m) => m.medoid), { allowStale: true });
-  const topLookAlike = (cluster: string) => lookAlikes.get(medoids.find((m) => m.id === cluster)?.medoid ?? "")?.[0];
+  const topLookAlike = (cluster: string) => lookAlikes.get(medoidByCluster.get(cluster) ?? "")?.[0];
   const lookAlikeIdentities = await buildIdentityCache(Array.from(new Set(ids.map(topLookAlike).filter((la) => !!la).map((la) => la!.personfaceUuid))));
   const rejected = new Map(rejections.rows.map((r) => [`${r.cluster}|${r.identity}`, r.n]));
 
@@ -306,6 +348,7 @@ async function clusterSuggestions(ids: string[]): Promise<Map<string, { suggesti
   const unlinked = accountIds.length
     ? (await db.select({ id: socialAccounts.id }).from(socialAccounts).where(and(inArray(socialAccounts.id, accountIds), isNull(socialAccounts.personfaceUuid)))).map((r) => r.id)
     : [];
+  const unlinkedSet = new Set(unlinked);
   const soloTotals = new Map(unlinked.length ? (await db.execute<{ account: string; n: number }>(sql`
     SELECT social_account_posts.social_account_id AS account, count(*)::int AS n FROM social_account_posts
     JOIN photos p ON p.prm_location = 'post:' || social_account_posts.id
@@ -313,8 +356,8 @@ async function clusterSuggestions(ids: string[]): Promise<Map<string, { suggesti
     GROUP BY 1`)).rows.map((r) => [r.account, r.n]) : []);
 
   for (const id of ids) {
-    const members = faceRows.filter((f) => f.cluster === id);
-    const clusterPhotos = Array.from(new Set(members.map((f) => f.photoId).filter((p): p is string => !!p)));
+    const clusterPhotos = clusterPhotosById.get(id) ?? [];
+    const memberCount = clusterSizeById.get(id) ?? 0;
     const tally = new Map<string, { suggestion: FaceReviewSuggestion; photos: Set<string>; solo: number }>();
     for (const photoId of clusterPhotos) {
       const solo = ((photoById.get(photoId)?.facialIds ?? []) as FacialId[]).length === 1;
@@ -325,7 +368,7 @@ async function clusterSuggestions(ids: string[]): Promise<Map<string, { suggesti
         tally.set(identityKey(s), t);
       }
     }
-    const keep = (s: { socialAccountId?: string; personId?: string; username?: string }) => (rejected.get(`${id}|${identityKey(s)}`) ?? 0) * 2 < members.length;
+    const keep = (s: { socialAccountId?: string; personId?: string; username?: string }) => (rejected.get(`${id}|${identityKey(s)}`) ?? 0) * 2 < memberCount;
     const suggestions: ClusterSuggestion[] = Array.from(tally.values())
       .map((t) => ({ ...t.suggestion, photos: t.photos.size, share: t.photos.size / (clusterPhotos.length || 1) }))
       .filter(keep)
@@ -340,7 +383,7 @@ async function clusterSuggestions(ids: string[]): Promise<Map<string, { suggesti
     // The solo-post banner wins over a profile-picture one.
     let banner: ClusterBanner | null = null;
     for (const s of suggestions) {
-      if (!s.socialAccountId || !unlinked.includes(s.socialAccountId)) continue;
+      if (!s.socialAccountId || !unlinkedSet.has(s.socialAccountId)) continue;
       const total = soloTotals.get(s.socialAccountId) ?? 0;
       const hits = tally.get(s.socialAccountId)?.solo ?? 0;
       if (s.reason === "owner" && total >= BANNER_MIN_SOLO_POSTS && hits / total >= BANNER_MIN_SHARE) {

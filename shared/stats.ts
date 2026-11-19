@@ -86,3 +86,6 @@ export type GroupsFacesStats = {
   photos: number;
   photosWithFaces: number;
 };
+
+/** One Instagram run that reached Instagram; the client buckets them by local day. */
+export type InstagramRun = { kind: "stories" | "tracking"; startedAt: string };

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, ChevronRight, ExternalLink, Eye, ImageIcon, Info, Layers, Loader2, Sparkles, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useWindowedItems } from "@/hooks/use-windowed-items";
 import { safeJsonParse } from "@/lib/utils";
 import { HIGHLIGHT_PALETTE } from "@shared/constants";
 import type { HighlightWithStints, SocialAccountPost, StorySeenBy, TrackingJob } from "@shared/schema";
@@ -335,6 +336,46 @@ export function StoryDialog({ stories, highlights, onClose }: { stories: SocialA
 // Filter value for stories that aren't currently in any highlight set.
 const NO_SET = "__none__";
 
+function StoryCard({
+  group,
+  sets,
+  onSelect,
+}: {
+  group: SocialAccountPost[];
+  sets: HighlightWithStints[];
+  onSelect: (group: SocialAccountPost[]) => void;
+}) {
+  const cover = group[0];
+  const image = useMemo(() => firstImage(cover), [cover.content]);
+
+  return (
+    <div className="rounded-lg" style={sets.length ? { background: ringBackground(sets.map((h) => h.color)), padding: 2 } : undefined}>
+      <button
+        type="button"
+        onClick={() => onSelect(group)}
+        className="group relative block w-full aspect-[9/16] overflow-hidden rounded-md bg-muted text-left focus:outline-none focus:ring-2 focus:ring-ring"
+        data-testid={`card-story-${cover.id}`}
+      >
+        {image ? (
+          <img src={withImageSize(image, 360)} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
+        ) : (
+          <div className="h-full w-full flex items-center justify-center">
+            <ImageIcon className="h-8 w-8 text-muted-foreground/40" />
+          </div>
+        )}
+        {group.length > 1 && (
+          <div className="absolute top-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-xs text-white">{group.length}</div>
+        )}
+        {isVideo(cover) && <Video className="absolute top-2 left-2 h-4 w-4 text-white drop-shadow" />}
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-6 text-[11px] text-white">
+          {cover.postedAt ? new Date(cover.postedAt).toLocaleDateString() : ""}
+          {sets.length > 0 && <div className="truncate opacity-90">{sets.map((h) => h.title || "Untitled").join(" · ")}</div>}
+        </div>
+      </button>
+    </div>
+  );
+}
+
 export function StoriesTab({
   accountId,
   stories,
@@ -387,14 +428,21 @@ export function StoriesTab({
     }
     wasQueued.current = highlightsQueued;
   }, [highlightsQueued, accountId]);
+
   // The grid shows current membership only; the dialog has the history.
-  const live = highlights.filter((h) => !h.deletedSeenAt);
-  const setsOf = new Map<string, HighlightWithStints[]>();
-  for (const set of live) {
-    for (const m of set.stints) if (!m.leftSeenAt) setsOf.set(m.postId, [...(setsOf.get(m.postId) ?? []), set]);
-  }
-  const activeSet = live.find((h) => h.id === setFilter) ?? null;
-  const unset = stories.filter((s) => !setsOf.has(s.id));
+  const { live, setsOf } = useMemo(() => {
+    const liveSets = highlights.filter((h) => !h.deletedSeenAt);
+    const map = new Map<string, HighlightWithStints[]>();
+    for (const set of liveSets) {
+      for (const m of set.stints) {
+        if (!m.leftSeenAt) map.set(m.postId, [...(map.get(m.postId) ?? []), set]);
+      }
+    }
+    return { live: liveSets, setsOf: map };
+  }, [highlights]);
+
+  const activeSet = useMemo(() => live.find((h) => h.id === setFilter) ?? null, [live, setFilter]);
+  const unset = useMemo(() => stories.filter((s) => !setsOf.has(s.id)), [stories, setsOf]);
   const onlyUnset = setFilter === NO_SET;
 
   useEffect(() => {
@@ -408,30 +456,37 @@ export function StoriesTab({
     }
   }, [stories]);
 
-  const time = (p: SocialAccountPost) => new Date(p.postedAt ?? p.createdAt).getTime();
-  const sorted = [...(onlyUnset ? unset : stories)].sort((a, b) => (newestFirst ? time(b) - time(a) : time(a) - time(b)));
-
   // A card is one story, or — combined — every story from the same local day.
   // Within a day the stories stay in posting order so the arrows read like Instagram did.
-  let cards: SocialAccountPost[][];
-  let notDownloaded = 0;
-  if (activeSet) {
-    // A set reads in its own order (the sort button flips it); its stories aren't combined by day.
-    const byId = new Map(stories.map((s) => [s.id, s]));
-    const inSet = activeSet.stints.filter((m) => !m.leftSeenAt).sort((a, b) => a.position - b.position).map((m) => byId.get(m.postId));
-    const held = inSet.filter((s): s is SocialAccountPost => Boolean(s));
-    notDownloaded = inSet.length - held.length;
-    cards = (newestFirst ? held : held.reverse()).map((s) => [s]);
-  } else if (combineDaily) {
-    const byDay = new Map<string, SocialAccountPost[]>();
-    for (const s of sorted) {
-      const day = new Date(time(s)).toDateString();
-      byDay.set(day, [...(byDay.get(day) ?? []), s]);
+  const { cards, notDownloaded } = useMemo(() => {
+    const time = (p: SocialAccountPost) => new Date(p.postedAt ?? p.createdAt).getTime();
+    if (activeSet) {
+      // A set reads in its own order (the sort button flips it); its stories aren't combined by day.
+      const byId = new Map(stories.map((s) => [s.id, s]));
+      const inSet = activeSet.stints.filter((m) => !m.leftSeenAt).sort((a, b) => a.position - b.position).map((m) => byId.get(m.postId));
+      const held = inSet.filter((s): s is SocialAccountPost => Boolean(s));
+      const missing = inSet.length - held.length;
+      const ordered = newestFirst ? held : held.reverse();
+      return { cards: ordered.map((s) => [s]), notDownloaded: missing };
     }
-    cards = [...byDay.values()].map((day) => day.sort((a, b) => time(a) - time(b)));
-  } else {
-    cards = sorted.map((s) => [s]);
-  }
+    const sorted = [...(onlyUnset ? unset : stories)].sort((a, b) => (newestFirst ? time(b) - time(a) : time(a) - time(b)));
+    if (combineDaily) {
+      const byDay = new Map<string, SocialAccountPost[]>();
+      for (const s of sorted) {
+        const day = new Date(time(s)).toDateString();
+        byDay.set(day, [...(byDay.get(day) ?? []), s]);
+      }
+      return { cards: [...byDay.values()].map((day) => day.sort((a, b) => time(a) - time(b))), notDownloaded: 0 };
+    }
+    return { cards: sorted.map((s) => [s]), notDownloaded: 0 };
+  }, [activeSet, stories, onlyUnset, unset, newestFirst, combineDaily]);
+
+  const { visibleItems: visibleCards, hasMore, sentinelRef, loadMore, remainingCount } = useWindowedItems(cards, [
+    accountId,
+    setFilter,
+    combineDaily,
+    newestFirst,
+  ]);
 
   return (
     <div className="px-6 py-6">
@@ -526,40 +581,23 @@ export function StoriesTab({
           <p className="text-sm">No stories recorded yet</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-          {cards.map((group) => {
-            const cover = group[0];
-            const image = firstImage(cover);
-            // Every set any story on the card is in, once each.
-            const sets = [...new Map(group.flatMap((s) => setsOf.get(s.id) ?? []).map((h) => [h.id, h])).values()];
-            return (
-              <div key={cover.id} className="rounded-lg" style={sets.length ? { background: ringBackground(sets.map((h) => h.color)), padding: 2 } : undefined}>
-              <button
-                type="button"
-                onClick={() => setSelected(group)}
-                className="group relative block w-full aspect-[9/16] overflow-hidden rounded-md bg-muted text-left focus:outline-none focus:ring-2 focus:ring-ring"
-                data-testid={`card-story-${cover.id}`}
-              >
-                {image ? (
-                  <img src={withImageSize(image, 360)} alt="" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
-                ) : (
-                  <div className="h-full w-full flex items-center justify-center">
-                    <ImageIcon className="h-8 w-8 text-muted-foreground/40" />
-                  </div>
-                )}
-                {group.length > 1 && (
-                  <div className="absolute top-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-xs text-white">{group.length}</div>
-                )}
-                {isVideo(cover) && <Video className="absolute top-2 left-2 h-4 w-4 text-white drop-shadow" />}
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-6 text-[11px] text-white">
-                  {cover.postedAt ? new Date(cover.postedAt).toLocaleDateString() : ""}
-                  {sets.length > 0 && <div className="truncate opacity-90">{sets.map((h) => h.title || "Untitled").join(" · ")}</div>}
-                </div>
-              </button>
-              </div>
-            );
-          })}
-        </div>
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+            {visibleCards.map((group) => {
+              const cover = group[0];
+              // Every set any story on the card is in, once each.
+              const sets = [...new Map(group.flatMap((s) => setsOf.get(s.id) ?? []).map((h) => [h.id, h])).values()];
+              return <StoryCard key={cover.id} group={group} sets={sets} onSelect={setSelected} />;
+            })}
+          </div>
+          {hasMore && (
+            <div ref={sentinelRef} className="flex justify-center pt-4">
+              <Button variant="outline" size="sm" onClick={loadMore} data-testid="button-load-more-stories">
+                Load more ({remainingCount} remaining)
+              </Button>
+            </div>
+          )}
+        </>
       )}
 
       {selected && <StoryDialog key={selected[0].id} stories={selected} highlights={highlights} onClose={() => setSelected(null)} />}

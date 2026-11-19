@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import fs from "fs";
 import path from "path";
 import multer from "multer";
+import { z } from "zod";
 import { storage } from "../storage";
 import { triggerTaskWorker } from "../task-worker";
 import { requireAuth } from "../auth";
@@ -59,7 +60,9 @@ const upload = multer({
       })().catch((err) => cb(err, ""));
     },
   }),
-  limits: { fileSize: 1024 * 1024 * 1024 },
+  limits: {
+    fileSize: (Math.max(1, Number(process.env.MAX_BACKUP_UPLOAD_MB) || 250)) * 1024 * 1024,
+  },
   fileFilter: (_req, file, cb) => {
     if (file.originalname.endsWith(".xml") || file.mimetype === "application/xml" || file.mimetype === "text/xml") {
       cb(null, true);
@@ -115,26 +118,44 @@ export function registerRoutes(app: Express) {
     }
   });
 
+  const backupScheduleUpdateSchema = z
+    .object({
+      enabled: z.boolean().optional(),
+      intervalDays: z
+        .number()
+        .refine((v) => BACKUP_INTERVAL_DAYS.includes(v), {
+          message: "Invalid backup frequency",
+        })
+        .optional(),
+      time: z
+        .string()
+        .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Invalid backup time")
+        .optional(),
+      includeHistory: z.boolean().optional(),
+      keepLast: z
+        .number()
+        .refine((v) => BACKUP_KEEP_OPTIONS.includes(v), {
+          message: "Invalid retention count",
+        })
+        .optional(),
+    })
+    .strict();
+
   // PUT /api/backups/schedule - Update auto backup settings
   app.put("/api/backups/schedule", async (req: Request, res: Response) => {
     try {
+      const parsed = backupScheduleUpdateSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid backup schedule" });
+      }
       const current = await getBackupSchedule();
-      const { enabled, intervalDays, time, includeHistory, keepLast } = req.body ?? {};
-      if (intervalDays !== undefined && !BACKUP_INTERVAL_DAYS.includes(intervalDays)) {
-        return res.status(400).json({ error: "Invalid backup frequency" });
-      }
-      if (keepLast !== undefined && !BACKUP_KEEP_OPTIONS.includes(keepLast)) {
-        return res.status(400).json({ error: "Invalid retention count" });
-      }
-      if (time !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
-        return res.status(400).json({ error: "Invalid backup time" });
-      }
+      const { enabled, intervalDays, time, includeHistory, keepLast } = parsed.data;
       const next: BackupSchedule = {
         ...current,
-        ...(typeof enabled === "boolean" ? { enabled } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
         ...(intervalDays !== undefined ? { intervalDays } : {}),
         ...(time !== undefined ? { time } : {}),
-        ...(typeof includeHistory === "boolean" ? { includeHistory } : {}),
+        ...(includeHistory !== undefined ? { includeHistory } : {}),
         ...(keepLast !== undefined ? { keepLast } : {}),
       };
       await saveBackupSchedule(next);
@@ -201,6 +222,11 @@ export function registerRoutes(app: Express) {
       if (!header.startsWith("<?xml") && !header.startsWith("<export")) {
         await fs.promises.unlink(targetPath).catch(() => {});
         return res.status(400).json({ error: "Invalid XML backup file: must start with <?xml or <export>" });
+      }
+
+      if (/<!(?:DOCTYPE|ENTITY)\b/i.test(header)) {
+        await fs.promises.unlink(targetPath).catch(() => {});
+        return res.status(400).json({ error: "Invalid XML backup file: DOCTYPE and ENTITY declarations are not allowed" });
       }
 
       const stat = await fs.promises.stat(targetPath);

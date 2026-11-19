@@ -1,9 +1,12 @@
+import { randomUUID } from "crypto";
 import type { Request, Response, NextFunction } from "express";
+
+const REQUEST_ID_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * Middleware that assigns a unique request ID to every API request.
- * If the client sends an X-Request-ID header, it is preserved;
- * otherwise a new one is generated.
+ * If the client sends a valid X-Request-ID header, it is preserved;
+ * otherwise a new server-side UUID is generated.
  */
 export function requestIdMiddleware(req: Request, res: Response, next: NextFunction): void {
   if (!req.path.startsWith("/api")) {
@@ -11,8 +14,11 @@ export function requestIdMiddleware(req: Request, res: Response, next: NextFunct
     return;
   }
 
-  const requestId = (req.headers["x-request-id"] as string) ||
-    `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const incoming = req.headers["x-request-id"];
+  const requestId =
+    typeof incoming === "string" && REQUEST_ID_REGEX.test(incoming)
+      ? incoming
+      : randomUUID();
 
   // Store on request for use by other middleware/handlers
   (req as any).requestId = requestId;

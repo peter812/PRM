@@ -7,6 +7,7 @@
  * flat, so a DOM is not worth its memory.
  */
 import crypto from "crypto";
+import fs from "fs";
 import { cleanPhoneNumberForStorage } from "@shared/schema";
 import { unescapeXml } from "./xml-utils";
 
@@ -55,12 +56,11 @@ function externalId(parts: string[]): string {
   return `sms:${crypto.createHash("md5").update(parts.join("|")).digest("hex").slice(0, 16)}`;
 }
 
-export function parseSmsBackup(xml: string): { threads: ParsedSmsThread[]; ownerPhone: string | null } {
-  // MMS addr type 151 is the device owner
-  const ownerPhone = cleanPhoneNumberForStorage(attr(xml.match(/<addr [^>]*type="151"[^>]*\/>/)?.[0] ?? "", "address"));
-  const threads = new Map<string, ParsedSmsThread>();
+type AddMessageFn = (addresses: string[], contactName: string | null, msg: ParsedSmsMessage) => void;
 
-  const add = (addresses: string[], contactName: string | null, msg: ParsedSmsMessage) => {
+function createThreadAccumulator() {
+  const threads = new Map<string, ParsedSmsThread>();
+  const add: AddMessageFn = (addresses, contactName, msg) => {
     const key = [...new Set(addresses)].sort().join(",");
     if (!key) return;
     let thread = threads.get(key);
@@ -71,65 +71,145 @@ export function parseSmsBackup(xml: string): { threads: ParsedSmsThread[]; owner
     thread.contactName ??= contactName;
     thread.messages.push(msg);
   };
+  const finalize = () => {
+    for (const t of threads.values()) t.messages.sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+    return [...threads.values()];
+  };
+  return { add, finalize };
+}
+
+function processSmsElement(el: string, add: AddMessageFn): void {
+  const address = cleanPhoneNumberForStorage(attr(el, "address"));
+  const date = attr(el, "date");
+  const body = attr(el, "body");
+  if (!address || !date || !body) return;
+  const isOwner = attr(el, "type") !== "1";
+  add([address], contactNameOf(el), {
+    externalId: externalId([date, address, body]),
+    sentAt: new Date(parseInt(date)),
+    isOwner,
+    senderAddress: isOwner ? null : address,
+    content: body,
+    hasMedia: false,
+  });
+}
+
+function processMmsElement(
+  el: string,
+  ownerPhone: string | null,
+  add: AddMessageFn
+): string | null {
+  let detectedOwner = ownerPhone;
+  const date = attr(el, "date");
+  if (!date) return detectedOwner;
+  const isOwner = attr(el, "msg_box") !== "1";
+
+  let from: string | null = null;
+  const others: string[] = [];
+  for (const a of el.match(/<addr [^>]*\/>/g) ?? []) {
+    const addrType = attr(a, "type");
+    const address = cleanPhoneNumberForStorage(attr(a, "address"));
+    if (addrType === "151") {
+      if (!detectedOwner && address) detectedOwner = address;
+      continue;
+    }
+    if (!address || address === detectedOwner) continue;
+    if (addrType === "137") from = address;
+    others.push(address);
+  }
+  // Older exports have no <addrs>; the address attr is tilde-joined
+  if (others.length === 0) {
+    for (const raw of attr(el, "address").split("~")) {
+      const address = cleanPhoneNumberForStorage(raw);
+      if (address && address !== detectedOwner) others.push(address);
+    }
+    from = others[0] ?? null;
+  }
+
+  const texts: string[] = [];
+  let hasMedia = false;
+  for (const part of el.match(/<part [^>]*\/>/g) ?? []) {
+    const ct = attr(part, "ct");
+    if (ct === "text/plain") texts.push(attr(part, "text"));
+    else if (/^(image|video|audio)\//.test(ct)) hasMedia = true;
+  }
+  const content = texts.join("\n").trim() || null;
+  if (!content && !hasMedia) return detectedOwner;
+
+  add(others, contactNameOf(el), {
+    externalId: externalId([date, others.join(","), content ?? "media"]),
+    sentAt: new Date(parseInt(date)),
+    isOwner,
+    senderAddress: isOwner ? null : from,
+    content,
+    hasMedia,
+  });
+  return detectedOwner;
+}
+
+export function parseSmsBackup(xml: string): { threads: ParsedSmsThread[]; ownerPhone: string | null } {
+  // MMS addr type 151 is the device owner
+  let ownerPhone: string | null = cleanPhoneNumberForStorage(attr(xml.match(/<addr [^>]*type="151"[^>]*\/>/)?.[0] ?? "", "address"));
+  const { add, finalize } = createThreadAccumulator();
 
   for (const el of xml.match(/<sms [^>]*\/>/g) ?? []) {
-    const address = cleanPhoneNumberForStorage(attr(el, "address"));
-    const date = attr(el, "date");
-    const body = attr(el, "body");
-    if (!address || !date || !body) continue;
-    const isOwner = attr(el, "type") !== "1";
-    add([address], contactNameOf(el), {
-      externalId: externalId([date, address, body]),
-      sentAt: new Date(parseInt(date)),
-      isOwner,
-      senderAddress: isOwner ? null : address,
-      content: body,
-      hasMedia: false,
-    });
+    processSmsElement(el, add);
   }
 
   for (const el of xml.match(/<mms [^>]*>[\s\S]*?<\/mms>/g) ?? []) {
-    const date = attr(el, "date");
-    if (!date) continue;
-    const isOwner = attr(el, "msg_box") !== "1";
-
-    let from: string | null = null;
-    const others: string[] = [];
-    for (const a of el.match(/<addr [^>]*\/>/g) ?? []) {
-      const address = cleanPhoneNumberForStorage(attr(a, "address"));
-      if (!address || address === ownerPhone) continue;
-      if (attr(a, "type") === "137") from = address;
-      others.push(address);
-    }
-    // Older exports have no <addrs>; the address attr is tilde-joined
-    if (others.length === 0) {
-      for (const raw of attr(el, "address").split("~")) {
-        const address = cleanPhoneNumberForStorage(raw);
-        if (address && address !== ownerPhone) others.push(address);
-      }
-      from = others[0] ?? null;
-    }
-
-    const texts: string[] = [];
-    let hasMedia = false;
-    for (const part of el.match(/<part [^>]*\/>/g) ?? []) {
-      const ct = attr(part, "ct");
-      if (ct === "text/plain") texts.push(attr(part, "text"));
-      else if (/^(image|video|audio)\//.test(ct)) hasMedia = true;
-    }
-    const content = texts.join("\n").trim() || null;
-    if (!content && !hasMedia) continue;
-
-    add(others, contactNameOf(el), {
-      externalId: externalId([date, others.join(","), content ?? "media"]),
-      sentAt: new Date(parseInt(date)),
-      isOwner,
-      senderAddress: isOwner ? null : from,
-      content,
-      hasMedia,
-    });
+    ownerPhone = processMmsElement(el, ownerPhone, add);
   }
 
-  for (const t of threads.values()) t.messages.sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
-  return { threads: [...threads.values()], ownerPhone };
+  return { threads: finalize(), ownerPhone };
+}
+
+/**
+ * Streams an SMS Backup & Restore XML file in chunks so multi-hundred-MB
+ * backups never load into memory as a single string or block the event loop.
+ */
+export async function parseSmsBackupStream(
+  filePath: string
+): Promise<{ threads: ParsedSmsThread[]; ownerPhone: string | null }> {
+  let ownerPhone: string | null = null;
+  const { add, finalize } = createThreadAccumulator();
+  const stream = fs.createReadStream(filePath, { encoding: "utf-8", highWaterMark: 256 * 1024 });
+
+  let buffer = "";
+  for await (const chunk of stream) {
+    buffer += chunk;
+    let pos = 0;
+
+    while (pos < buffer.length) {
+      const idxSms = buffer.indexOf("<sms ", pos);
+      const idxMms = buffer.indexOf("<mms ", pos);
+      if (idxSms === -1 && idxMms === -1) {
+        // Keep trailing 4 chars in case "<sms " or "<mms " spans a chunk boundary
+        pos = Math.max(pos, buffer.length - 4);
+        break;
+      }
+
+      const isSms = idxSms !== -1 && (idxMms === -1 || idxSms < idxMms);
+      if (isSms) {
+        const endIdx = buffer.indexOf("/>", idxSms);
+        if (endIdx === -1) {
+          pos = idxSms;
+          break;
+        }
+        processSmsElement(buffer.slice(idxSms, endIdx + 2), add);
+        pos = endIdx + 2;
+      } else {
+        const endIdx = buffer.indexOf("</mms>", idxMms);
+        if (endIdx === -1) {
+          pos = idxMms;
+          break;
+        }
+        ownerPhone = processMmsElement(buffer.slice(idxMms, endIdx + 6), ownerPhone, add);
+        pos = endIdx + 6;
+      }
+    }
+
+    buffer = pos > 0 ? buffer.slice(pos) : buffer;
+  }
+
+  return { threads: finalize(), ownerPhone };
 }

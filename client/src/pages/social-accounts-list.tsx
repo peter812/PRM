@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown, BarChart3, Star, SlidersHorizontal } from "lucide-react";

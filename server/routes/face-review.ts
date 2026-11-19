@@ -15,6 +15,7 @@ import {
 import {
   FACE_REVIEW_KINDS, type FaceReviewKind,
   getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto, accountForHandle, getPhotoFaceAnalysis,
+  invalidateFaceReviewCountsCache,
 } from "../face-review";
 import {
   runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces, honeypotCluster, identityKey,
@@ -125,7 +126,9 @@ export function registerFaceReview(app: Express) {
   // Run auto-assign over every open face now (§8.2); it also runs hourly and after each recognition.
   app.post("/api/face-review/auto-assign", requireAuth, async (_req, res) => {
     try {
-      res.json(await autoAssignFaces());
+      const result = await autoAssignFaces();
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error) {
       fail(res, "auto-assign faces", error);
     }
@@ -134,7 +137,9 @@ export function registerFaceReview(app: Express) {
   // Cluster open faces now (face-clustering-plan.md §3.2); it also runs daily.
   app.post("/api/face-review/cluster", requireAuth, async (_req, res) => {
     try {
-      res.json(await runFaceClustering());
+      const result = await runFaceClustering();
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error: any) {
       console.error("Face review: cluster faces:", error);
       res.status(500).json({ error: error?.message ?? "Failed to cluster faces" }); // says when compute needs updating
@@ -193,7 +198,9 @@ export function registerFaceReview(app: Express) {
       const socialAccountId = req.body?.socialAccountId ?? (!personId && typeof username === "string" ? await accountForHandle(username) : undefined);
       const faceIds = parseOptionalIds(req.body?.faceIds);
       if (faceIds === null) return res.status(400).json({ error: "faceIds must be a non-empty list" });
-      res.json(await nameCluster(req.params.id, faceIds, { socialAccountId, personId }));
+      const result = await nameCluster(req.params.id, faceIds, { socialAccountId, personId });
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error) {
       fail(res, "name cluster", error);
     }
@@ -216,7 +223,9 @@ export function registerFaceReview(app: Express) {
     try {
       const faceIds = parseOptionalIds(req.body?.faceIds);
       if (faceIds === null) return res.status(400).json({ error: "faceIds must be a non-empty list" });
-      res.json(await dismissClusterFaces(req.params.id, faceIds));
+      const result = await dismissClusterFaces(req.params.id, faceIds);
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error) {
       fail(res, "dismiss cluster faces", error);
     }
@@ -227,7 +236,9 @@ export function registerFaceReview(app: Express) {
     try {
       const faceIds = parseOptionalIds(req.body?.faceIds);
       if (faceIds === null) return res.status(400).json({ error: "faceIds must be a non-empty list" });
-      res.json(await honeypotCluster(req.params.id, faceIds));
+      const result = await honeypotCluster(req.params.id, faceIds);
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error) {
       fail(res, "send cluster to honey pot", error);
     }
@@ -251,7 +262,9 @@ export function registerFaceReview(app: Express) {
     try {
       const faceIds = parseOptionalIds(req.body?.faceIds);
       if (!faceIds) return res.status(400).json({ error: "faceIds must be a non-empty list" });
-      res.json(await releaseFromHoneypot(faceIds));
+      const result = await releaseFromHoneypot(faceIds);
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error) {
       fail(res, "release honey pot faces", error);
     }
@@ -262,7 +275,9 @@ export function registerFaceReview(app: Express) {
     try {
       const faceIds = parseOptionalIds(req.body?.faceIds);
       if (!faceIds) return res.status(400).json({ error: "faceIds must be a non-empty list" });
-      res.json(await confirmHoneypot(faceIds));
+      const result = await confirmHoneypot(faceIds);
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error) {
       fail(res, "confirm honey pot faces", error);
     }
@@ -294,7 +309,9 @@ export function registerFaceReview(app: Express) {
       const confirm = ids(req.body?.confirm);
       const reject = ids(req.body?.reject);
       if (!confirm || !reject) return res.status(400).json({ error: "confirm and reject must be lists of face ids" });
-      res.json(await confirmVerify(req.params.group, confirm, reject));
+      const result = await confirmVerify(req.params.group, confirm, reject);
+      invalidateFaceReviewCountsCache();
+      res.json(result);
     } catch (error) {
       fail(res, "confirm verify faces", error);
     }
@@ -314,6 +331,7 @@ export function registerFaceReview(app: Express) {
       if (!socialAccountId && !personId) socialAccountId = await accountForHandle(username);
       if (!(await targetReadable(socialAccountId, personId))) return res.status(404).json({ error: "Target not found" });
       await connectFace({ faceUuid, socialAccountId, personId });
+      invalidateFaceReviewCountsCache();
       const item = await getFaceReviewItem(photoId, k);
       if (!item) return res.status(404).json({ error: "Photo not found" });
       res.json(item);
@@ -387,6 +405,7 @@ export function registerFaceReview(app: Express) {
       const marked = ((photo.facialIds ?? []) as FacialId[]).some((f) => f.coordinates && boxIou(f.coordinates as FaceBox, b) > DRAWN_FACE_MAX_IOU);
       if (marked) return res.status(409).json({ error: "That face is already marked. Click it instead." });
       const faceUuid = await addDrawnFace(photoId, b);
+      invalidateFaceReviewCountsCache();
       const item = await getFaceReviewItem(photoId, k);
       if (!item) return res.status(404).json({ error: "Photo not found" });
       res.json({ ...item, faceUuid });
@@ -404,6 +423,7 @@ export function registerFaceReview(app: Express) {
       if (typeof faceUuid !== "string" || typeof photoId !== "string" || !k) return res.status(400).json({ error: "faceUuid, photoId and kind are required" });
       if (!(await faceInReadablePhoto(faceUuid, photoId))) return res.status(404).json({ error: "Photo not found" });
       await disassociateFace(faceUuid);
+      invalidateFaceReviewCountsCache();
       const item = await getFaceReviewItem(photoId, k);
       if (!item) return res.status(404).json({ error: "Photo not found" });
       res.json(item);
@@ -432,6 +452,7 @@ export function registerFaceReview(app: Express) {
         if (!ids || typeof photoId !== "string" || !k) return res.status(400).json({ error: "faceUuid (or faceUuids), photoId and kind are required" });
         if (!(await faceInReadablePhoto(ids, photoId))) return res.status(404).json({ error: "Photo not found" });
         await apply(ids);
+        invalidateFaceReviewCountsCache();
         const item = await getFaceReviewItem(photoId, k);
         if (!item) return res.status(404).json({ error: "Photo not found" });
         res.json(item);

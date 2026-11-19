@@ -156,15 +156,66 @@ async function bioChanges(accountIds: string[]) {
   return out;
 }
 
+const CONNECTIONS_TTL_MS = 5 * 60_000;
+const MAX_CONNECTIONS_CACHE = 200;
+const connectionsCache = new Map<string, { at: number; weightsKey: string; value: ConnectionsResult | undefined }>();
+const inflightConnections = new Map<string, Promise<ConnectionsResult | undefined>>();
+
+export function invalidateConnectionsCache(accountId?: string): void {
+  if (accountId) {
+    connectionsCache.delete(accountId);
+    inflightConnections.delete(accountId);
+  } else {
+    connectionsCache.clear();
+    inflightConnections.clear();
+  }
+}
+
 /** Undefined when the account is out of the caller's sight. */
 export async function getConnections(accountId: string): Promise<ConnectionsResult | undefined> {
+  const weights = await connectionWeights();
+  const weightsKey = JSON.stringify(weights);
+  const cached = connectionsCache.get(accountId);
+  if (cached && cached.weightsKey === weightsKey && Date.now() - cached.at < CONNECTIONS_TTL_MS) {
+    // Refresh insertion order for LRU eviction.
+    connectionsCache.delete(accountId);
+    connectionsCache.set(accountId, cached);
+    return cached.value;
+  }
+
+  const existing = inflightConnections.get(accountId);
+  if (existing) return existing;
+
+  const promise = computeConnections(accountId, weights)
+    .then((value) => {
+      // Only populate cache if not invalidated while in-flight.
+      if (inflightConnections.get(accountId) === promise) {
+        if (connectionsCache.size >= MAX_CONNECTIONS_CACHE && !connectionsCache.has(accountId)) {
+          const oldestKey = connectionsCache.keys().next().value;
+          if (oldestKey !== undefined) connectionsCache.delete(oldestKey);
+        }
+        connectionsCache.delete(accountId);
+        connectionsCache.set(accountId, { at: Date.now(), weightsKey, value });
+      }
+      return value;
+    })
+    .finally(() => {
+      if (inflightConnections.get(accountId) === promise) {
+        inflightConnections.delete(accountId);
+      }
+    });
+
+  inflightConnections.set(accountId, promise);
+  return promise;
+}
+
+async function computeConnections(accountId: string, weights: ConnectionWeights): Promise<ConnectionsResult | undefined> {
   const [me] = await db
     .select()
     .from(socialAccounts)
     .where(eq(socialAccounts.id, accountId));
   if (!me) return undefined;
   const myHandle = me.username.toLowerCase();
-  const weights = await connectionWeights();
 
   // Events land here keyed by the other side: "id:<account id>" or "h:<handle>"
   // until handles resolve. `key` dedupes, e.g. one event per post however many
@@ -172,24 +223,91 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
   const raw: { other: string; key: string; event: ConnectionEvent }[] = [];
   const add = (other: string, key: string, event: ConnectionEvent) => raw.push({ other, key, event });
 
-  const myFaces = [me.personfaceUuid];
-  if (me.ownerUuid) {
-    const [owner] = await db.select({ pf: people.personfaceUuid }).from(people).where(eq(people.id, me.ownerUuid));
-    myFaces.push(owner?.pf ?? null);
-  }
-  const myPersonfaces = [...new Set(myFaces.filter((pf): pf is string => Boolean(pf)))];
+  const bioLike = `%@${likeEscape(myHandle)}%`;
+  const [ownerRows, myPosts, myComments, naming, taggedMine, nowNaming, onceNaming] = await Promise.all([
+    me.ownerUuid
+      ? db.select({ pf: people.personfaceUuid }).from(people).where(eq(people.id, me.ownerUuid))
+      : Promise.resolve([]),
+    db
+      .select(postCols)
+      .from(socialAccountPosts)
+      .where(or(eq(socialAccountPosts.socialAccountId, me.id), sql`${socialAccountPosts.coauthorAccountIds} @> ${JSON.stringify([me.id])}::jsonb`)),
+    db
+      .select({ post: postCols, postedAt: socialPostComments.postedAt, createdAt: socialPostComments.createdAt })
+      .from(socialPostComments)
+      .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialPostComments.postId))
+      .where(eq(sql`lower(${socialPostComments.username})`, myHandle))
+      .orderBy(asc(socialPostComments.postedAt)),
+    db
+      .select(postCols)
+      .from(socialAccountPosts)
+      .where(or(
+        sql`lower(${socialAccountPosts.mentionedAccounts}) LIKE ${`%"${likeEscape(myHandle)}"%`}`,
+        sql`${socialAccountPosts.description} ILIKE ${`%@${likeEscape(myHandle)}%`}`,
+      )),
+    db
+      .select(postCols)
+      .from(socialAccountPostTags)
+      .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialAccountPostTags.postId))
+      .where(and(
+        eq(socialAccountPostTags.socialAccountId, me.id),
+        isNull(socialAccountPostTags.removedSeenAt),
+        eq(socialAccountPosts.isDeleted, false),
+      )),
+    db.select({ id: socialAccounts.id }).from(socialAccounts).where(sql`${socialAccounts.bio} ILIKE ${bioLike}`),
+    db.selectDistinct({ id: socialAccountHistory.socialAccountId }).from(socialAccountHistory).where(sql`${socialAccountHistory.previousBio} ILIKE ${bioLike}`),
+  ]);
+
+  const myPersonfaces = [...new Set([me.personfaceUuid, ownerRows[0]?.pf ?? null].filter((pf): pf is string => Boolean(pf)))];
+  const myPostIds = myPosts.map((p) => p.id);
+  const namerIds = [...new Set([...nowNaming, ...onceNaming].map((r) => r.id))].filter((id) => id !== me.id);
+
+  const [facesInMine, myPostTags, comments, showingPosts, namerRows] = await Promise.all([
+    facesInPosts(myPostIds),
+    myPostIds.length
+      ? db
+          .select({ postId: socialAccountPostTags.postId, socialAccountId: socialAccountPostTags.socialAccountId })
+          .from(socialAccountPostTags)
+          .where(and(
+            inArray(socialAccountPostTags.postId, myPostIds),
+            isNull(socialAccountPostTags.removedSeenAt),
+          ))
+      : Promise.resolve([]),
+    myPostIds.length
+      ? db
+          .select({ postId: socialPostComments.postId, username: socialPostComments.username, postedAt: socialPostComments.postedAt, createdAt: socialPostComments.createdAt })
+          .from(socialPostComments)
+          .where(and(inArray(socialPostComments.postId, myPostIds), ne(sql`lower(${socialPostComments.username})`, myHandle)))
+          .orderBy(asc(socialPostComments.postedAt))
+      : Promise.resolve([]),
+    (async () => {
+      if (!myPersonfaces.length) return [];
+      const showing = await db
+        .selectDistinct({ prmLocation: photos.prmLocation })
+        .from(faces)
+        .innerJoin(photos, eq(photos.id, faces.photoId))
+        .where(and(inArray(faces.personfaceUuid, myPersonfaces), isNull(faces.dismissedAt), sql`${photos.prmLocation} LIKE 'post:%'`));
+      const ids = showing.map((r) => r.prmLocation.slice("post:".length));
+      return ids.length ? db.select(postCols).from(socialAccountPosts).where(inArray(socialAccountPosts.id, ids)) : [];
+    })(),
+    namerIds.length
+      ? db
+          .select({ id: socialAccounts.id, bio: socialAccounts.bio, since: socialAccounts.internalAccountCreationDate })
+          .from(socialAccounts)
+          .where(inArray(socialAccounts.id, namerIds))
+      : Promise.resolve([]),
+  ]);
+
+  const [faceAccounts, changes] = await Promise.all([
+    accountsForFaces([...new Set(facesInMine.map((f) => f.personfaceUuid))]),
+    bioChanges([me.id, ...namerRows.map((r) => r.id)]),
+  ]);
 
   // ── Out: my posts and stories, who they tag, caption and show ──
-  const myPosts = await db
-    .select(postCols)
-    .from(socialAccountPosts)
-    .where(or(eq(socialAccountPosts.socialAccountId, me.id), sql`${socialAccountPosts.coauthorAccountIds} @> ${JSON.stringify([me.id])}::jsonb`));
   for (const p of myPosts) {
     for (const h of mentionedIn(p)) add(`h:${h}`, `post:${p.id}:out`, { at: postAt(p), kind: postKind(p), dir: "out" });
   }
   const myPostById = new Map(myPosts.map((p) => [p.id, p]));
-  const facesInMine = await facesInPosts(myPosts.map((p) => p.id));
-  const faceAccounts = await accountsForFaces([...new Set(facesInMine.map((f) => f.personfaceUuid))]);
   for (const f of facesInMine) {
     const p = myPostById.get(f.postId)!;
     const posters = postersOf(p);
@@ -197,43 +315,21 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
       if (!posters.includes(id)) add(`id:${id}`, `post:${p.id}:out`, { at: postAt(p), kind: postKind(p), dir: "out" });
     }
   }
-  if (myPosts.length) {
-    const myPostTags = await db
-      .select({ postId: socialAccountPostTags.postId, socialAccountId: socialAccountPostTags.socialAccountId })
-      .from(socialAccountPostTags)
-      .where(and(
-        inArray(socialAccountPostTags.postId, myPosts.map((p) => p.id)),
-        isNull(socialAccountPostTags.removedSeenAt),
-      ));
-    for (const tag of myPostTags) {
-      const p = myPostById.get(tag.postId);
-      if (!p) continue;
-      const posters = postersOf(p);
-      if (!posters.includes(tag.socialAccountId)) {
-        add(`id:${tag.socialAccountId}`, `post:${p.id}:out`, { at: postAt(p), kind: postKind(p), dir: "out" });
-      }
+  for (const tag of myPostTags) {
+    const p = myPostById.get(tag.postId);
+    if (!p) continue;
+    const posters = postersOf(p);
+    if (!posters.includes(tag.socialAccountId)) {
+      add(`id:${tag.socialAccountId}`, `post:${p.id}:out`, { at: postAt(p), kind: postKind(p), dir: "out" });
     }
   }
 
   // ── In: comments on my posts ──
-  if (myPosts.length) {
-    const comments = await db
-      .select({ postId: socialPostComments.postId, username: socialPostComments.username, postedAt: socialPostComments.postedAt, createdAt: socialPostComments.createdAt })
-      .from(socialPostComments)
-      .where(and(inArray(socialPostComments.postId, myPosts.map((p) => p.id)), ne(sql`lower(${socialPostComments.username})`, myHandle)))
-      .orderBy(asc(socialPostComments.postedAt));
-    for (const c of comments) {
-      add(`h:${cleanHandle(c.username)}`, `comment:${c.postId}:in`, { at: (c.postedAt ?? c.createdAt).toISOString(), kind: "comment", dir: "in" });
-    }
+  for (const c of comments) {
+    add(`h:${cleanHandle(c.username)}`, `comment:${c.postId}:in`, { at: (c.postedAt ?? c.createdAt).toISOString(), kind: "comment", dir: "in" });
   }
 
   // ── Out: my comments on other people's posts ──
-  const myComments = await db
-    .select({ post: postCols, postedAt: socialPostComments.postedAt, createdAt: socialPostComments.createdAt })
-    .from(socialPostComments)
-    .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialPostComments.postId))
-    .where(eq(sql`lower(${socialPostComments.username})`, myHandle))
-    .orderBy(asc(socialPostComments.postedAt));
   for (const c of myComments) {
     for (const id of postersOf(c.post)) {
       if (id !== me.id) add(`id:${id}`, `comment:${c.post.id}:out`, { at: (c.postedAt ?? c.createdAt).toISOString(), kind: "comment", dir: "out" });
@@ -241,34 +337,8 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
   }
 
   // ── In: others' posts and stories that tag, caption or show me ──
-  const handleLike = `%${likeEscape(myHandle)}%`;
-  const naming = await db
-    .select(postCols)
-    .from(socialAccountPosts)
-    .where(or(
-      sql`lower(${socialAccountPosts.mentionedAccounts}) LIKE ${`%"${likeEscape(myHandle)}"%`}`,
-      sql`${socialAccountPosts.description} ILIKE ${`%@${likeEscape(myHandle)}%`}`,
-    ));
   const inPosts = naming.filter((p) => mentionedIn(p).has(myHandle));
-  if (myPersonfaces.length) {
-    const showing = await db
-      .selectDistinct({ prmLocation: photos.prmLocation })
-      .from(faces)
-      .innerJoin(photos, eq(photos.id, faces.photoId))
-      .where(and(inArray(faces.personfaceUuid, myPersonfaces), isNull(faces.dismissedAt), sql`${photos.prmLocation} LIKE 'post:%'`));
-    const ids = showing.map((r) => r.prmLocation.slice("post:".length));
-    if (ids.length) inPosts.push(...(await db.select(postCols).from(socialAccountPosts).where(inArray(socialAccountPosts.id, ids))));
-  }
-  const taggedMine = await db
-    .select(postCols)
-    .from(socialAccountPostTags)
-    .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialAccountPostTags.postId))
-    .where(and(
-      eq(socialAccountPostTags.socialAccountId, me.id),
-      isNull(socialAccountPostTags.removedSeenAt),
-      eq(socialAccountPosts.isDeleted, false),
-    ));
-  inPosts.push(...taggedMine);
+  inPosts.push(...showingPosts, ...taggedMine);
   for (const p of inPosts) {
     const posters = postersOf(p);
     if (posters.includes(me.id)) continue;
@@ -277,19 +347,6 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
 
   // ── Bios: who mine names (out), and whose names me (in) ──
   const since = me.joinedAt ?? me.internalAccountCreationDate;
-  const bioLike = `%@${likeEscape(myHandle)}%`;
-  const [nowNaming, onceNaming] = await Promise.all([
-    db.select({ id: socialAccounts.id }).from(socialAccounts).where(sql`${socialAccounts.bio} ILIKE ${bioLike}`),
-    db.selectDistinct({ id: socialAccountHistory.socialAccountId }).from(socialAccountHistory).where(sql`${socialAccountHistory.previousBio} ILIKE ${bioLike}`),
-  ]);
-  const namerIds = [...new Set([...nowNaming, ...onceNaming].map((r) => r.id))].filter((id) => id !== me.id);
-  const namerRows = namerIds.length
-    ? await db
-        .select({ id: socialAccounts.id, bio: socialAccounts.bio, since: socialAccounts.internalAccountCreationDate })
-        .from(socialAccounts)
-        .where(inArray(socialAccounts.id, namerIds))
-    : [];
-  const changes = await bioChanges([me.id, ...namerRows.map((r) => r.id)]);
   const bioEvent = (m: BioMention, dir: "in" | "out"): ConnectionEvent => ({
     at: m.at.toISOString(),
     kind: "bio",
@@ -443,6 +500,7 @@ export type ConnectionPair = { a: string; b: string; ab: number; ba: number };
 
 const NETWORK_TTL_MS = 5 * 60_000;
 let networkCache: { at: number; weightsKey: string; pairs: ConnectionPair[] } | null = null;
+let inflightNetwork: { weightsKey: string; promise: Promise<ConnectionPair[]> } | null = null;
 
 /**
  * Every interacting pair in the instance, for the graph's Connections view. The
@@ -456,129 +514,140 @@ export async function getConnectionNetwork(): Promise<ConnectionPair[]> {
   if (networkCache && networkCache.weightsKey === weightsKey && Date.now() - networkCache.at < NETWORK_TTL_MS) {
     return networkCache.pairs;
   }
-
-  const accounts = await db
-    .select({ id: socialAccounts.id, username: socialAccounts.username, typeId: socialAccounts.typeId, bio: socialAccounts.bio, since: socialAccounts.internalAccountCreationDate })
-    .from(socialAccounts);
-  // An Instagram-typed row wins over an untyped one under the same name; other networks never match a handle.
-  const byHandle = new Map<string, string>();
-  for (const a of [...accounts].sort((x, y) => Number(y.typeId === INSTAGRAM_TYPE_ID) - Number(x.typeId === INSTAGRAM_TYPE_ID))) {
-    if (a.typeId !== INSTAGRAM_TYPE_ID && a.typeId !== null) continue;
-    const h = a.username.toLowerCase();
-    if (!byHandle.has(h)) byHandle.set(h, a.id);
+  if (inflightNetwork && inflightNetwork.weightsKey === weightsKey) {
+    return inflightNetwork.promise;
   }
 
-  // Directed events keyed "from|to|dedupe key", first one wins.
-  const events = new Map<string, { from: string; to: string; event: ConnectionEvent }>();
-  const add = (from: string | undefined, to: string | undefined, key: string, event: ConnectionEvent) => {
-    if (!from || !to || from === to) return;
-    const k = `${from}|${to}|${key}`;
-    if (!events.has(k)) events.set(k, { from, to, event });
-  };
-
-  // ── Posts and stories: tags and caption @handles ──
-  const naming = await db
-    .select(postCols)
-    .from(socialAccountPosts)
-    .where(or(sql`${socialAccountPosts.mentionedAccounts} IS NOT NULL`, sql`${socialAccountPosts.description} LIKE '%@%'`));
-  for (const p of naming) {
-    const mentioned = mentionedIn(p);
-    if (!mentioned.size) continue;
-    const event = { at: postAt(p), kind: postKind(p), dir: "out" as const };
-    for (const h of mentioned) {
-      for (const poster of postersOf(p)) add(poster, byHandle.get(h), `post:${p.id}`, event);
+  const promise = (async () => {
+    const accounts = await db
+      .select({ id: socialAccounts.id, username: socialAccounts.username, typeId: socialAccounts.typeId, bio: socialAccounts.bio, since: socialAccounts.internalAccountCreationDate })
+      .from(socialAccounts);
+    // An Instagram-typed row wins over an untyped one under the same name; other networks never match a handle.
+    const byHandle = new Map<string, string>();
+    for (const a of [...accounts].sort((x, y) => Number(y.typeId === INSTAGRAM_TYPE_ID) - Number(x.typeId === INSTAGRAM_TYPE_ID))) {
+      if (a.typeId !== INSTAGRAM_TYPE_ID && a.typeId !== null) continue;
+      const h = a.username.toLowerCase();
+      if (!byHandle.has(h)) byHandle.set(h, a.id);
     }
-  }
 
-  // ── Tagged posts: explicit tags from the Tagged tab ──
-  const tagRows = await db
-    .select({
-      taggedAccountId: socialAccountPostTags.socialAccountId,
-      post: postCols,
-    })
-    .from(socialAccountPostTags)
-    .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialAccountPostTags.postId))
-    .where(and(
-      isNull(socialAccountPostTags.removedSeenAt),
-      eq(socialAccountPosts.isDeleted, false),
-    ));
-  for (const r of tagRows) {
-    const posters = postersOf(r.post);
-    if (posters.includes(r.taggedAccountId)) continue;
-    const event = { at: postAt(r.post), kind: postKind(r.post), dir: "out" as const };
-    for (const poster of posters) {
-      add(poster, r.taggedAccountId, `post:${r.post.id}`, event);
-    }
-  }
+    // Directed events keyed "from|to|dedupe key", first one wins.
+    const events = new Map<string, { from: string; to: string; event: ConnectionEvent }>();
+    const add = (from: string | undefined, to: string | undefined, key: string, event: ConnectionEvent) => {
+      if (!from || !to || from === to) return;
+      const k = `${from}|${to}|${key}`;
+      if (!events.has(k)) events.set(k, { from, to, event });
+    };
 
-  // ── Faces in posts: the same event as a tag, so one per post either way ──
-  const faceRows = await db
-    .select({ prmLocation: photos.prmLocation, personfaceUuid: faces.personfaceUuid })
-    .from(faces)
-    .innerJoin(photos, eq(photos.id, faces.photoId))
-    .where(and(sql`${faces.personfaceUuid} IS NOT NULL`, isNull(faces.dismissedAt), sql`${photos.prmLocation} LIKE 'post:%'`));
-  if (faceRows.length) {
-    const postIds = [...new Set(faceRows.map((r) => r.prmLocation.slice("post:".length)))];
-    const posts = new Map((await db.select(postCols).from(socialAccountPosts).where(inArray(socialAccountPosts.id, postIds))).map((p) => [p.id, p]));
-    const faceAccounts = await accountsForFaces([...new Set(faceRows.map((r) => r.personfaceUuid!))]);
-    for (const r of faceRows) {
-      const p = posts.get(r.prmLocation.slice("post:".length));
-      if (!p) continue;
-      const posters = postersOf(p);
-      for (const id of faceAccounts.get(r.personfaceUuid!) ?? []) {
-        if (posters.includes(id)) continue;
-        for (const poster of posters) add(poster, id, `post:${p.id}`, { at: postAt(p), kind: postKind(p), dir: "out" });
+    // ── Posts and stories: tags and caption @handles ──
+    const naming = await db
+      .select(postCols)
+      .from(socialAccountPosts)
+      .where(or(sql`${socialAccountPosts.mentionedAccounts} IS NOT NULL`, sql`${socialAccountPosts.description} LIKE '%@%'`));
+    for (const p of naming) {
+      const mentioned = mentionedIn(p);
+      if (!mentioned.size) continue;
+      const event = { at: postAt(p), kind: postKind(p), dir: "out" as const };
+      for (const h of mentioned) {
+        for (const poster of postersOf(p)) add(poster, byHandle.get(h), `post:${p.id}`, event);
       }
     }
-  }
 
-  // ── Comments: commenter → each poster, one per (commenter, post), earliest kept ──
-  const comments = await db
-    .select({ postId: socialPostComments.postId, username: socialPostComments.username, postedAt: socialPostComments.postedAt, createdAt: socialPostComments.createdAt, post: postCols })
-    .from(socialPostComments)
-    .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialPostComments.postId))
-    .where(sql`EXISTS (SELECT 1 FROM ${socialAccounts} WHERE lower(${socialAccounts.username}) = lower(${socialPostComments.username}))`)
-    .orderBy(asc(socialPostComments.postedAt));
-  for (const c of comments) {
-    const from = byHandle.get(cleanHandle(c.username));
-    const at = (c.postedAt ?? c.createdAt).toISOString();
-    for (const poster of postersOf(c.post)) add(from, poster, `comment:${c.postId}`, { at, kind: "comment", dir: "out" });
-  }
-
-  // ── Bios: every handle a bio has ever named ──
-  const withHandles = accounts.filter((a) => a.bio?.includes("@"));
-  const pastNaming = await db
-    .selectDistinct({ id: socialAccountHistory.socialAccountId })
-    .from(socialAccountHistory)
-    .where(sql`${socialAccountHistory.previousBio} LIKE '%@%'`);
-  const bioIds = new Set([...withHandles.map((a) => a.id), ...pastNaming.map((r) => r.id)]);
-  const changes = await bioChanges([...bioIds]);
-  for (const a of accounts) {
-    if (!bioIds.has(a.id)) continue;
-    for (const [handle, m] of bioMentions(a, changes.get(a.id) ?? [])) {
-      add(a.id, byHandle.get(handle), "bio", {
-        at: m.at.toISOString(),
-        kind: "bio",
-        dir: "out",
-        heart: m.heart,
-        ...(m.removedAt ? { removedAt: m.removedAt.toISOString() } : {}),
-      });
+    // ── Tagged posts: explicit tags from the Tagged tab ──
+    const tagRows = await db
+      .select({
+        taggedAccountId: socialAccountPostTags.socialAccountId,
+        post: postCols,
+      })
+      .from(socialAccountPostTags)
+      .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialAccountPostTags.postId))
+      .where(and(
+        isNull(socialAccountPostTags.removedSeenAt),
+        eq(socialAccountPosts.isDeleted, false),
+      ));
+    for (const r of tagRows) {
+      const posters = postersOf(r.post);
+      if (posters.includes(r.taggedAccountId)) continue;
+      const event = { at: postAt(r.post), kind: postKind(r.post), dir: "out" as const };
+      for (const poster of posters) {
+        add(poster, r.taggedAccountId, `post:${r.post.id}`, event);
+      }
     }
-  }
 
-  // ── Score each pair ──
-  const now = Date.now();
-  const pairs = new Map<string, ConnectionPair>();
-  for (const { from, to, event } of events.values()) {
-    const [a, b] = from < to ? [from, to] : [to, from];
-    const key = `${a}|${b}`;
-    const pair = pairs.get(key) ?? { a, b, ab: 0, ba: 0 };
-    const v = eventValue(event, weights, now);
-    if (from === a) pair.ab += v;
-    else pair.ba += v;
-    pairs.set(key, pair);
-  }
-  const result = [...pairs.values()].filter((p) => p.ab + p.ba > 0);
-  networkCache = { at: Date.now(), weightsKey, pairs: result };
-  return result;
+    // ── Faces in posts: the same event as a tag, so one per post either way ──
+    const faceRows = await db
+      .select({ prmLocation: photos.prmLocation, personfaceUuid: faces.personfaceUuid })
+      .from(faces)
+      .innerJoin(photos, eq(photos.id, faces.photoId))
+      .where(and(sql`${faces.personfaceUuid} IS NOT NULL`, isNull(faces.dismissedAt), sql`${photos.prmLocation} LIKE 'post:%'`));
+    if (faceRows.length) {
+      const postIds = [...new Set(faceRows.map((r) => r.prmLocation.slice("post:".length)))];
+      const posts = new Map((await db.select(postCols).from(socialAccountPosts).where(inArray(socialAccountPosts.id, postIds))).map((p) => [p.id, p]));
+      const faceAccounts = await accountsForFaces([...new Set(faceRows.map((r) => r.personfaceUuid!))]);
+      for (const r of faceRows) {
+        const p = posts.get(r.prmLocation.slice("post:".length));
+        if (!p) continue;
+        const posters = postersOf(p);
+        for (const id of faceAccounts.get(r.personfaceUuid!) ?? []) {
+          if (posters.includes(id)) continue;
+          for (const poster of posters) add(poster, id, `post:${p.id}`, { at: postAt(p), kind: postKind(p), dir: "out" });
+        }
+      }
+    }
+
+    // ── Comments: commenter → each poster, one per (commenter, post), earliest kept ──
+    const comments = await db
+      .select({ postId: socialPostComments.postId, username: socialPostComments.username, postedAt: socialPostComments.postedAt, createdAt: socialPostComments.createdAt, post: postCols })
+      .from(socialPostComments)
+      .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialPostComments.postId))
+      .where(sql`EXISTS (SELECT 1 FROM ${socialAccounts} WHERE lower(${socialAccounts.username}) = lower(${socialPostComments.username}))`)
+      .orderBy(asc(socialPostComments.postedAt));
+    for (const c of comments) {
+      const from = byHandle.get(cleanHandle(c.username));
+      const at = (c.postedAt ?? c.createdAt).toISOString();
+      for (const poster of postersOf(c.post)) add(from, poster, `comment:${c.postId}`, { at, kind: "comment", dir: "out" });
+    }
+
+    // ── Bios: every handle a bio has ever named ──
+    const withHandles = accounts.filter((a) => a.bio?.includes("@"));
+    const pastNaming = await db
+      .selectDistinct({ id: socialAccountHistory.socialAccountId })
+      .from(socialAccountHistory)
+      .where(sql`${socialAccountHistory.previousBio} LIKE '%@%'`);
+    const bioIds = new Set([...withHandles.map((a) => a.id), ...pastNaming.map((r) => r.id)]);
+    const changes = await bioChanges([...bioIds]);
+    for (const a of accounts) {
+      if (!bioIds.has(a.id)) continue;
+      for (const [handle, m] of bioMentions(a, changes.get(a.id) ?? [])) {
+        add(a.id, byHandle.get(handle), "bio", {
+          at: m.at.toISOString(),
+          kind: "bio",
+          dir: "out",
+          heart: m.heart,
+          ...(m.removedAt ? { removedAt: m.removedAt.toISOString() } : {}),
+        });
+      }
+    }
+
+    // ── Score each pair ──
+    const now = Date.now();
+    const pairs = new Map<string, ConnectionPair>();
+    for (const { from, to, event } of events.values()) {
+      const [a, b] = from < to ? [from, to] : [to, from];
+      const key = `${a}|${b}`;
+      const pair = pairs.get(key) ?? { a, b, ab: 0, ba: 0 };
+      const v = eventValue(event, weights, now);
+      if (from === a) pair.ab += v;
+      else pair.ba += v;
+      pairs.set(key, pair);
+    }
+    const result = [...pairs.values()].filter((p) => p.ab + p.ba > 0);
+    networkCache = { at: Date.now(), weightsKey, pairs: result };
+    return result;
+  })().finally(() => {
+    if (inflightNetwork?.promise === promise) {
+      inflightNetwork = null;
+    }
+  });
+  inflightNetwork = { weightsKey, promise };
+  return promise;
 }

@@ -20,6 +20,7 @@ import {
   EXTENSION_ID_SETTING,
   EXTENSION_MAX_RECORDS_SETTING,
   DEFAULT_MAX_RECORDS,
+  isValidExtensionId,
 } from "@/lib/extension-bridge";
 import { useToast } from "@/hooks/use-toast";
 import { Chrome, RefreshCw, Trash2, Wifi, WifiOff } from "lucide-react";
@@ -243,7 +244,18 @@ export default function ChromeExtensionSettingsPage() {
               id="extension-id"
               value={extensionId}
               onChange={(e) => setExtensionId(e.target.value)}
-              onBlur={() => saveSetting(EXTENSION_ID_SETTING, extensionId.trim())}
+              onBlur={() => {
+                const trimmed = extensionId.trim();
+                if (trimmed && !isValidExtensionId(trimmed)) {
+                  toast({
+                    variant: "destructive",
+                    title: "Invalid Extension ID",
+                    description: "Chrome extension IDs must be 32 lowercase letters (a–p).",
+                  });
+                  return;
+                }
+                saveSetting(EXTENSION_ID_SETTING, trimmed);
+              }}
               placeholder="e.g. abcdefghijklmnopabcdefghijklmnop"
               className="font-mono"
               data-testid="input-extension-id"

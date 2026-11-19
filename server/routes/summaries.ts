@@ -142,6 +142,16 @@ export function registerSummaryRoutes(app: Express) {
         .groupBy(summaryJobs.status);
       const counts = Object.fromEntries(countRows.map((r) => [r.status, r.n]));
 
+      const livePostCounts = db
+        .select({
+          socialAccountId: summaryJobs.socialAccountId,
+          count: sql<number>`count(*)::int`.as("live_post_count"),
+        })
+        .from(summaryJobs)
+        .where(and(eq(summaryJobs.kind, "post"), inArray(summaryJobs.status, ["pending", "running"])))
+        .groupBy(summaryJobs.socialAccountId)
+        .as("live_post_counts");
+
       const rows = await db
         .select({
           id: summaryJobs.id,
@@ -155,10 +165,7 @@ export function registerSummaryRoutes(app: Express) {
           options: summaryJobs.options,
           progress: summaryJobs.progress,
           // Post jobs an account job is still waiting on.
-          livePosts: sql<number>`(
-            SELECT count(*)::int FROM summary_jobs p
-            WHERE p.kind = 'post' AND p.social_account_id = ${summaryJobs.socialAccountId} AND p.status IN ('pending', 'running')
-          )`,
+          livePosts: sql<number>`coalesce(${livePostCounts.count}, 0)`,
           postType: socialAccountPosts.postType,
           postedAt: socialAccountPosts.postedAt,
           postDescription: sql<string | null>`left(${socialAccountPosts.description}, 120)`,
@@ -168,6 +175,7 @@ export function registerSummaryRoutes(app: Express) {
         })
         .from(summaryJobs)
         .leftJoin(socialAccounts, eq(summaryJobs.socialAccountId, socialAccounts.id))
+        .leftJoin(livePostCounts, eq(summaryJobs.socialAccountId, livePostCounts.socialAccountId))
         .leftJoin(
           socialAccountPosts,
           and(eq(summaryJobs.kind, "post"), eq(socialAccountPosts.id, summaryJobs.targetId)),

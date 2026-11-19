@@ -35,6 +35,8 @@ export function SocialAccountRow({
           <AvatarImage
             src={avatarSrc}
             alt={username}
+            loading="lazy"
+            decoding="async"
           />
         )}
         <AvatarFallback className="text-xs">{getInitials(username)}</AvatarFallback>

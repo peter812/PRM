@@ -3,9 +3,10 @@ import { storage, countPendingImportEntries } from "../storage";
 import { db } from "../db";
 import { authenticateExtensionToken } from "../auth";
 import { triggerTaskWorker } from "../task-worker";
-import { socialAccounts, socialAccountHistory } from "@shared/schema";
-import { desc, eq } from "drizzle-orm";
+import { pendingSocialAccountImports, socialAccounts, socialAccountHistory } from "@shared/schema";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import crypto from "crypto";
+import { sanitizeHttpUrl } from "../url-validation";
 
 /**
  * Coerce a follower/following total off the wire into an integer.
@@ -146,7 +147,7 @@ export function registerPendingImportsRoutes(app: Express) {
         accountUsername: username,
         accountDisplayName: data.displayName || data.name || username,
         accountBio: data.bio || data.headline || null,
-        accountWebsite: data.bioLink || data.website || null,
+        accountWebsite: sanitizeHttpUrl(data.bioLink || data.website || null),
         accountLocationArea: data.location || null,
         accountEmail: data.email || null,
         accountPhone: data.phone || null,
@@ -204,7 +205,7 @@ export function registerPendingImportsRoutes(app: Express) {
         accountUsername: accountUsername.trim(),
         accountDisplayName: body.account_display_name || body.accountDisplayName || null,
         accountBio: body.account_bio || body.accountBio || null,
-        accountWebsite: body.account_website || body.accountWebsite || null,
+        accountWebsite: sanitizeHttpUrl(body.account_website || body.accountWebsite || null),
         accountEmail: body.account_email || body.accountEmail || null,
         accountPhone: body.account_phone || body.accountPhone || null,
         accountLocationArea: body.account_location_area || body.accountLocationArea || null,
@@ -305,12 +306,6 @@ export function registerPendingImportsRoutes(app: Express) {
       const status = (req.query.status as string || "all") as "pending" | "imported" | "all";
       const search = (req.query.search as string || "").trim();
 
-      const result = await storage.getPendingSocialAccountImports({ page, limit, status, search });
-
-      // Compute aggregate metrics
-      const allPending = await storage.getPendingSocialAccountImports({ page: 1, limit: 10000, status: "all" });
-      const totalPendingCount = allPending.items.filter(i => !i.alreadyAdded).length;
-      const totalImportedCount = allPending.items.filter(i => i.alreadyAdded).length;
       // The same account gets pulled more than once — a profile-only grab, then
       // a full CSV pull, then a refresh weeks later — and every pull lands as
       // its own row. Summing all rows counts that account's network once per
@@ -322,19 +317,48 @@ export function registerPendingImportsRoutes(app: Express) {
       // would inflate this by every follower we never actually saw. Such rows
       // are skipped before the de-duplication above, so a later profile-only
       // refresh cannot displace an earlier pull that did capture the graph.
-      const seenUsernames = new Set<string>();
-      let totalFollowersCaptured = 0;
-      for (const item of allPending.items) {
-        if (!item.hasFollowersCsv && !item.hasFollowingCsv) continue;
+      const [result, countsRows, capturedResult] = await Promise.all([
+        storage.getPendingSocialAccountImports({ page, limit, status, search }),
+        db
+          .select({
+            totalPending: sql<number>`count(*) filter (where ${pendingSocialAccountImports.alreadyAdded} = false)`,
+            totalImported: sql<number>`count(*) filter (where ${pendingSocialAccountImports.alreadyAdded} = true)`,
+          })
+          .from(pendingSocialAccountImports),
+        db.execute<{ total_followers_captured: string | number }>(sql`
+          SELECT
+            COALESCE(SUM(
+              (CASE WHEN has_followers_csv THEN COALESCE(account_followers_count, 0) ELSE 0 END) +
+              (CASE WHEN has_following_csv THEN COALESCE(account_following_count, 0) ELSE 0 END)
+            ), 0) AS total_followers_captured
+          FROM (
+            SELECT DISTINCT ON (
+              CASE
+                WHEN trim(COALESCE(${pendingSocialAccountImports.accountUsername}, '')) = '' THEN ${pendingSocialAccountImports.id}
+                ELSE lower(trim(${pendingSocialAccountImports.accountUsername}))
+              END
+            )
+              (${pendingSocialAccountImports.accountFollowers} IS NOT NULL AND length(${pendingSocialAccountImports.accountFollowers}) > 0) AS has_followers_csv,
+              (${pendingSocialAccountImports.accountFollowing} IS NOT NULL AND length(${pendingSocialAccountImports.accountFollowing}) > 0) AS has_following_csv,
+              ${pendingSocialAccountImports.accountFollowersCount} AS account_followers_count,
+              ${pendingSocialAccountImports.accountFollowingCount} AS account_following_count
+            FROM ${pendingSocialAccountImports}
+            WHERE (${pendingSocialAccountImports.accountFollowers} IS NOT NULL AND length(${pendingSocialAccountImports.accountFollowers}) > 0)
+               OR (${pendingSocialAccountImports.accountFollowing} IS NOT NULL AND length(${pendingSocialAccountImports.accountFollowing}) > 0)
+            ORDER BY
+              CASE
+                WHEN trim(COALESCE(${pendingSocialAccountImports.accountUsername}, '')) = '' THEN ${pendingSocialAccountImports.id}
+                ELSE lower(trim(${pendingSocialAccountImports.accountUsername}))
+              END,
+              ${pendingSocialAccountImports.timestampAdded} DESC
+          ) latest_csv_pulls
+        `),
+      ]);
 
-        const username = (item.accountUsername || "").trim().toLowerCase();
-        if (username) {
-          if (seenUsernames.has(username)) continue;
-          seenUsernames.add(username);
-        }
-        if (item.hasFollowersCsv) totalFollowersCaptured += item.followersCount;
-        if (item.hasFollowingCsv) totalFollowersCaptured += item.followingCount;
-      }
+      const countsRow = countsRows[0];
+      const totalPendingCount = Number(countsRow?.totalPending ?? 0);
+      const totalImportedCount = Number(countsRow?.totalImported ?? 0);
+      const totalFollowersCaptured = Number(capturedResult.rows[0]?.total_followers_captured ?? 0);
 
       res.json({
         ...result,
@@ -471,11 +495,18 @@ export function registerPendingImportsRoutes(app: Express) {
         return res.status(400).json({ error: "Array of ids is required" });
       }
 
-      const taskIds: string[] = [];
-      for (const id of ids) {
-        const record = await storage.getPendingSocialAccountImportById(id);
-        if (record) {
-          const task = await storage.createTask({
+      const records = await db
+        .select()
+        .from(pendingSocialAccountImports)
+        .where(inArray(pendingSocialAccountImports.id, ids));
+      const recordById = new Map(records.map((r) => [r.id, r]));
+      const orderedRecords = ids
+        .map((id) => recordById.get(id))
+        .filter((r): r is NonNullable<typeof r> => Boolean(r));
+
+      const createdTasks = await Promise.all(
+        orderedRecords.map((record) =>
+          storage.createTask({
             type: "import_social",
             status: "pending",
             title: record.accountUsername,
@@ -483,10 +514,10 @@ export function registerPendingImportsRoutes(app: Express) {
               pendingImportId: record.id,
               includeGraphImages: Boolean(includeGraphImages),
             }),
-          });
-          taskIds.push(task.id);
-        }
-      }
+          }),
+        ),
+      );
+      const taskIds = createdTasks.map((t) => t.id);
 
       if (taskIds.length > 0) {
         triggerTaskWorker();
@@ -513,13 +544,12 @@ export function registerPendingImportsRoutes(app: Express) {
         return res.status(400).json({ error: "Array of ids is required" });
       }
 
-      let deletedCount = 0;
-      for (const id of ids) {
-        const ok = await storage.deletePendingSocialAccountImport(id);
-        if (ok) deletedCount++;
-      }
+      const deleted = await db
+        .delete(pendingSocialAccountImports)
+        .where(inArray(pendingSocialAccountImports.id, ids))
+        .returning({ id: pendingSocialAccountImports.id });
 
-      res.json({ success: true, deletedCount });
+      res.json({ success: true, deletedCount: deleted.length });
     } catch (error) {
       console.error("Error bulk deleting pending imports:", error);
       res.status(500).json({ error: "Failed to bulk delete pending imports" });

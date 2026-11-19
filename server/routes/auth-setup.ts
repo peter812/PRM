@@ -48,6 +48,7 @@ import os from "os";
 import Papa from "papaparse";
 import { sendApiError, ErrorCodes } from "../middleware/error-handler";
 import { sseManager } from "../middleware/sse";
+import { csrfOriginCheck } from "../middleware/csrf";
 import {
   loadVectorConfig,
   setVectorSetting,
@@ -114,7 +115,7 @@ function isPublicApiPath(path: string, method?: string): boolean {
 export function registerRoutes(app: Express) {
     app.use("/api", (req, res, next) => {
       if (isPublicApiPath(req.path, req.method)) return next();
-      return requireAuth(req, res, next);
+      return requireAuth(req, res, () => csrfOriginCheck(req, res, next));
     });
   
     // Serve PRM-S3 objects (authenticated): images, media, and the face crops
@@ -1162,16 +1163,11 @@ export function registerRoutes(app: Express) {
         }
   
         const id = req.params.id;
-        
-        // Verify the key belongs to the user
-        const keys = await storage.getAllApiKeys(req.user.id);
-        const keyToDelete = keys.find(k => k.id === id);
-        
-        if (!keyToDelete) {
+  
+        const deleted = await storage.deleteApiKey(id, req.user.id);
+        if (!deleted) {
           return res.status(404).json({ error: "API key not found" });
         }
-  
-        await storage.deleteApiKey(id);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting API key:", error);
@@ -1299,7 +1295,7 @@ export function registerRoutes(app: Express) {
           return res.status(401).json({ error: "Not authenticated" });
         }
   
-        const sessions = await storage.getAllExtensionSessions();
+        const sessions = await storage.getExtensionSessionsByUserId(req.user.id);
         // Don't return the hashed token
         const safeSessions = sessions.map(({ sessionToken, ...rest }) => rest);
         res.json(safeSessions);
@@ -1318,15 +1314,10 @@ export function registerRoutes(app: Express) {
   
         const id = req.params.id;
   
-        // Verify the session exists
-        const sessions = await storage.getAllExtensionSessions();
-        const sessionToDelete = sessions.find((s) => s.id === id);
-  
-        if (!sessionToDelete) {
+        const deleted = await storage.deleteExtensionSession(id, req.user.id);
+        if (!deleted) {
           return res.status(404).json({ error: "Extension session not found" });
         }
-  
-        await storage.deleteExtensionSession(id);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting extension session:", error);

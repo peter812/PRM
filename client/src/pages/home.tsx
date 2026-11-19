@@ -377,7 +377,7 @@ function RecentPhotosContent() {
           >
             {src ? (
               <img
-                src={src}
+                src={withImageSize(src, 360)}
                 alt=""
                 className="h-full w-full object-cover"
                 loading="lazy"

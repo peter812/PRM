@@ -66,9 +66,6 @@ app.use(express.urlencoded({ limit: '5mb', extended: false }));
 // --- Upgrade #8 (partial): Request ID middleware ---
 app.use(requestIdMiddleware);
 
-// --- Upgrade #3: Rate limiting headers ---
-app.use(rateLimitMiddleware);
-
 // --- Upgrade #4: ETag / If-None-Match caching ---
 app.use(etagMiddleware);
 
@@ -90,6 +87,23 @@ app.use((req, res, next) => {
 // Setup auth after body parsers
 setupAuth(app);
 
+// --- Upgrade #3: Rate limiting headers (after setupAuth so req.isAuthenticated/req.user is available) ---
+app.use(rateLimitMiddleware);
+
+function isTooLargeForPreview(val: any, depth = 0): boolean {
+  if (val === null || val === undefined) return false;
+  if (typeof val === "string") return val.length > 60;
+  if (typeof val !== "object") return false;
+  if (depth > 2) return true;
+  if (Array.isArray(val)) {
+    if (val.length > 5) return true;
+    return val.some(item => isTooLargeForPreview(item, depth + 1));
+  }
+  const keys = Object.keys(val);
+  if (keys.length > 5) return true;
+  return keys.some(k => isTooLargeForPreview(val[k], depth + 1));
+}
+
 function getJsonPreview(obj: any): string {
   if (obj === null || obj === undefined) return "null";
   if (typeof obj !== "object") return String(obj);
@@ -99,6 +113,9 @@ function getJsonPreview(obj: any): string {
   const keys = Object.keys(obj);
   if (keys.length > 3) {
     return `{ ${keys.slice(0, 3).map(k => `"${k}":...`).join(", ")}, ... (${keys.length} keys) }`;
+  }
+  if (keys.some(k => isTooLargeForPreview(obj[k], 1))) {
+    return `{ ${keys.map(k => `"${k}":...`).join(", ")} }`;
   }
   try {
     const str = JSON.stringify(obj);
@@ -136,6 +153,7 @@ app.use((req, res, next) => {
 
       log(logLine);
     }
+    capturedJsonResponse = undefined;
   });
 
   next();
@@ -152,7 +170,10 @@ app.use(prmS3DirectMiddleware);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+    const message =
+      status >= 500 && process.env.NODE_ENV === "production"
+        ? "Internal Server Error"
+        : err.message || "Internal Server Error";
     const requestId = (_req as any).requestId || `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     console.error(`[Error] ${requestId} -`, err);

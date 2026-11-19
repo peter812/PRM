@@ -14,6 +14,30 @@ interface ServiceHealthResult {
   details?: Record<string, any>;
 }
 
+const HEALTH_CACHE_TTL_MS = 15_000;
+
+function withTtlCache<T>(fn: () => Promise<T>, ttlMs = HEALTH_CACHE_TTL_MS): () => Promise<T> {
+  let cached: { value: T; expiresAt: number } | null = null;
+  let inFlight: Promise<T> | null = null;
+  return async () => {
+    const now = Date.now();
+    if (cached && now < cached.expiresAt) return cached.value;
+    if (inFlight) return inFlight;
+    inFlight = fn().then(
+      (value) => {
+        cached = { value, expiresAt: Date.now() + ttlMs };
+        inFlight = null;
+        return value;
+      },
+      (err) => {
+        inFlight = null;
+        throw err;
+      },
+    );
+    return inFlight;
+  };
+}
+
 async function checkS3(): Promise<ServiceHealthResult> {
   try {
     const s3Health = await checkPrmS3Health();
@@ -25,10 +49,11 @@ async function checkS3(): Promise<ServiceHealthResult> {
 
 async function checkCompute(): Promise<ServiceHealthResult> {
   try {
-    const apiUrl =
-      (await storage.getAppSetting("prm_compute_api_url")) ||
-      (await storage.getAppSetting("prm_face_api_url")) ||
-      "";
+    const [computeUrl, faceUrl] = await Promise.all([
+      storage.getAppSetting("prm_compute_api_url"),
+      storage.getAppSetting("prm_face_api_url"),
+    ]);
+    const apiUrl = computeUrl || faceUrl || "";
     if (!apiUrl.trim()) {
       return { ok: false, status: "not_configured", message: "API URL not configured (default: http://localhost:8001)" };
     }
@@ -56,7 +81,7 @@ async function checkStories(): Promise<ServiceHealthResult> {
     const apiUrl = storiesServiceUrl(importer);
     if (!apiUrl) return { ok: false, status: "not_configured", message: `${label}service URL not set` };
     try {
-      const resp = await fetch(`${apiUrl}/status`, { method: "POST", headers: storiesServiceHeaders(importer), signal: AbortSignal.timeout(3000) });
+      const resp = await fetch(`${apiUrl}/status`, { method: "POST", headers: storiesServiceHeaders(importer), redirect: "error", signal: AbortSignal.timeout(3000) });
       if (!resp.ok) return { ok: false, status: "degraded", message: `${label}service returned HTTP ${resp.status}` };
       const body = (await resp.json()) as { running?: boolean; pausedUntil?: string | null };
       if (body.pausedUntil) {
@@ -72,6 +97,34 @@ async function checkStories(): Promise<ServiceHealthResult> {
   return { ...worst, message: checks.map((c) => c.message).join(" · ") };
 }
 
+async function checkAi(): Promise<ServiceHealthResult> {
+  try {
+    const providers = await listProviders();
+    if (providers.length === 0) {
+      return {
+        ok: false,
+        status: "not_configured",
+        message: "No AI provider configured (add one under Settings → Intelligence)",
+      };
+    }
+    const checks = await Promise.all(providers.map(async (p) => ({ p, r: await testProvider(p) })));
+    const online = checks.filter((c) => c.r.ok);
+    return {
+      ok: online.length > 0,
+      status: online.length === checks.length ? "online" : online.length > 0 ? "degraded" : "offline",
+      message: checks.map((c) => `${c.p.name}: ${c.r.ok ? `online (${c.r.modelCount} models)` : c.r.message}`).join(" · "),
+      details: { providers: checks.length, online: online.length },
+    };
+  } catch (err: any) {
+    return { ok: false, status: "offline", message: `Could not check AI providers: ${err.message}` };
+  }
+}
+
+const checkS3Cached = withTtlCache(checkS3);
+const checkComputeCached = withTtlCache(checkCompute);
+const checkStoriesCached = withTtlCache(checkStories);
+const checkAiCached = withTtlCache(checkAi);
+
 export function registerSetupServicesRoutes(app: Express) {
   // The header's status dot: PRM itself (its database), S3, Compute, Stories.
   app.get("/api/status-dot", async (_req, res) => {
@@ -79,8 +132,8 @@ export function registerSetupServicesRoutes(app: Express) {
       (): ServiceHealthResult => ({ ok: true, status: "online", message: "Online" }),
       (err: any): ServiceHealthResult => ({ ok: false, status: "degraded", message: `Database error: ${err.message}` }),
     );
-    const stories = checkStories().catch((err: any): ServiceHealthResult => ({ ok: false, status: "offline", message: err.message }));
-    const [p, s3, compute, st] = await Promise.all([prm, checkS3(), checkCompute(), stories]);
+    const stories = checkStoriesCached().catch((err: any): ServiceHealthResult => ({ ok: false, status: "offline", message: err.message }));
+    const [p, s3, compute, st] = await Promise.all([prm, checkS3Cached(), checkComputeCached(), stories]);
     res.json({ prm: p, s3, compute, stories: st });
   });
 
@@ -95,45 +148,29 @@ export function registerSetupServicesRoutes(app: Express) {
       };
 
       // 1. PRM-S3 and 2. PRM Compute
-      const s3Promise = checkS3().then((r) => (results.s3 = r));
-      const computePromise = checkCompute().then((r) => (results.compute = r));
+      const s3Promise = checkS3Cached().then((r) => (results.s3 = r));
+      const computePromise = checkComputeCached().then((r) => (results.compute = r));
 
       // 3. AI providers (Ollama / OpenAI-compatible)
-      const aiPromise = (async () => {
-        try {
-          const providers = await listProviders();
-          if (providers.length === 0) {
-            results.ai = {
-              ok: false,
-              status: "not_configured",
-              message: "No AI provider configured (add one under Settings → Intelligence)",
-            };
-            return;
-          }
-          const checks = await Promise.all(providers.map(async (p) => ({ p, r: await testProvider(p) })));
-          const online = checks.filter((c) => c.r.ok);
-          results.ai = {
-            ok: online.length > 0,
-            status: online.length === checks.length ? "online" : online.length > 0 ? "degraded" : "offline",
-            message: checks.map((c) => `${c.p.name}: ${c.r.ok ? `online (${c.r.modelCount} models)` : c.r.message}`).join(" · "),
-            details: { providers: checks.length, online: online.length },
-          };
-        } catch (err: any) {
-          results.ai = { ok: false, status: "offline", message: `Could not check AI providers: ${err.message}` };
-        }
-      })();
+      const aiPromise = checkAiCached().then((r) => (results.ai = r));
 
       // 4. PRM-stories
-      const storiesPromise = checkStories()
+      const storiesPromise = checkStoriesCached()
         .catch((err: any): ServiceHealthResult => ({ ok: false, status: "offline", message: err.message }))
         .then((r) => (results.stories = r));
 
       await Promise.allSettled([s3Promise, computePromise, aiPromise, storiesPromise]);
 
       if (!req.isAuthenticated()) {
-        for (const key of Object.keys(results)) {
-          delete results[key].details;
+        const redacted: Record<string, ServiceHealthResult> = {};
+        for (const [key, val] of Object.entries(results)) {
+          redacted[key] = {
+            ok: val.ok,
+            status: val.status,
+            message: val.status === "not_configured" ? "not configured" : val.status,
+          };
         }
+        return res.json(redacted);
       }
 
       res.json(results);

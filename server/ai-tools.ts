@@ -16,8 +16,8 @@
 
 import { db } from "./db";
 import { storage, postedBy } from "./storage";
-import { interactions, interactionTypes, FAMILY_RELATIONSHIP_TYPES, FAMILY_RELATIONSHIP_LABELS, FAMILY_RELATIONSHIP_CATEGORIES, FAMILY_RELATIONSHIP_INVERSES, messages, people, socialAccounts, socialAccountPosts, conversations } from "@shared/schema";
-import { eq, and, ne, desc, sql, gte } from "drizzle-orm";
+import { interactions, interactionTypes, dailyNotes, notes, FAMILY_RELATIONSHIP_TYPES, FAMILY_RELATIONSHIP_LABELS, FAMILY_RELATIONSHIP_CATEGORIES, FAMILY_RELATIONSHIP_INVERSES, messages, people, socialAccounts, socialAccountPosts, conversations } from "@shared/schema";
+import { eq, and, ne, or, ilike, inArray, desc, sql, gte, type SQL } from "drizzle-orm";
 import { searchUniversal } from "./vector-universal";
 import { searchAppKnowledge } from "./vector-app-knowledge";
 import { computeFamilyLabels } from "./family-relations-helper";
@@ -118,6 +118,61 @@ const MAX_SEARCH_RESULTS = 10;
 
 function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+/**
+ * Detects nested quantifiers (e.g. `(a+)+`, `([a-z]*)*`, `(a{1,})+`) in O(n)
+ * time without using backtracking regexes, preventing ReDoS in PostgreSQL `~*`.
+ */
+function hasNestedQuantifier(pattern: string): boolean {
+  const groupHasQuantifier: boolean[] = [];
+  let inCharClass = false;
+
+  const isQuantifierAt = (idx: number): boolean => {
+    if (idx >= pattern.length) return false;
+    const ch = pattern[idx];
+    if (ch === "+" || ch === "*") return true;
+    if (ch === "{") {
+      return /^\{\d+(?:,\d*)?\}/.test(pattern.slice(idx));
+    }
+    return false;
+  };
+
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (inCharClass) {
+      if (ch === "]") inCharClass = false;
+      continue;
+    }
+    if (ch === "[") {
+      inCharClass = true;
+      continue;
+    }
+    if (ch === "(") {
+      groupHasQuantifier.push(false);
+      continue;
+    }
+    if (ch === ")") {
+      if (groupHasQuantifier.length === 0) continue;
+      const innerHadQuantifier = groupHasQuantifier.pop()!;
+      const hasOuterQuantifier = isQuantifierAt(i + 1);
+      if (innerHadQuantifier && hasOuterQuantifier) {
+        return true;
+      }
+      if ((innerHadQuantifier || hasOuterQuantifier) && groupHasQuantifier.length > 0) {
+        groupHasQuantifier[groupHasQuantifier.length - 1] = true;
+      }
+      continue;
+    }
+    if (groupHasQuantifier.length > 0 && isQuantifierAt(i)) {
+      groupHasQuantifier[groupHasQuantifier.length - 1] = true;
+    }
+  }
+  return false;
 }
 
 function trimPerson(p: any) {
@@ -227,6 +282,54 @@ function trimInteraction(i: any) {
     description: i.description ? String(i.description).slice(0, 400) : null,
     peopleIds: i.peopleIds ?? [],
     groupIds: i.groupIds ?? [],
+  };
+}
+
+/**
+ * Batch-resolves sender display names for a list of message rows in at most
+ * two `inArray` queries (one for people, one for social accounts).
+ */
+async function buildSenderNameResolver(
+  rows: Array<{ senderPersonId: string | null; senderSocialAccountId: string | null; metadata: unknown }>,
+): Promise<(row: { senderPersonId: string | null; senderSocialAccountId: string | null; metadata: unknown }) => string> {
+  const personIds = [...new Set(rows.map((r) => r.senderPersonId).filter((id): id is string => !!id))];
+  const accountIds = [
+    ...new Set(
+      rows
+        .filter((r) => !r.senderPersonId && !!r.senderSocialAccountId)
+        .map((r) => r.senderSocialAccountId as string),
+    ),
+  ];
+
+  const [personRows, accountRows] = await Promise.all([
+    personIds.length > 0
+      ? db
+          .select({ id: people.id, firstName: people.firstName, lastName: people.lastName })
+          .from(people)
+          .where(inArray(people.id, personIds))
+      : Promise.resolve([]),
+    accountIds.length > 0
+      ? db
+          .select({ id: socialAccounts.id, username: socialAccounts.username })
+          .from(socialAccounts)
+          .where(inArray(socialAccounts.id, accountIds))
+      : Promise.resolve([]),
+  ]);
+
+  const personMap = new Map(personRows.map((p) => [p.id, `${p.firstName} ${p.lastName}`]));
+  const accountMap = new Map(accountRows.map((a) => [a.id, a.username]));
+
+  return (row) => {
+    if (row.senderPersonId) {
+      return personMap.get(row.senderPersonId) ?? "Unknown";
+    }
+    if (row.senderSocialAccountId) {
+      return accountMap.get(row.senderSocialAccountId) ?? "Unknown";
+    }
+    if (row.metadata && typeof row.metadata === "object") {
+      return (row.metadata as any).senderName || "Unknown";
+    }
+    return "Unknown";
   };
 }
 
@@ -739,11 +842,14 @@ export const AI_TOOLS: AiToolDefinition[] = [
         return { summary: `Pulled daily note for ${date}`, data: { results: [trimDailyNote(note)] } };
       }
       const query = asString(args.query).trim();
-      const all = await storage.listDailyNotes();
-      const filtered = query
-        ? all.filter((n: any) => matchesQuery(n.title, query) || matchesQuery(n.body, query))
-        : all;
-      const results = filtered.slice(0, MAX_SEARCH_RESULTS).map(trimDailyNote);
+      const pattern = `%${query}%`;
+      const rows = await db
+        .select()
+        .from(dailyNotes)
+        .where(query ? or(ilike(dailyNotes.userTitle, pattern), ilike(dailyNotes.body, pattern)) : undefined)
+        .orderBy(desc(dailyNotes.date))
+        .limit(MAX_SEARCH_RESULTS);
+      const results = rows.map(trimDailyNote);
       return { summary: `Found ${results.length} daily note${results.length === 1 ? "" : "s"}`, data: { results } };
     },
   },
@@ -769,11 +875,13 @@ export const AI_TOOLS: AiToolDefinition[] = [
         return { summary: "Pulled note", data: trimNote(note) };
       }
       const query = asString(args.query).trim();
-      const all = await storage.getAllNotes();
-      const filtered = query
-        ? all.filter((n: any) => matchesQuery(n.title, query) || matchesQuery(n.content, query))
-        : all;
-      const results = filtered.slice(0, MAX_SEARCH_RESULTS).map(trimNote);
+      const rows = await db
+        .select()
+        .from(notes)
+        .where(query ? ilike(notes.content, `%${query}%`) : undefined)
+        .orderBy(desc(notes.createdAt))
+        .limit(MAX_SEARCH_RESULTS);
+      const results = rows.map(trimNote);
       return { summary: `Found ${results.length} note${results.length === 1 ? "" : "s"}`, data: { results } };
     },
   },
@@ -793,26 +901,27 @@ export const AI_TOOLS: AiToolDefinition[] = [
     },
     handler: async (args) => {
       const uuid = asString(args.uuid).trim();
-      // Pull all interactions joined to types so we can return type names.
-      const rows = await db
-        .select()
-        .from(interactions)
-        .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id));
-      const flattened = rows.map((row: any) => ({
-        ...row.interactions,
-        type: row.interaction_types ?? null,
-      }));
       if (uuid) {
-        const found = flattened.find((i: any) => i.id === uuid);
-        if (!found) return { summary: "Interaction not found", data: { error: "not_found" } };
+        const [row] = await db
+          .select()
+          .from(interactions)
+          .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id))
+          .where(eq(interactions.id, uuid))
+          .limit(1);
+        if (!row) return { summary: "Interaction not found", data: { error: "not_found" } };
+        const found = { ...row.interactions, type: row.interaction_types ?? null };
         return { summary: "Pulled interaction", data: trimInteraction(found) };
       }
       const query = asString(args.query).trim();
-      const filtered = query
-        ? flattened.filter((i: any) => matchesQuery(i.description, query))
-        : flattened;
-      filtered.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      const results = filtered.slice(0, MAX_SEARCH_RESULTS).map(trimInteraction);
+      const rows = await db
+        .select()
+        .from(interactions)
+        .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id))
+        .where(query ? ilike(interactions.description, `%${query}%`) : undefined)
+        .orderBy(desc(interactions.date))
+        .limit(MAX_SEARCH_RESULTS);
+      const results = rows
+        .map((row) => trimInteraction({ ...row.interactions, type: row.interaction_types ?? null }));
       return { summary: `Found ${results.length} interaction${results.length === 1 ? "" : "s"}`, data: { results } };
     },
   },
@@ -900,30 +1009,15 @@ export const AI_TOOLS: AiToolDefinition[] = [
           .limit(limit)
           .offset(offset);
 
-        const results = [];
-        for (const row of rows) {
-          let senderName = "Unknown";
-          if (row.senderPersonId) {
-            const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
-              .from(people).where(eq(people.id, row.senderPersonId));
-            if (p) senderName = `${p.firstName} ${p.lastName}`;
-          } else if (row.senderSocialAccountId) {
-            const [sa] = await db.select({ username: socialAccounts.username })
-              .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
-            if (sa) senderName = sa.username;
-          } else if (row.metadata && typeof row.metadata === "object") {
-            senderName = (row.metadata as any).senderName || "Unknown";
-          }
-
-          results.push({
-            id: row.id,
-            conversationId: row.conversationId,
-            senderName,
-            content: row.content,
-            contentType: row.contentType,
-            sentAt: row.sentAt,
-          });
-        }
+        const resolveSenderName = await buildSenderNameResolver(rows);
+        const results = rows.map((row) => ({
+          id: row.id,
+          conversationId: row.conversationId,
+          senderName: resolveSenderName(row),
+          content: row.content,
+          contentType: row.contentType,
+          sentAt: row.sentAt,
+        }));
 
         return {
           summary: `Read ${results.length} message${results.length === 1 ? "" : "s"}`,
@@ -976,8 +1070,22 @@ export const AI_TOOLS: AiToolDefinition[] = [
       const includeIds = args.includeIds !== false;
 
       try {
-        let queryBuilder = db.select().from(messages);
-        const conditions = [];
+        if (useRegex && textQuery) {
+          if (textQuery.length > 200) {
+            return {
+              summary: "Invalid regex query",
+              data: { error: "Regex query exceeds maximum allowed length of 200 characters." },
+            };
+          }
+          if (hasNestedQuantifier(textQuery)) {
+            return {
+              summary: "Invalid regex query",
+              data: { error: "Regex query rejected: nested quantifiers are not allowed." },
+            };
+          }
+        }
+
+        const conditions: SQL[] = [];
 
         if (conversationId) {
           conditions.push(eq(messages.conversationId, conversationId));
@@ -1014,34 +1122,30 @@ export const AI_TOOLS: AiToolDefinition[] = [
           }
         }
 
-        let whereQuery: any = conditions.length > 0 ? queryBuilder.where(and(...conditions)) : queryBuilder;
-
         // Order relative queries to fetch closest messages chronologically
-        if (refDateStr && direction === "backwards") {
-          whereQuery = whereQuery.orderBy(sql`${messages.sentAt} DESC`);
-        } else {
-          whereQuery = whereQuery.orderBy(sql`${messages.sentAt} ASC`);
-        }
+        const orderByClause =
+          refDateStr && direction === "backwards"
+            ? sql`${messages.sentAt} DESC`
+            : sql`${messages.sentAt} ASC`;
 
-        const rows = await whereQuery.limit(limit).offset(offset);
+        const runQuery = (executor: Pick<typeof db, "select">) => {
+          const base = executor.select().from(messages);
+          const filtered = conditions.length > 0 ? base.where(and(...conditions)) : base;
+          return filtered.orderBy(orderByClause).limit(limit).offset(offset);
+        };
 
-        const results = [];
-        for (const row of rows) {
-          let senderName = "Unknown";
-          if (row.senderPersonId) {
-            const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
-              .from(people).where(eq(people.id, row.senderPersonId));
-            if (p) senderName = `${p.firstName} ${p.lastName}`;
-          } else if (row.senderSocialAccountId) {
-            const [sa] = await db.select({ username: socialAccounts.username })
-              .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
-            if (sa) senderName = sa.username;
-          } else if (row.metadata && typeof row.metadata === "object") {
-            senderName = (row.metadata as any).senderName || "Unknown";
-          }
+        const rows =
+          useRegex && textQuery
+            ? await db.transaction(async (tx) => {
+                await tx.execute(sql`SET LOCAL statement_timeout = '2000ms'`);
+                return runQuery(tx);
+              })
+            : await runQuery(db);
 
+        const resolveSenderName = await buildSenderNameResolver(rows);
+        const results = rows.map((row) => {
           const msgObj: any = {
-            senderName,
+            senderName: resolveSenderName(row),
             content: row.content,
             contentType: row.contentType,
             sentAt: row.sentAt,
@@ -1050,8 +1154,8 @@ export const AI_TOOLS: AiToolDefinition[] = [
             msgObj.id = row.id;
             msgObj.conversationId = row.conversationId;
           }
-          results.push(msgObj);
-        }
+          return msgObj;
+        });
 
         // Sort chronologically ascending for readable presentation
         results.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
@@ -1155,35 +1259,11 @@ export const AI_TOOLS: AiToolDefinition[] = [
           };
         }
 
-        const helperMapSender = async (row: any) => {
-          let senderName = "Unknown";
-          if (row.senderPersonId) {
-            const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
-              .from(people).where(eq(people.id, row.senderPersonId));
-            if (p) senderName = `${p.firstName} ${p.lastName}`;
-          } else if (row.senderSocialAccountId) {
-            const [sa] = await db.select({ username: socialAccounts.username })
-              .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
-            if (sa) senderName = sa.username;
-          } else if (row.metadata && typeof row.metadata === "object") {
-            senderName = (row.metadata as any).senderName || "Unknown";
-          }
-          return {
-            id: row.id,
-            conversationId: row.conversationId,
-            senderName,
-            content: row.content,
-            contentType: row.contentType,
-            sentAt: row.sentAt,
-          };
-        };
-
-        const targetResult = await helperMapSender(targetMsg);
-        const results = [targetResult];
+        const rawRows = [targetMsg];
 
         if (contextCount > 0 && targetMsg.conversationId) {
           const targetSentAtIso = targetMsg.sentAt ? new Date(targetMsg.sentAt).toISOString() : new Date().toISOString();
-          
+
           let backwardsRows: any[] = [];
           if (contextDirection === "backwards" || contextDirection === "both") {
             backwardsRows = await db.select()
@@ -1214,21 +1294,28 @@ export const AI_TOOLS: AiToolDefinition[] = [
               .limit(contextCount);
           }
 
-          const allContextRows = [...backwardsRows, ...forwardsRows];
-          
           // De-duplicate if same sentAt or boundaries overlap
           const seenIds = new Set<string>([targetMsg.id]);
-          for (const row of allContextRows) {
+          for (const row of [...backwardsRows, ...forwardsRows]) {
             if (!seenIds.has(row.id)) {
               seenIds.add(row.id);
-              const mapped = await helperMapSender(row);
-              results.push(mapped);
+              rawRows.push(row);
             }
           }
         }
 
+        const resolveSenderName = await buildSenderNameResolver(rawRows);
+        const results = rawRows.map((row) => ({
+          id: row.id,
+          conversationId: row.conversationId,
+          senderName: resolveSenderName(row),
+          content: row.content,
+          contentType: row.contentType,
+          sentAt: row.sentAt,
+        }));
+
         // Sort chronologically ascending
-        results.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+        results.sort((a, b) => (a.sentAt ? new Date(a.sentAt).getTime() : 0) - (b.sentAt ? new Date(b.sentAt).getTime() : 0));
 
         return {
           summary: `Fetched message ${messageId} with ${results.length - 1} context messages`,

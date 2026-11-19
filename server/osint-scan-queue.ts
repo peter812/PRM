@@ -53,6 +53,35 @@ async function autoScanTools(): Promise<string[] | null> {
   return enabled === "true" && list.length && isOsintConfigured(cfg) ? list : null;
 }
 
+const OSINT_TARGET_NO_SPACE_RE = /^[a-zA-Z0-9@._+\-]+$/;
+const OSINT_TARGET_PHONE_RE = /^[a-zA-Z0-9@._+\- ]+$/;
+
+/**
+ * Validates and normalizes an OSINT scan target for the given target type.
+ * Rejects empty/overlong values, leading hyphens (argument injection), and
+ * spaces for username/email targets.
+ */
+export function validateOsintTarget(
+  rawTarget: string,
+  targetType: OsintTargetType,
+): { ok: true; target: string } | { ok: false; error: string } {
+  const trimmed = rawTarget.trim();
+  if (trimmed.length < 1 || trimmed.length > 255) {
+    return { ok: false, error: "Target must be between 1 and 255 characters" };
+  }
+  if (/^-/.test(trimmed)) {
+    return { ok: false, error: "Target cannot start with '-'" };
+  }
+  const pattern = targetType === "phone" ? OSINT_TARGET_PHONE_RE : OSINT_TARGET_NO_SPACE_RE;
+  if (!pattern.test(trimmed)) {
+    return { ok: false, error: "Invalid characters in target" };
+  }
+  return {
+    ok: true,
+    target: targetType === "email" ? trimmed.toLowerCase() : trimmed,
+  };
+}
+
 /**
  * Queue one target of a known owner — a social account's username or a
  * person's OSINT Runs entry — on every settings tool that accepts its type.
@@ -63,10 +92,14 @@ export async function queueOsintScansForTarget(
   target: string,
   targetType: OsintTargetType,
 ): Promise<number> {
+  const check = validateOsintTarget(target, targetType);
+  if (!check.ok) {
+    throw new Error(check.error);
+  }
   const supported = new Set(OSINT_TOOLS.filter(t => t.supportedTargetTypes.includes(targetType)).map(t => t.name));
   let added = 0;
   for (const tool of (await scanTools()).filter(t => supported.has(t))) {
-    if (await storage.createOsintScan({ ...owner, tool, target, targetType, options: {} })) added++;
+    if (await storage.createOsintScan({ ...owner, tool, target: check.target, targetType, options: {} })) added++;
   }
   if (added) wakeOsintRunner();
   return added;
@@ -217,10 +250,15 @@ async function poll(cfg: OsintConfig, row: OsintScan): Promise<boolean> {
 
 /** Hand one claimed row to PRM-compute. Returns false if it could not be sent. */
 async function submit(cfg: OsintConfig, row: OsintScan): Promise<boolean> {
+  const targetCheck = validateOsintTarget(row.target, row.targetType as OsintTargetType);
+  if (!targetCheck.ok) {
+    await retryOrFail(row, targetCheck.error, false);
+    return false;
+  }
   try {
     const job = await computeJson(cfg, "/scans", {
       method: "POST",
-      body: JSON.stringify({ tool: row.tool, target: row.target, target_type: row.targetType, options: row.options }),
+      body: JSON.stringify({ tool: row.tool, target: targetCheck.target, target_type: row.targetType, options: row.options }),
     });
     const saved = await storage.updateOsintScan(row.id, { computeJobId: job.id });
     if (!saved) {
